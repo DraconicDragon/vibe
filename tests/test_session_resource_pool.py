@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 import autotagger
-from autotagger.loader import ModelSource
 from autotagger.session import SessionError, build_session
 
 
@@ -36,7 +35,7 @@ class _DummyONNXBackend:
 
 def _write_selected_tags_csv(path: Path) -> None:
     path.write_text(
-        "name,category\n" "blue_hair,0\n" "cat_ears,0\n" "miku_hatsune,4\n" "safe,9\n",
+        "name,category\nblue_hair,0\ncat_ears,0\nmiku_hatsune,4\nsafe,9\n",
         encoding="utf-8",
     )
 
@@ -55,7 +54,7 @@ def test_build_session_reuses_pooled_backend_until_last_close(
     _write_selected_tags_csv(tmp_path / "selected_tags.csv")
 
     plugin_cls = autotagger.registry.get("wd-eva02-large")
-    source = ModelSource.local(tmp_path)
+    source = f"local:{tmp_path}"
 
     session1 = build_session(
         plugin_cls=plugin_cls,
@@ -93,7 +92,7 @@ def test_build_session_releases_pooled_backend_on_ancillary_failure(
     _write_selected_tags_csv(tmp_path / "selected_tags.csv")
 
     plugin_cls = autotagger.registry.get("wd-eva02-large")
-    source = ModelSource.local(tmp_path)
+    source = f"local:{tmp_path}"
 
     def _failing_load_ancillary(self, file_map):
         del self, file_map

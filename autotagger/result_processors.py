@@ -1,16 +1,15 @@
-"""Result processor pipeline for session-level postprocessing."""
+"""Typed result processors applied at inference time."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from autotagger.backends.char_ip_mapping import (
     apply_character_ip_mapping,
     resolve_character_ip_mapping,
 )
-from autotagger.loader import FileMap, ModelSource
+from autotagger.loader import FileMap
 from autotagger.results import InferenceResult, TagEntry, TagResult
 
 KAOMOJIS = {
@@ -36,50 +35,45 @@ KAOMOJIS = {
 }
 
 
-# region Context
-
-
 @dataclass
 class ResultProcessorContext:
     file_map: FileMap
-    source: ModelSource
+    source: str
     auto_download: bool
-    character_mapping_path: str | None
 
 
 class ResultProcessor:
+    """Base class for result processors."""
+
     def process(
         self,
         result: InferenceResult,
         *,
-        params: dict[str, Any],
         context: ResultProcessorContext,
     ) -> InferenceResult:
+        del context
         return result
 
 
-# endregion Context
+class CharacterIPMapping(ResultProcessor):
+    """Attach character -> copyright/IP mappings to tag results."""
 
-
-# region Processors
-
-
-class CharacterIPMappingProcessor(ResultProcessor):
-    """Attach character/IP mappings to tag results when requested."""
-
-    def __init__(self) -> None:
+    def __init__(self, mapping_file: str | Path | None = None) -> None:
+        self._mapping_file = str(mapping_file) if mapping_file is not None else None
         self._mapping_cache: dict[str, list[str]] | None = None
 
     def process(
         self,
         result: InferenceResult,
         *,
-        params: dict[str, Any],
         context: ResultProcessorContext,
     ) -> InferenceResult:
         if not isinstance(result, TagResult):
             return result
-        if not params.get("return_character_mapping", False):
+
+        character_entries = result.category("character")
+        if not character_entries:
+            result.character_mapping = None
             return result
 
         mapping = self._get_mapping(context)
@@ -87,7 +81,7 @@ class CharacterIPMappingProcessor(ResultProcessor):
             result.character_mapping = None
             return result
 
-        mapped = apply_character_ip_mapping(result.tag_names(), mapping)
+        mapped = apply_character_ip_mapping([entry.tag for entry in character_entries], mapping)
         result.character_mapping = mapped or None
         return result
 
@@ -98,7 +92,7 @@ class CharacterIPMappingProcessor(ResultProcessor):
         model_dir = self._resolve_model_dir(context.file_map)
         self._mapping_cache = resolve_character_ip_mapping(
             model_dir=model_dir,
-            manual_path=context.character_mapping_path,
+            manual_path=self._mapping_file,
             allow_download=context.auto_download,
         )
         return self._mapping_cache
@@ -116,28 +110,21 @@ class CharacterIPMappingProcessor(ResultProcessor):
         return Path.cwd()
 
 
-class TagCleaningProcessor(ResultProcessor):
-    """Optionally clean tag text while preserving kaomojis."""
+class CleanTags(ResultProcessor):
+    """Normalize underscore-delimited tags while preserving kaomojis."""
 
     def process(
         self,
         result: InferenceResult,
         *,
-        params: dict[str, Any],
         context: ResultProcessorContext,
     ) -> InferenceResult:
         del context
         if not isinstance(result, TagResult):
             return result
-        if not params.get("clean_tags", False):
-            return result
 
-        result.tags = [TagEntry(tag=_clean_tag_text(entry.tag), score=entry.score) for entry in result.tags]
-
-        if result.all_scores is not None:
-            result.all_scores = [
-                TagEntry(tag=_clean_tag_text(entry.tag), score=entry.score) for entry in result.all_scores
-            ]
+        for entries in result.categories().values():
+            entries[:] = [TagEntry(tag=_clean_tag_text(entry.tag), score=entry.score) for entry in entries]
 
         if result.character_mapping is not None:
             result.character_mapping = {
@@ -152,6 +139,3 @@ def _clean_tag_text(tag: str) -> str:
     if tag in KAOMOJIS:
         return tag
     return tag.replace("_", " ")
-
-
-# endregion Processors

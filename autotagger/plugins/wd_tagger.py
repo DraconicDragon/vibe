@@ -2,64 +2,43 @@ from __future__ import annotations
 
 import csv
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 
 import numpy as np
 
 from autotagger.backends.base import Backend, FileRole, FileSpec, ModelPlugin
-from autotagger.params import ParamDef, ParamSchema
+from autotagger.result_processors import CharacterIPMapping, CleanTags
 from autotagger.results import OutputType, TagEntry, TagResult
 
 logger = logging.getLogger(__name__)
 
 
-# region Params
+@dataclass
+class WDTagResult(TagResult):
+    """WD model output schema with explicit category fields."""
 
+    rating: list[TagEntry] = field(default_factory=list)
+    general: list[TagEntry] = field(default_factory=list)
+    character: list[TagEntry] = field(default_factory=list)
 
-class WDTaggerParams(TypedDict, total=False):
-    """Typed WD inference params for IDE autocomplete."""
-
-    general_threshold: float
-    character_threshold: float
-    return_all_scores: bool
-    return_character_mapping: bool
-    clean_tags: bool
-
-
-def wd_tagger_params(
-    *,
-    general_threshold: float | None = None,
-    character_threshold: float | None = None,
-    return_all_scores: bool | None = None,
-    return_character_mapping: bool | None = None,
-    clean_tags: bool | None = None,
-) -> WDTaggerParams:
-    """Build typed WD params while keeping the session dict API unchanged."""
-    params: WDTaggerParams = {}
-    if general_threshold is not None:
-        params["general_threshold"] = general_threshold
-    if character_threshold is not None:
-        params["character_threshold"] = character_threshold
-    if return_all_scores is not None:
-        params["return_all_scores"] = return_all_scores
-    if return_character_mapping is not None:
-        params["return_character_mapping"] = return_character_mapping
-    if clean_tags is not None:
-        params["clean_tags"] = clean_tags
-    return params
-
-
-# endregion Params
+    def categories(self) -> dict[str, list[TagEntry]]:
+        return {
+            "rating": self.rating,
+            "general": self.general,
+            "character": self.character,
+        }
 
 
 class WDTaggerBasePlugin(ModelPlugin):
-    """Shared implementation for WD ONNX taggers."""
+    """Shared implementation for WaifuDiffusion taggers by SmilingWolf."""
 
     _abstract = True
 
     output_type = OutputType.TAGS
     supported_backends = [Backend.ONNX, Backend.PYTORCH]
+    supported_processors = [CleanTags, CharacterIPMapping]
 
     required_files = [
         FileSpec(
@@ -81,51 +60,6 @@ class WDTaggerBasePlugin(ModelPlugin):
             backends=[],  # empty = needed for all backends
         ),
     ]
-
-    param_schema = ParamSchema(
-        [
-            ParamDef(
-                name="general_threshold",
-                type=float,
-                default=0.35,
-                range=(0.0, 1.0),
-                label="General tag threshold",
-                description=("Confidence threshold for general tags. Lower = more tags. Typical range: 0.2–0.5."),
-            ),
-            ParamDef(
-                name="character_threshold",
-                type=float,
-                default=0.85,
-                range=(0.0, 1.0),
-                label="Character tag threshold",
-                description="Confidence threshold for character tags.",
-            ),
-            ParamDef(
-                name="return_all_scores",
-                type=bool,
-                default=False,
-                label="Return all scores",
-                description="Include every tag's raw score in the result.",
-            ),
-            ParamDef(
-                name="return_character_mapping",
-                type=bool,
-                default=False,
-                label="Return character mapping",
-                description=(
-                    "If a character IP mapping file is available, include mapped "
-                    "copyright/IP tags for predicted character tags."
-                ),
-            ),
-            ParamDef(
-                name="clean_tags",
-                type=bool,
-                default=False,
-                label="Clean tags",
-                description=("Normalize underscore-delimited tags into readable text while preserving kaomojis."),
-            ),
-        ]
-    )
 
     # Image input size for this model
     IMAGE_SIZE = 448
@@ -209,13 +143,8 @@ class WDTaggerBasePlugin(ModelPlugin):
     def postprocess(
         self,
         raw_output: Any,
-        params: dict[str, Any],
-    ) -> TagResult:
-        """Apply thresholding by category and emit TagResult."""
-        general_thresh = params["general_threshold"]
-        char_thresh = params["character_threshold"]
-        return_all = params["return_all_scores"]
-
+    ) -> WDTagResult:
+        """Return full scored output grouped by WD tag category."""
         scores = np.asarray(raw_output)
         if scores.ndim > 1:
             scores = np.squeeze(scores, axis=0)
@@ -233,25 +162,26 @@ class WDTaggerBasePlugin(ModelPlugin):
                 len(self._raw_tag_names),
             )
 
-        predicted: list[TagEntry] = []
-        for i in self._general_indices:
-            if i < usable_count and scores[i] >= general_thresh:
-                predicted.append(TagEntry(tag=self._raw_tag_names[i], score=float(scores[i])))
-        for i in self._character_indices:
-            if i < usable_count and scores[i] >= char_thresh:
-                predicted.append(TagEntry(tag=self._raw_tag_names[i], score=float(scores[i])))
+        rating = self._entries_for_indices(self._rating_indices, scores, usable_count)
+        general = self._entries_for_indices(self._general_indices, scores, usable_count)
+        character = self._entries_for_indices(self._character_indices, scores, usable_count)
 
-        predicted.sort(key=lambda t: t.score, reverse=True)
-
-        all_entries: list[TagEntry] | None = None
-        if return_all:
-            all_entries = [TagEntry(tag=self._raw_tag_names[i], score=float(scores[i])) for i in range(usable_count)]
-            all_entries.sort(key=lambda t: t.score, reverse=True)
-
-        return TagResult(
-            tags=predicted,
-            all_scores=all_entries,
+        return WDTagResult(
+            rating=rating,
+            general=general,
+            character=character,
         )
+
+    # todo: move to mixin or some other shared utility file since this is pretty universal
+    def _entries_for_indices(
+        self,
+        indices: list[int],
+        scores: np.ndarray,
+        usable_count: int,
+    ) -> list[TagEntry]:
+        entries = [TagEntry(tag=self._raw_tag_names[i], score=float(scores[i])) for i in indices if i < usable_count]
+        entries.sort(key=lambda item: item.score, reverse=True)
+        return entries
 
 
 # region Model Variants

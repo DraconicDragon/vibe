@@ -1,16 +1,8 @@
-"""
-File loader — resolves model files from three sources:
-
-  1. HuggingFace repo ID (auto-download via huggingface_hub, reuses HF cache)
-  2. Local folder (user manually placed files; no HF involvement)
-  3. Explicit HF cache path (user points directly to an existing HF snapshot)
-
-The loader validates that required files are present before returning paths,
-so plugins never have to deal with missing file errors at inference time.
-"""
+"""File loader and source string resolution for model assets."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -160,95 +152,183 @@ def resolve_from_hf_cache_path(
     return resolve_from_local_folder(snapshot_path, file_specs, backend)
 
 
-# endregion Resolve Files
-
-# region ModelSource
-
-
-class ModelSource:
+def resolve_from_source_string(
+    source: str,
+    file_specs: list[FileSpec],
+    backend: Backend,
+    *,
+    revision: str | None = None,
+    cache_dir: str | None = None,
+    allow_download: bool | None = None,
+) -> FileMap:
     """
-    Describes where to load model files from.
+    Resolve files from a user-facing source string.
 
-    Use the class methods to construct:
-        ModelSource.hf("SmilingWolf/wd-eva02-large-tagger-v3")
-        ModelSource.local("/path/to/my/model/folder")
-        ModelSource.hf_cache("/path/to/hf/snapshot")
-        ModelSource.hf("some/repo", revision="v1.0")
+    Supported source formats:
+      - "local:/path/to/folder"  (strict local mode)
+      - "hf:owner/repo"          (strict HuggingFace mode)
+      - "hf_cache:/path"         (strict local HF snapshot mode)
+      - unprefixed text           (auto mode: local folder if it exists, then HF repo)
+
+    Prefix modes are strict and do not fall back to other source kinds.
     """
+    source = source.strip()
+    if not source:
+        raise LoaderError("Source cannot be empty.")
 
-    _kind: str
-    _path_or_id: str
-    _revision: str | None
-    _cache_dir: str | None
-    _allow_download: bool | None
+    if source.startswith("local:"):
+        return _resolve_local_prefixed(source[6:], file_specs, backend)
 
-    def __init__(
-        self,
-        kind: str,
-        path_or_id: str,
-        revision: str | None = None,
-        cache_dir: str | None = None,
-        allow_download: bool | None = None,
-    ) -> None:
-        self._kind = kind
-        self._path_or_id = path_or_id
-        self._revision = revision
-        self._cache_dir = cache_dir
-        self._allow_download = allow_download
-
-    @classmethod
-    def hf(
-        cls,
-        repo_id: str,
-        revision: str | None = None,
-        cache_dir: str | None = None,
-        allow_download: bool | None = None,
-    ) -> ModelSource:
-        return cls(
-            "hf",
-            repo_id,
+    if source.startswith("hf:"):
+        return _resolve_hf_prefixed(
+            source[3:],
+            file_specs,
+            backend,
             revision=revision,
             cache_dir=cache_dir,
             allow_download=allow_download,
         )
 
-    @classmethod
-    def local(cls, folder: str | Path) -> ModelSource:
-        return cls("local", str(folder))
+    if source.startswith("hf_cache:"):
+        return _resolve_hf_cache_prefixed(source[9:], file_specs, backend)
 
-    @classmethod
-    def hf_cache(cls, snapshot_path: str | Path) -> ModelSource:
-        return cls("hf_cache", str(snapshot_path))
+    return _resolve_auto_source(
+        source,
+        file_specs,
+        backend,
+        revision=revision,
+        cache_dir=cache_dir,
+        allow_download=allow_download,
+    )
 
-    def resolve(
-        self,
-        file_specs: list[FileSpec],
-        backend: Backend,
-    ) -> FileMap:
-        """Resolve all needed files and return a FileMap."""
-        if self._kind == "hf":
-            return resolve_from_hf_repo(
-                self._path_or_id,
-                file_specs,
-                backend,
-                revision=self._revision,
-                cache_dir=self._cache_dir,
-                allow_download=self._allow_download,
-            )
-        elif self._kind in ("local", "hf_cache"):
-            return resolve_from_local_folder(
-                Path(self._path_or_id),
-                file_specs,
-                backend,
-            )
+
+def _resolve_local_prefixed(
+    raw_value: str,
+    file_specs: list[FileSpec],
+    backend: Backend,
+) -> FileMap:
+    value = raw_value.strip()
+    if not value:
+        raise LoaderError("Local source prefix requires a folder path: local:/path/to/folder")
+
+    folder = Path(value).expanduser()
+    try:
+        return resolve_from_local_folder(folder, file_specs, backend)
+    except LoaderError as exc:
+        hint = ""
+        if _looks_like_hf_repo_id(value):
+            hint = " It looks like a HuggingFace repo ID; use 'hf:<owner/repo>' instead if that was intended."
+        raise LoaderError(f"Requested local source via 'local:' but failed to resolve '{value}': {exc}.{hint}".rstrip())
+
+
+def _resolve_hf_prefixed(
+    raw_value: str,
+    file_specs: list[FileSpec],
+    backend: Backend,
+    *,
+    revision: str | None,
+    cache_dir: str | None,
+    allow_download: bool | None,
+) -> FileMap:
+    value = raw_value.strip()
+    if not value:
+        raise LoaderError("HF source prefix requires a repo ID: hf:owner/repo")
+
+    try:
+        return resolve_from_hf_repo(
+            value,
+            file_specs,
+            backend,
+            revision=revision,
+            cache_dir=cache_dir,
+            allow_download=allow_download,
+        )
+    except LoaderError as exc:
+        hint = ""
+        if _looks_like_local_folder(value):
+            hint = " It looks like a local folder; use 'local:/path' instead if that was intended."
+        raise LoaderError(f"Requested HF source via 'hf:' but failed to resolve '{value}': {exc}.{hint}".rstrip())
+
+
+def _resolve_hf_cache_prefixed(
+    raw_value: str,
+    file_specs: list[FileSpec],
+    backend: Backend,
+) -> FileMap:
+    value = raw_value.strip()
+    if not value:
+        raise LoaderError("HF cache source prefix requires a path: hf_cache:/path/to/snapshot")
+
+    path = Path(value).expanduser()
+    try:
+        return resolve_from_hf_cache_path(path, file_specs, backend)
+    except LoaderError as exc:
+        hint = ""
+        if _looks_like_local_folder(value):
+            hint = " It looks like a local folder path; verify this HF snapshot folder contains the required files."
+        elif _looks_like_hf_repo_id(value):
+            hint = " It looks like a HuggingFace repo ID; use 'hf:<owner/repo>' instead if that was intended."
+        raise LoaderError(
+            f"Requested HF cache source via 'hf_cache:' but failed to resolve '{value}': {exc}.{hint}".rstrip()
+        )
+
+
+def _resolve_auto_source(
+    source: str,
+    file_specs: list[FileSpec],
+    backend: Backend,
+    *,
+    revision: str | None,
+    cache_dir: str | None,
+    allow_download: bool | None,
+) -> FileMap:
+    local_candidate = Path(source).expanduser()
+    local_error: str | None = None
+
+    if local_candidate.exists():
+        if local_candidate.is_dir():
+            try:
+                return resolve_from_local_folder(local_candidate, file_specs, backend)
+            except LoaderError as exc:
+                local_error = str(exc)
         else:
-            raise LoaderError(f"Unknown source kind: {self._kind!r}")
+            local_error = f"Local path exists but is not a directory: {local_candidate}"
 
-    def __repr__(self) -> str:
-        if self._kind == "hf":
-            rev = f"@{self._revision}" if self._revision else ""
-            return f"ModelSource.hf({self._path_or_id!r}{rev})"
-        return f"ModelSource.{self._kind}({self._path_or_id!r})"
+    hf_error: str | None = None
+    try:
+        return resolve_from_hf_repo(
+            source,
+            file_specs,
+            backend,
+            revision=revision,
+            cache_dir=cache_dir,
+            allow_download=allow_download,
+        )
+    except LoaderError as exc:
+        hf_error = str(exc)
+
+    parts = [
+        f"Could not resolve source '{source}'.",
+        "Auto mode tries local folder first (when it exists), then HuggingFace repo/cache/download.",
+    ]
+    if local_error is not None:
+        parts.append(f"Local attempt failed: {local_error}")
+    if hf_error is not None:
+        parts.append(f"HF attempt failed: {hf_error}")
+    raise LoaderError(" ".join(parts))
 
 
-# endregion ModelSource
+def _looks_like_hf_repo_id(value: str) -> bool:
+    return bool(re.match(r"^[^/\s]+/[^/\s]+$", value.strip()))
+
+
+def _looks_like_local_folder(value: str) -> bool:
+    p = Path(value).expanduser()
+    if p.is_dir():
+        return True
+
+    raw = value.strip()
+    return raw.startswith(("./", "../", "/", "~/"))
+
+
+# endregion Resolve Files

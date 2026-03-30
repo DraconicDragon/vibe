@@ -3,11 +3,11 @@ ModelSession — a loaded model, ready to run inference.
 
 This is the object users interact with after calling autotagger.load().
 It holds the resolved plugin instance, the active runtime backend,
-and the validated params. Calling .infer() is the one thing you do with it.
+and optional result processors. Calling .infer() is the one thing you do with it.
 
 session = autotagger.load("wd-eva02-large")
 result  = session.infer(image)
-result  = session.infer(image, params={"general_threshold": 0.4})
+result  = session.infer(image, processors=[...])
 """
 
 from __future__ import annotations
@@ -22,15 +22,9 @@ import numpy as np
 from autotagger.backends.base import Backend, ModelPlugin
 from autotagger.devices import normalize_device_string
 from autotagger.hf_downloader import get_auto_download_default
-from autotagger.loader import FileMap, ModelSource
+from autotagger.loader import FileMap, resolve_from_source_string
 from autotagger.memory_stats import MemoryTracker
-from autotagger.params import ParamSchema
-from autotagger.result_processors import (
-    CharacterIPMappingProcessor,
-    ResultProcessor,
-    ResultProcessorContext,
-    TagCleaningProcessor,
-)
+from autotagger.result_processors import ResultProcessor, ResultProcessorContext
 from autotagger.results import InferenceResult
 
 logger = logging.getLogger(__name__)
@@ -64,10 +58,8 @@ class ModelSession:
         backend_instance: Any,
         backend: Backend,
         file_map: FileMap,
-        source: ModelSource,
+        source: str,
         auto_download: bool = True,
-        character_mapping_path: str | None = None,
-        processors: list[ResultProcessor] | None = None,
         memory_tracking: bool = True,
         backend_release: Callable[[], None] | None = None,
     ) -> None:
@@ -83,20 +75,14 @@ class ModelSession:
             file_map=file_map,
             source=source,
             auto_download=auto_download,
-            character_mapping_path=character_mapping_path,
         )
-        self._processors = processors or [
-            CharacterIPMappingProcessor(),
-            TagCleaningProcessor(),
-        ]
 
     # region Primary Interface
-
 
     def infer(
         self,
         image: Any,
-        params: dict[str, Any] | None = None,
+        processors: list[ResultProcessor] | None = None,
     ) -> InferenceResult:
         """
         Run inference on an image.
@@ -104,22 +90,20 @@ class ModelSession:
         Args:
             image:  A PIL.Image.Image, or a numpy array (H×W×C uint8).
                     The plugin's preprocess() handles conversion.
-            params: Optional dict of inference parameters. Unknown keys raise
-                    ValueError. Missing keys use plugin defaults.
-                    Run session.param_schema() to see what's accepted.
+            processors: Optional ordered list of result processor instances.
+                        Processors run after model postprocess in the order given.
 
         Returns:
             A TagResult, ScoreResult, or MultiScoreResult depending on the model.
         """
-        validated = self._plugin.param_schema.validate(params or {})
-        return self._infer_validated(image, validated)
+        return self._infer_validated(image, processors=processors)
 
     def _infer_validated(
         self,
         image: Any,
-        validated: dict[str, Any],
+        processors: list[ResultProcessor] | None = None,
     ) -> InferenceResult:
-        """Run inference with already-validated params."""
+        """Run inference for one image."""
         if self._closed:
             raise SessionError("Session is closed. Load a new session before inferring.")
 
@@ -139,11 +123,11 @@ class ModelSession:
 
         # Postprocess: raw output → typed result
         try:
-            result = self._plugin.postprocess(raw_output, validated)
+            result = self._plugin.postprocess(raw_output)
         except Exception as exc:
             raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
 
-        output = self._apply_processors(result, validated)
+        output = self._apply_processors(result, processors=processors)
 
         if self._memory_tracker.enabled and before is not None:
             after = self._memory_tracker.snapshot()
@@ -161,7 +145,7 @@ class ModelSession:
     def infer_many(
         self,
         images: list[Any],
-        params: dict[str, Any] | None = None,
+        processors: list[ResultProcessor] | None = None,
         *,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
@@ -179,13 +163,11 @@ class ModelSession:
         if not images:
             return []
 
-        validated = self._plugin.param_schema.validate(params or {})
-
         method = self._resolve_batch_method(batch_method, batch_size)
         if method == "sequential":
-            return [self._infer_validated(image, validated) for image in images]
+            return [self._infer_validated(image, processors=processors) for image in images]
 
-        return self._infer_many_true_batch(images, validated, batch_size)
+        return self._infer_many_true_batch(images, batch_size, processors=processors)
 
     def _resolve_batch_method(
         self,
@@ -211,8 +193,8 @@ class ModelSession:
     def _infer_many_true_batch(
         self,
         images: list[Any],
-        validated: dict[str, Any],
         batch_size: int,
+        processors: list[ResultProcessor] | None = None,
     ) -> list[InferenceResult]:
         if self._closed:
             raise SessionError("Session is closed. Load a new session before inferring.")
@@ -234,10 +216,10 @@ class ModelSession:
 
             for sample_output in self._split_batch_output(raw_output, len(chunk)):
                 try:
-                    result = self._plugin.postprocess(sample_output, validated)
+                    result = self._plugin.postprocess(sample_output)
                 except Exception as exc:
                     raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
-                results.append(self._apply_processors(result, validated))
+                results.append(self._apply_processors(result, processors=processors))
 
         if self._memory_tracker.enabled and before is not None:
             after = self._memory_tracker.snapshot()
@@ -287,18 +269,32 @@ class ModelSession:
     def _apply_processors(
         self,
         result: InferenceResult,
-        validated_params: dict[str, Any],
+        processors: list[ResultProcessor] | None = None,
     ) -> InferenceResult:
+        if not processors:
+            return result
+
         current = result
-        for processor in self._processors:
-            current = processor.process(
-                current,
-                params=validated_params,
-                context=self._processor_context,
-            )
+        for processor in processors:
+            if not any(isinstance(processor, supported) for supported in self._plugin.supported_processors):
+                logger.warning(
+                    "Processor '%s' is not declared as supported by model '%s'; attempting to apply anyway.",
+                    processor.__class__.__name__,
+                    self.model_id,
+                )
+
+            try:
+                current = processor.process(
+                    current,
+                    context=self._processor_context,
+                )
+            except Exception as exc:
+                raise SessionError(
+                    f"Result processor '{processor.__class__.__name__}' failed for model '{self.model_id}': {exc}"
+                ) from exc
         return current
 
-# endregion Primary Interface
+    # endregion Primary Interface
 
     # region Introspection
 
@@ -315,26 +311,18 @@ class ModelSession:
         return self._backend
 
     @property
-    def source(self) -> ModelSource:
+    def source(self) -> str:
         return self._source
 
-    def param_schema(self) -> ParamSchema:
-        """Return the parameter schema for this model."""
-        return self._plugin.param_schema
-
-    def param_defaults(self) -> dict[str, Any]:
-        """Convenience: default param values as a plain dict."""
-        return self._plugin.param_schema.defaults()
-
     def describe(self) -> dict[str, Any]:
-        """Full description of this session (model, backend, source, params)."""
+        # todo: rename this func?
+        """Full description of this session (model_id, display_name, backend, source, output_type)."""
         return {
             "model_id": self.model_id,
             "display_name": self._plugin.display_name,
             "backend": self._backend.value,
-            "source": repr(self._source),
+            "source": self._source,
             "output_type": self._plugin.output_type.value,
-            "param_schema": self._plugin.param_schema.to_list(),
         }
 
     def close(self) -> None:
@@ -408,12 +396,13 @@ class ModelSession:
 
 def build_session(
     plugin_cls: type[ModelPlugin],
-    source: ModelSource,
+    source: str,
     backend: Backend | str | None = None,
     device: str = "cpu",
     onnx_providers: list[str] | None = None,
+    hf_revision: str | None = None,
+    hf_cache_dir: str | None = None,
     auto_download: bool | None = None,
-    character_mapping_path: str | None = None,
     memory_tracking: bool = True,
 ) -> ModelSession:
     """
@@ -423,7 +412,7 @@ def build_session(
 
     Args:
         plugin_cls:      The plugin class (from the registry).
-        source:          Where to load files from (ModelSource instance).
+        source:          Where to load files from (source string).
         backend:         "pytorch", "onnx", or Backend enum. None = auto-select:
                          prefers ONNX if available, falls back to PyTorch.
         device:          Logical device string ("cpu", "gpu", "gpu:1", "cuda:0", etc.).
@@ -460,7 +449,14 @@ def build_session(
 
     # Resolve files
     try:
-        file_map = source.resolve(plugin_cls.required_files, backend)
+        file_map = resolve_from_source_string(
+            source,
+            plugin_cls.required_files,
+            backend,
+            revision=hf_revision,
+            cache_dir=hf_cache_dir,
+            allow_download=effective_auto_download,
+        )
     except Exception as exc:
         raise SessionError(str(exc)) from exc
 
@@ -492,7 +488,6 @@ def build_session(
         plugin = plugin_cls()
         plugin.configure(
             auto_download=effective_auto_download,
-            character_mapping_path=character_mapping_path,
         )
         plugin.load_ancillary(file_map.as_path_dict())
         return ModelSession(
@@ -502,7 +497,6 @@ def build_session(
             file_map=file_map,
             source=source,
             auto_download=effective_auto_download,
-            character_mapping_path=character_mapping_path,
             memory_tracking=memory_tracking,
             backend_release=release_backend,
         )

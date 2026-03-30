@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 from autotagger.backends.base import Backend, FileRole, FileSpec, ModelPlugin
-from autotagger.params import EMPTY_SCHEMA
 from autotagger.plugin_validation import validate_plugin_declaration
-from autotagger.results import OutputType, TagResult
+from autotagger.results import OutputType, TagEntry, TagResult
+
+
+@dataclass
+class _TestTagResult(TagResult):
+    tags: list[TagEntry] = field(default_factory=list)
+
+    def categories(self) -> dict[str, list[TagEntry]]:
+        return {"tags": self.tags}
 
 
 class _BaseTestPlugin(ModelPlugin):
@@ -13,16 +22,15 @@ class _BaseTestPlugin(ModelPlugin):
     required_files: list[FileSpec] = []
     default_hf_repo = None
     supported_backends: list[Backend] = []
-    param_schema = EMPTY_SCHEMA
     display_name = "test"
     description = "test"
 
     def preprocess(self, image):
         return image
 
-    def postprocess(self, raw_output, params):
-        del raw_output, params
-        return TagResult(tags=[])
+    def postprocess(self, raw_output):
+        del raw_output
+        return _TestTagResult(tags=[])
 
 
 class _MissingWeightsPlugin(_BaseTestPlugin):

@@ -8,9 +8,9 @@ from autotagger.backends.base import Backend, FileRole, FileSpec
 from autotagger.loader import (
     FileMap,
     LoaderError,
-    ModelSource,
     resolve_from_hf_repo,
     resolve_from_local_folder,
+    resolve_from_source_string,
 )
 
 
@@ -78,10 +78,63 @@ def test_resolve_hf_repo_skips_missing_optional(monkeypatch: pytest.MonkeyPatch,
     assert file_map.get("optional.json") is None
 
 
-def test_model_source_unknown_kind_raises() -> None:
-    source = ModelSource("unknown", "x")
+def test_source_string_local_prefix_is_strict_and_suggests_hf() -> None:
+    specs = [
+        FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
+    ]
 
     with pytest.raises(LoaderError) as excinfo:
-        source.resolve([], Backend.ONNX)
+        resolve_from_source_string("local:owner/repo", specs, Backend.ONNX)
 
-    assert "Unknown source kind" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "Requested local source via 'local:'" in message
+    assert "looks like a HuggingFace repo ID" in message
+
+
+def test_source_string_hf_prefix_suggests_local_when_path_exists(tmp_path: Path) -> None:
+    specs = [
+        FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
+    ]
+
+    with pytest.raises(LoaderError) as excinfo:
+        resolve_from_source_string(f"hf:{tmp_path}", specs, Backend.ONNX, allow_download=False)
+
+    message = str(excinfo.value)
+    assert "Requested HF source via 'hf:'" in message
+    assert "looks like a local folder" in message
+
+
+def test_source_string_hf_cache_prefix_mentions_local_folder_path(tmp_path: Path) -> None:
+    specs = [
+        FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
+    ]
+
+    with pytest.raises(LoaderError) as excinfo:
+        resolve_from_source_string(f"hf_cache:{tmp_path}", specs, Backend.ONNX)
+
+    message = str(excinfo.value)
+    assert "Requested HF cache source via 'hf_cache:'" in message
+    assert "looks like a local folder path" in message
+
+
+def test_source_string_auto_tries_hf_after_local_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    specs = [
+        FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
+    ]
+
+    local_dir = tmp_path / "owner" / "repo"
+    local_dir.mkdir(parents=True)
+
+    def _always_missing(*args, **kwargs):
+        del args, kwargs
+        raise LoaderError("hf missing")
+
+    monkeypatch.setattr("autotagger.loader.resolve_from_hf_repo", _always_missing)
+
+    with pytest.raises(LoaderError) as excinfo:
+        resolve_from_source_string(str(local_dir), specs, Backend.ONNX, allow_download=False)
+
+    message = str(excinfo.value)
+    assert "Auto mode tries local folder first" in message
+    assert "Local attempt failed" in message
+    assert "HF attempt failed" in message

@@ -9,7 +9,8 @@ from PIL import Image
 
 import autotagger
 from autotagger.backends.base import Backend
-from autotagger.loader import FileMap, ModelSource
+from autotagger.loader import FileMap
+from autotagger.result_processors import CharacterIPMapping, CleanTags, ResultProcessor
 from autotagger.results import TagResult
 from autotagger.session import ModelSession
 
@@ -50,7 +51,7 @@ class _DummyBackend:
 
 def _write_selected_tags_csv(path: Path) -> None:
     path.write_text(
-        "name,category\n" "blue_hair,0\n" "cat_ears,0\n" "miku_hatsune,4\n" "safe,9\n" "^_^,4\n",
+        "name,category\nblue_hair,0\ncat_ears,0\nmiku_hatsune,4\nsafe,9\n^_^,4\n",
         encoding="utf-8",
     )
 
@@ -58,13 +59,11 @@ def _write_selected_tags_csv(path: Path) -> None:
 def _build_session(
     tmp_path: Path,
     providers: list[str] | None = None,
-    *,
-    character_mapping_path: str | None = None,
 ) -> tuple[ModelSession, _DummyBackend]:
     plugin = autotagger.registry.get("wd-eva02-large")()
     tags = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv(tags)
-    plugin.configure(auto_download=False, character_mapping_path=character_mapping_path)
+    plugin.configure(auto_download=False)
     plugin.load_ancillary({"selected_tags.csv": tags})
 
     backend = _DummyBackend(providers=providers)
@@ -73,9 +72,8 @@ def _build_session(
         backend_instance=backend,
         backend=Backend.ONNX,
         file_map=FileMap({"selected_tags.csv": tags}),
-        source=ModelSource.local(tmp_path),
+        source=f"local:{tmp_path}",
         auto_download=False,
-        character_mapping_path=character_mapping_path,
     )
     return session, backend
 
@@ -129,34 +127,15 @@ def test_infer_many_override_forces_sequential(tmp_path: Path) -> None:
     assert backend.calls == [1, 1]
 
 
-def test_infer_many_sequential_validates_params_once(tmp_path: Path) -> None:
+def test_infer_many_sequential_runs_for_all_inputs(tmp_path: Path) -> None:
     session, _ = _build_session(tmp_path, providers=["CPUExecutionProvider"])
-
-    validate_calls = 0
-    original_validate = session.plugin.param_schema.validate
-
-    def _counting_validate(user_params: dict[str, object]) -> dict[str, object]:
-        nonlocal validate_calls
-        validate_calls += 1
-        return original_validate(user_params)
-
-    session.plugin.param_schema.validate = _counting_validate  # type: ignore[method-assign]
-
     results = session.infer_many(
         _test_images(),
         batch_size=2,
         batch_method="sequential",
-        params={
-            "general_threshold": 0.5,
-            "character_threshold": 0.8,
-            "return_all_scores": False,
-            "return_character_mapping": False,
-            "clean_tags": False,
-        },
     )
 
     assert len(results) == 2
-    assert validate_calls == 1
 
 
 def test_true_batch_preprocesses_per_chunk_not_whole_input(tmp_path: Path) -> None:
@@ -188,19 +167,14 @@ def test_true_batch_preprocesses_per_chunk_not_whole_input(tmp_path: Path) -> No
 def test_result_pipeline_applies_character_mapping_from_csv(tmp_path: Path) -> None:
     mapping_path = tmp_path / "char_ip_map.csv"
     mapping_path.write_text(
-        "name,ips\n" 'miku_hatsune,"[""vocaloid"", ""crypton""]"\n',
+        'name,ips\nmiku_hatsune,"[""vocaloid"", ""crypton""]"\n',
         encoding="utf-8",
     )
 
     session, _ = _build_session(tmp_path)
     result = session.infer(
         _test_images()[0],
-        params={
-            "general_threshold": 0.5,
-            "character_threshold": 0.8,
-            "return_all_scores": False,
-            "return_character_mapping": True,
-        },
+        processors=[CharacterIPMapping()],
     )
 
     assert isinstance(result, TagResult)
@@ -214,18 +188,10 @@ def test_result_pipeline_applies_character_mapping_from_manual_json_path(tmp_pat
         encoding="utf-8",
     )
 
-    session, _ = _build_session(
-        tmp_path,
-        character_mapping_path=str(manual_mapping),
-    )
+    session, _ = _build_session(tmp_path)
     result = session.infer(
         _test_images()[0],
-        params={
-            "general_threshold": 0.5,
-            "character_threshold": 0.8,
-            "return_all_scores": False,
-            "return_character_mapping": True,
-        },
+        processors=[CharacterIPMapping(mapping_file=manual_mapping)],
     )
 
     assert isinstance(result, TagResult)
@@ -236,13 +202,7 @@ def test_result_pipeline_optional_cleaning_preserves_kaomojis(tmp_path: Path) ->
     session, _ = _build_session(tmp_path)
     result = session.infer(
         _test_images()[0],
-        params={
-            "general_threshold": 0.0,
-            "character_threshold": 0.0,
-            "return_all_scores": True,
-            "return_character_mapping": False,
-            "clean_tags": True,
-        },
+        processors=[CleanTags()],
     )
 
     assert isinstance(result, TagResult)
@@ -250,8 +210,7 @@ def test_result_pipeline_optional_cleaning_preserves_kaomojis(tmp_path: Path) ->
     assert "blue hair" in names
     assert "miku hatsune" in names
     assert "^_^" in names
-    assert result.all_scores is not None
-    assert any(entry.tag == "cat ears" for entry in result.all_scores)
+    assert any(entry.tag == "cat ears" for entry in result.general)
 
 
 def test_result_pipeline_mapping_and_cleaning_can_run_together(tmp_path: Path) -> None:
@@ -261,23 +220,32 @@ def test_result_pipeline_mapping_and_cleaning_can_run_together(tmp_path: Path) -
         encoding="utf-8",
     )
 
-    session, _ = _build_session(
-        tmp_path,
-        character_mapping_path=str(manual_mapping),
-    )
+    session, _ = _build_session(tmp_path)
     result = session.infer(
         _test_images()[0],
-        params={
-            "general_threshold": 0.5,
-            "character_threshold": 0.8,
-            "return_all_scores": False,
-            "return_character_mapping": True,
-            "clean_tags": True,
-        },
+        processors=[CharacterIPMapping(mapping_file=manual_mapping), CleanTags()],
     )
 
     assert isinstance(result, TagResult)
     assert result.character_mapping == {"miku hatsune": ["vocaloid ip", "crypton"]}
+
+
+def test_unsupported_processor_logs_warning_but_still_applies(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    class _UnsupportedMarker(ResultProcessor):
+        pass
+
+    class _NoOpProcessor(_UnsupportedMarker):
+        def process(self, result, *, context):
+            del context
+            return result
+
+    session, _ = _build_session(tmp_path)
+
+    with caplog.at_level("WARNING"):
+        result = session.infer(_test_images()[0], processors=[_NoOpProcessor()])
+
+    assert isinstance(result, TagResult)
+    assert "not declared as supported" in caplog.text
 
 
 def test_session_close_prevents_new_inference(tmp_path: Path) -> None:

@@ -37,39 +37,49 @@ class TagEntry:
 @dataclass
 class TagResult:
     """
-    Result from a tagger model.
+    Base result type for tagger models with named score categories.
 
-    Attributes:
-        tags:               Tags that passed the threshold, ordered by score desc.
-        all_scores:         Every tag with its raw score. None if not requested.
-        character_mapping:  Optional copyright mapping (e.g. PixAI char→IP map).
-                            Keys are character tags that were predicted; values are
-                            the associated copyright/IP tags.
+    Concrete tagger results should subclass this and expose explicit fields for
+    each category (for example: rating/general/character).
     """
 
-    output_type: Literal[OutputType.TAGS] = OutputType.TAGS
-    tags: list[TagEntry] = field(default_factory=list)
-    all_scores: list[TagEntry] | None = None
+    output_type: Literal[OutputType.TAGS] = field(default=OutputType.TAGS, init=False)
     character_mapping: dict[str, list[str]] | None = None
 
+    def categories(self) -> dict[str, list[TagEntry]]:
+        """Return category name -> entries for this result."""
+        raise NotImplementedError("TagResult subclasses must implement categories().")
+
+    def category(self, name: str) -> list[TagEntry]:
+        """Return one category by name, or an empty list if missing."""
+        return self.categories().get(name, [])
+
     def tag_names(self) -> list[str]:
-        """Convenience: just the tag strings, no scores."""
-        return [t.tag for t in self.tags]
+        """Convenience: flattened tag names from all categories."""
+        names: list[str] = []
+        for entries in self.categories().values():
+            names.extend(entry.tag for entry in entries)
+        return names
 
     def as_score_dict(self) -> dict[str, float]:
-        """Convenience: {tag: score} for all predicted tags."""
-        return {t.tag: t.score for t in self.tags}
+        """Convenience: {tag: score} for all tags in all categories."""
+        scores: dict[str, float] = {}
+        for entries in self.categories().values():
+            for entry in entries:
+                scores[entry.tag] = entry.score
+        return scores
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["output_type"] = self.output_type.value
-        d["tags"] = [t.to_dict() for t in self.tags]
-        if self.all_scores is not None:
-            d["all_scores"] = [t.to_dict() for t in self.all_scores]
-        else:
-            d.pop("all_scores", None)
+        d: dict[str, Any] = {
+            "output_type": self.output_type.value,
+        }
+        for category, entries in self.categories().items():
+            d[category] = [entry.to_dict() for entry in entries]
         if self.character_mapping is None:
-            d.pop("character_mapping", None)
+            return d
+        d["character_mapping"] = {
+            key: [str(value) for value in values] for key, values in self.character_mapping.items()
+        }
         return d
 
 

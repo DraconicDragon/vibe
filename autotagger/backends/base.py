@@ -3,7 +3,6 @@ ModelPlugin — the abstract base class every plugin must implement.
 
 A plugin is responsible for:
   - declaring what files it needs (required_files)
-  - declaring what parameters it accepts (param_schema)
   - preprocessing an image into a tensor/array
   - postprocessing raw model output into a typed result
   - optionally loading ancillary files (tag lists, mappings, etc.)
@@ -20,11 +19,10 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from autotagger.params import EMPTY_SCHEMA, ParamSchema
 from autotagger.results import InferenceResult, OutputType
 
 if TYPE_CHECKING:
-    import numpy as np
+    from autotagger.result_processors import ResultProcessor
 
 
 # region File Spec
@@ -102,8 +100,8 @@ class ModelPlugin(abc.ABC):
         None means there is no canonical upstream repo.
     supported_backends : list[Backend]
         Which inference backends this plugin supports.
-    param_schema : ParamSchema
-        Parameters the plugin accepts at inference time.
+    supported_processors : list[type[ResultProcessor]]
+        Optional result processors this plugin is designed to work with.
     display_name : str
         Human-readable name for GUIs and listings.
     description : str
@@ -117,7 +115,7 @@ class ModelPlugin(abc.ABC):
     required_files: list[FileSpec] = []
     default_hf_repo: str | None = None
     supported_backends: list[Backend] = [Backend.PYTORCH, Backend.ONNX]
-    param_schema: ParamSchema = EMPTY_SCHEMA
+    supported_processors: list[type["ResultProcessor"]] = []
     display_name: str = ""
     description: str = ""
 
@@ -172,13 +170,12 @@ class ModelPlugin(abc.ABC):
     def postprocess(
         self,
         raw_output: Any,
-        params: dict[str, Any],
     ) -> InferenceResult:
         """
         Convert raw model output into a typed result.
 
         raw_output is whatever the model/backend returns (torch.Tensor,
-        numpy ndarray, etc.). params is the validated InferParams dict.
+        numpy ndarray, etc.).
         """
 
     # --- Optional hooks ---
@@ -216,8 +213,8 @@ class ModelPlugin(abc.ABC):
             "output_type": cls.output_type.value,
             "default_hf_repo": cls.default_hf_repo,
             "supported_backends": [b.value for b in cls.supported_backends],
+            "supported_processors": [processor.__name__ for processor in cls.supported_processors],
             "required_files": [f.to_dict() for f in cls.required_files],
-            "param_schema": cls.param_schema.to_list(),
         }
 
 

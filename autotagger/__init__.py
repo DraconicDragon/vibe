@@ -8,14 +8,14 @@ Quick start
     # Load a registered model (downloads from HF automatically)
     session = autotagger.load("wd-eva02-large")
     result = session.infer(image)
-    print(result.tag_names())
+    print(result.general[:5])
 
     # Use a local folder instead of HF
     session = autotagger.load("wd-eva02-large", source="local:/path/to/folder")
 
-    # Advanced: arbitrary HF repo with a chosen plugin
-    session = autotagger.load_advanced(
-        hf_repo="SmilingWolf/wd-eva02-large-tagger-v3-updated",
+    # Custom: arbitrary source with a chosen plugin
+    session = autotagger.load_custom(
+        source="hf:SmilingWolf/wd-eva02-large-tagger-v3-updated",
         plugin="WDEva02Plugin",
     )
 
@@ -34,14 +34,13 @@ from autotagger.hf_downloader import (
     get_auto_download_default,
     set_auto_download_default,
 )
-from autotagger.loader import ModelSource
 from autotagger.memory_stats import (
     InferenceMemoryRecord,
     MemorySnapshot,
     MemoryTrackerStats,
 )
-from autotagger.params import EMPTY_SCHEMA, ParamDef, ParamSchema
 from autotagger.registry import ModelRegistry, RegistryError, _make_auto_register_hook
+from autotagger.result_processors import CharacterIPMapping, CleanTags, ResultProcessor
 from autotagger.results import (
     InferenceResult,
     MultiScoreResult,
@@ -75,10 +74,6 @@ ModelPlugin.__init_subclass__ = classmethod(_patched_init_subclass)  # type: ign
 # Discover and register all built-in plugins
 registry.discover_all()
 
-# Import optional typed helpers after discovery so plugin auto-registration
-# has already happened.
-from autotagger.plugins.wd_tagger import WDTaggerParams, wd_tagger_params  # noqa: E402
-
 # endregion Global Registry
 
 
@@ -88,14 +83,13 @@ from autotagger.plugins.wd_tagger import WDTaggerParams, wd_tagger_params  # noq
 def load(
     model: str,
     *,
-    source: str | ModelSource | None = None,
+    source: str | None = None,
     backend: str | Backend | None = None,
     device: str = "cpu",
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
     onnx_providers: list[str] | None = None,
     auto_download: bool | None = None,
-    character_mapping_path: str | None = None,
     memory_tracking: bool = True,
 ) -> ModelSession:
     """
@@ -104,13 +98,16 @@ def load(
     Args:
         model:          Model ID or alias (e.g. "wd-eva02-large", "eva02").
                         Run autotagger.list_models() to see all options.
-        source:         Where to load files from. Options:
+                        # todo: check if doc gen will set optional by default through type hints or if i should put it in docstring explicitly, or maybe just in general
+        source:         Optional. Where to load files from. String options:
                           - None (default): use the plugin's default HF repo.
-                          - A ModelSource object.
-                          - A string shorthand:
+                          - Prefix forms (strict mode):
                               "local:/path/to/folder"
                               "hf:owner/repo-name"
                               "hf_cache:/path/to/snapshot"
+                          - Unprefixed (auto mode):
+                              first tries local folder when it exists,
+                              then tries HF repo/cache/download.
         backend:        "pytorch" or "onnx". None = auto-detect.
         device:         Logical device selector. For ONNX it guides provider
             auto-selection (e.g. "cpu", "gpu", "gpu:1", "cuda:0").
@@ -121,7 +118,6 @@ def load(
         onnx_providers: Override ONNX execution providers.
         auto_download: Per-session download policy. None uses global default.
                    False uses only local/cached files; no downloads.
-        character_mapping_path: Optional explicit character-IP mapping file.
         memory_tracking: Enable per-call memory telemetry inside this session.
 
     Returns:
@@ -137,9 +133,6 @@ def load(
     resolved_source = _resolve_source(
         source,
         plugin_cls,
-        hf_revision=hf_revision,
-        hf_cache_dir=hf_cache_dir,
-        auto_download=effective_auto_download,
     )
 
     return build_session(
@@ -148,16 +141,16 @@ def load(
         backend=backend,
         device=device,
         onnx_providers=onnx_providers,
+        hf_revision=hf_revision,
+        hf_cache_dir=hf_cache_dir,
         auto_download=effective_auto_download,
-        character_mapping_path=character_mapping_path,
         memory_tracking=memory_tracking,
     )
 
 
-def load_advanced(
+def load_custom(
     *,
-    hf_repo: str | None = None,
-    local_folder: str | None = None,
+    source: str | None = None,
     plugin: str,
     backend: str | Backend | None = None,
     device: str = "cpu",
@@ -165,61 +158,53 @@ def load_advanced(
     hf_cache_dir: str | None = None,
     onnx_providers: list[str] | None = None,
     auto_download: bool | None = None,
-    character_mapping_path: str | None = None,
     memory_tracking: bool = True,
 ) -> ModelSession:
     """
-    Load an arbitrary model by specifying the plugin class to use explicitly.
+    Load a model by specifying the plugin class explicitly.
 
-    This is the power-user path: point at any HF repo or local folder and
-    tell autotagger which plugin's inference code to use. Useful when:
+    This is the power-user path: point at any source and tell autotagger
+    which plugin's inference code to use. Useful when:
       - A new model was released that isn't registered yet.
       - You want to use a fine-tune with the same architecture as a known plugin.
 
-    Exactly one of hf_repo or local_folder must be provided.
-
     Args:
-        hf_repo:        HuggingFace repo ID.
-        local_folder:   Path to a local folder.
+        source:         Where to load files from. Same rules as load():
+                          - None (default): use the plugin's default HF repo.
+                          - Prefix forms (strict mode):
+                              "local:/path/to/folder"
+                              "hf:owner/repo-name"
+                              "hf_cache:/path/to/snapshot"
+                          - Unprefixed (auto mode):
+                              first tries local folder when it exists,
+                              then tries HF repo/cache/download.
         plugin:         Plugin class name (e.g. "WDEva02Plugin").
-                        Run autotagger.list_plugin_classes() to see options.
+                        Run autotagger.list_plugin_classes() to see all options.
         backend, device, hf_revision, hf_cache_dir, onnx_providers:
                         Same as load().
 
     Example:
-        session = autotagger.load_advanced(
-            hf_repo="SmilingWolf/wd-eva02-large-tagger-v3-updated",
+        session = autotagger.load_custom(
+            source="hf:SmilingWolf/wd-eva02-large-tagger-v3-updated",
             plugin="WDEva02Plugin",
         )
     """
-    if hf_repo and local_folder:
-        raise ValueError("Provide either hf_repo or local_folder, not both.")
-    if not hf_repo and not local_folder:
-        raise ValueError("Provide one of: hf_repo, local_folder.")
-
     plugin_cls = registry.get_by_class_name(plugin)
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
-
-    if hf_repo:
-        source = ModelSource.hf(
-            hf_repo,
-            revision=hf_revision,
-            cache_dir=hf_cache_dir,
-            allow_download=effective_auto_download,
-        )
-    else:
-        if local_folder is None:
-            raise ValueError("Provide local_folder when hf_repo is not set.")
-        source = ModelSource.local(local_folder)
+    resolved_source = _resolve_source(
+        source,
+        plugin_cls,
+    )
 
     return build_session(
         plugin_cls=plugin_cls,
-        source=source,
+        source=resolved_source,
         backend=backend,
         device=device,
         onnx_providers=onnx_providers,
+        hf_revision=hf_revision,
+        hf_cache_dir=hf_cache_dir,
         auto_download=effective_auto_download,
-        character_mapping_path=character_mapping_path,
         memory_tracking=memory_tracking,
     )
 
@@ -230,7 +215,7 @@ def list_models() -> list[str]:
 
 
 def list_plugin_classes() -> list[str]:
-    """Return the class names of all registered plugins (for load_advanced)."""
+    """Return the class names of all registered plugins (for load_custom)."""
     return registry.list_plugin_classes()
 
 
@@ -251,57 +236,22 @@ def describe_all() -> list[dict[str, Any]]:
 
 
 def _resolve_source(
-    source: str | ModelSource | None,
+    source: str | None,
     plugin_cls: type[ModelPlugin],
-    hf_revision: str | None,
-    hf_cache_dir: str | None,
-    auto_download: bool,
-) -> ModelSource:
+) -> str:
     if source is None:
-        # Use plugin's default HF repo
         if plugin_cls.default_hf_repo is None:
             raise SessionError(
                 f"Model '{plugin_cls.model_id}' has no default HF repo. "
                 f"Provide a source explicitly: "
                 f"autotagger.load('{plugin_cls.model_id}', source=...)"
             )
-        return ModelSource.hf(
-            plugin_cls.default_hf_repo,
-            revision=hf_revision,
-            cache_dir=hf_cache_dir,
-            allow_download=auto_download,
-        )
+        return f"hf:{plugin_cls.default_hf_repo}"
 
-    if isinstance(source, ModelSource):
-        return source
-
-    # String shorthand parsing
-    if isinstance(source, str):
-        if source.startswith("hf:"):
-            repo = source[3:]
-            return ModelSource.hf(
-                repo,
-                revision=hf_revision,
-                cache_dir=hf_cache_dir,
-                allow_download=auto_download,
-            )
-        elif source.startswith("local:"):
-            folder = source[6:]
-            return ModelSource.local(folder)
-        elif source.startswith("hf_cache:"):
-            path = source[9:]
-            return ModelSource.hf_cache(path)
-        else:
-            # Assume it's a local path if it looks like one
-            from pathlib import Path
-
-            if Path(source).exists():
-                return ModelSource.local(source)
-            raise SessionError(
-                f"Cannot parse source string '{source}'. Use 'hf:owner/repo', 'local:/path', or 'hf_cache:/path'."
-            )
-
-    raise SessionError(f"Invalid source type: {type(source)}")
+    normalized = source.strip()
+    if not normalized:
+        raise SessionError("Source cannot be empty.")
+    return normalized
 
 
 # endregion Helpers
@@ -314,16 +264,9 @@ __all__ = [
     # Core objects
     "ModelSession",
     "ModelPlugin",
-    "ModelSource",
     "FileSpec",
     "FileRole",
     "Backend",
-    # Params
-    "ParamDef",
-    "ParamSchema",
-    "EMPTY_SCHEMA",
-    "WDTaggerParams",
-    "wd_tagger_params",
     "MemorySnapshot",
     "InferenceMemoryRecord",
     "MemoryTrackerStats",
@@ -337,13 +280,17 @@ __all__ = [
     "is_tag_result",
     "is_score_result",
     "is_multi_score_result",
+    # Processors
+    "ResultProcessor",
+    "CleanTags",
+    "CharacterIPMapping",
     # Registry
     "registry",
     "RegistryError",
     "SessionError",
     # API
     "load",
-    "load_advanced",
+    "load_custom",
     "list_models",
     "list_available_devices",
     "list_plugin_classes",

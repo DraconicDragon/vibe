@@ -13,7 +13,6 @@ import numpy as np
 from PIL import Image
 
 import autotagger
-from autotagger.loader import ModelSource
 from autotagger.session import build_session
 
 
@@ -91,13 +90,13 @@ def _configure_logging(level: str) -> None:
     logging.getLogger("autotagger.session").setLevel(resolved_level)
 
 
-def _prepare_temp_source(root: Path) -> ModelSource:
+def _prepare_temp_source(root: Path) -> str:
     (root / "model.onnx").write_bytes(b"fake")
     (root / "selected_tags.csv").write_text(
-        "name,category\n" "blue_hair,0\n" "cat_ears,0\n" "miku_hatsune,4\n" "safe,9\n",
+        "name,category\nblue_hair,0\ncat_ears,0\nmiku_hatsune,4\nsafe,9\n",
         encoding="utf-8",
     )
-    return ModelSource.local(root)
+    return f"local:{root}"
 
 
 def _default_real_model_dirs() -> list[Path]:
@@ -206,7 +205,7 @@ def _phase_summary(
 def _run_phase(
     *,
     phase_name: str,
-    source: ModelSource,
+    source: str,
     iterations: int,
     infer_per_session: int,
     report_every: int,
@@ -381,7 +380,7 @@ def main() -> int:
             notes.extend(provider_notes)
             summary, _ = _run_phase(
                 phase_name="SOAK-REAL",
-                source=ModelSource.local(real_model_dir),
+                source=f"local:{real_model_dir}",
                 iterations=args.iterations,
                 infer_per_session=args.infer_per_session,
                 report_every=args.report_every,
