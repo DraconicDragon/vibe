@@ -31,7 +31,7 @@ def print_pytorch_info() -> None:
 
 
 def print_onnxruntime_info() -> None:
-    # todo: shows azure EP? what
+    # NOTE: if it shows azure ep + cpu ep then its cpu only, azure ep is remote
     """Print ONNX Runtime providers (if installed)."""
     try:
         import onnxruntime as ort

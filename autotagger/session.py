@@ -90,9 +90,8 @@ class ModelSession:
             TagCleaningProcessor(),
         ]
 
-    # ------------------------------------------------------------------
-    # Primary interface
-    # ------------------------------------------------------------------
+    # region Primary Interface
+
 
     def infer(
         self,
@@ -299,9 +298,9 @@ class ModelSession:
             )
         return current
 
-    # ------------------------------------------------------------------
-    # Introspection
-    # ------------------------------------------------------------------
+# endregion Primary Interface
+
+    # region Introspection
 
     @property
     def model_id(self) -> str:
