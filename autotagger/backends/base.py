@@ -178,15 +178,6 @@ class ModelPlugin(abc.ABC):
         numpy ndarray, etc.).
         """
 
-    # --- Optional hooks ---
-
-    def get_input_name(self) -> str | None:
-        """
-        For ONNX models: return the name of the input node.
-        Return None to let the runtime auto-detect it.
-        """
-        return None
-
     # --- Introspection helpers ---
 
     @classmethod

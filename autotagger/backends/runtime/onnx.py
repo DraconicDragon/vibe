@@ -345,10 +345,6 @@ class ONNXBackend:
     def provider_options(self) -> list[dict[str, Any]]:
         return list(self._provider_options)
 
-    @property
-    def input_name(self) -> str:
-        return self._input_name
-
     def supports_true_batching(self) -> bool:
         """True batching is generally useful when a non-CPU provider is active."""
         return any(provider != "CPUExecutionProvider" for provider in self._providers)
