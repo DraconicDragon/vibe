@@ -85,12 +85,82 @@ def _test_images() -> list[Image.Image]:
     ]
 
 
+def _write_test_image(path: Path, color: tuple[int, int, int]) -> None:
+    Image.new("RGB", (16, 16), color).save(path)
+
+
+def test_infer_accepts_single_path_and_auto_ref_index(tmp_path: Path) -> None:
+    session, _ = _build_session(tmp_path)
+    img_path = tmp_path / "one.png"
+    _write_test_image(img_path, (255, 0, 0))
+
+    output = session.infer(str(img_path))
+
+    assert output.total_inputs == 1
+    assert len(output.items) == 1
+    assert output.items[0].index == 0
+    assert output.items[0].input_ref == 0
+    assert isinstance(output.first(), TagResult)
+
+
+def test_infer_accepts_list_of_paths_with_positional_refs(tmp_path: Path) -> None:
+    session, _ = _build_session(tmp_path)
+    first = tmp_path / "a.png"
+    second = tmp_path / "b.png"
+    _write_test_image(first, (255, 0, 0))
+    _write_test_image(second, (0, 255, 0))
+
+    output = session.infer([str(first), str(second)])
+
+    assert output.total_inputs == 2
+    assert [item.index for item in output.items] == [0, 1]
+    assert [item.input_ref for item in output.items] == [0, 1]
+
+
+def test_infer_accepts_explicit_tuple_refs(tmp_path: Path) -> None:
+    session, _ = _build_session(tmp_path)
+    first = tmp_path / "a.png"
+    second = tmp_path / "b.png"
+    _write_test_image(first, (255, 0, 0))
+    _write_test_image(second, (0, 255, 0))
+
+    output = session.infer([(str(first), "img-a"), (str(second), "img-b")])
+
+    assert output.total_inputs == 2
+    assert [item.index for item in output.items] == [0, 1]
+    assert [item.input_ref for item in output.items] == ["img-a", "img-b"]
+
+
+def test_infer_rejects_mixed_tuple_and_non_tuple_inputs(tmp_path: Path) -> None:
+    session, _ = _build_session(tmp_path)
+
+    with pytest.raises(Exception, match="Mixed input formats"):
+        session.infer([_test_images()[0], (_test_images()[1], "img-b")])
+
+
+def test_infer_rejects_duplicate_explicit_refs(tmp_path: Path) -> None:
+    session, _ = _build_session(tmp_path)
+
+    with pytest.raises(Exception, match="Duplicate refs"):
+        session.infer([(_test_images()[0], "dup"), (_test_images()[1], "dup")])
+
+
+def test_infer_allows_duplicate_path_inputs(tmp_path: Path) -> None:
+    session, _ = _build_session(tmp_path)
+    img_path = tmp_path / "dup.png"
+    _write_test_image(img_path, (255, 0, 0))
+
+    output = session.infer([str(img_path), str(img_path)])
+
+    assert output.total_inputs == 2
+
+
 def test_infer_many_auto_uses_sequential_on_cpu(tmp_path: Path) -> None:
     session, backend = _build_session(tmp_path, providers=["CPUExecutionProvider"])
-    results = session.infer_many(_test_images(), batch_size=2, batch_method="auto")
+    results = session.infer(_test_images(), batch_size=2, batch_method="auto")
 
     assert len(results) == 2
-    assert all(isinstance(r, TagResult) for r in results)
+    assert all(isinstance(item.result, TagResult) for item in results)
     assert backend.calls == [1, 1]
 
 
@@ -99,7 +169,7 @@ def test_infer_many_auto_uses_true_batch_on_gpu_provider(tmp_path: Path) -> None
         tmp_path,
         providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
-    results = session.infer_many(_test_images(), batch_size=2, batch_method="auto")
+    results = session.infer(_test_images(), batch_size=2, batch_method="auto")
 
     assert len(results) == 2
     assert backend.calls == [2]
@@ -110,7 +180,7 @@ def test_infer_many_auto_uses_true_batch_on_any_non_cpu_provider(tmp_path: Path)
         tmp_path,
         providers=["OpenVINOExecutionProvider", "CPUExecutionProvider"],
     )
-    results = session.infer_many(_test_images(), batch_size=2, batch_method="auto")
+    results = session.infer(_test_images(), batch_size=2, batch_method="auto")
 
     assert len(results) == 2
     assert backend.calls == [2]
@@ -121,7 +191,7 @@ def test_infer_many_override_forces_sequential(tmp_path: Path) -> None:
         tmp_path,
         providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
-    results = session.infer_many(_test_images(), batch_size=2, batch_method="sequential")
+    results = session.infer(_test_images(), batch_size=2, batch_method="sequential")
 
     assert len(results) == 2
     assert backend.calls == [1, 1]
@@ -129,7 +199,7 @@ def test_infer_many_override_forces_sequential(tmp_path: Path) -> None:
 
 def test_infer_many_sequential_runs_for_all_inputs(tmp_path: Path) -> None:
     session, _ = _build_session(tmp_path, providers=["CPUExecutionProvider"])
-    results = session.infer_many(
+    results = session.infer(
         _test_images(),
         batch_size=2,
         batch_method="sequential",
@@ -159,7 +229,7 @@ def test_true_batch_preprocesses_per_chunk_not_whole_input(tmp_path: Path) -> No
 
     images = _test_images() + [Image.new("RGB", (16, 16), (0, 0, 255))]
     with pytest.raises(Exception):
-        session.infer_many(images, batch_size=2, batch_method="true")
+        session.infer(images, batch_size=2, batch_method="true")
 
     assert backend.calls == [2]
 
@@ -172,9 +242,13 @@ def test_result_pipeline_applies_character_mapping_from_csv(tmp_path: Path) -> N
     )
 
     session, _ = _build_session(tmp_path)
-    result = session.infer(
-        _test_images()[0],
-        processors=[CharacterIPMapping()],
+    result = (
+        session.infer(
+            _test_images()[0],
+            processors=[CharacterIPMapping()],
+        )
+        .items[0]
+        .result
     )
 
     assert isinstance(result, TagResult)
@@ -189,9 +263,13 @@ def test_result_pipeline_applies_character_mapping_from_manual_json_path(tmp_pat
     )
 
     session, _ = _build_session(tmp_path)
-    result = session.infer(
-        _test_images()[0],
-        processors=[CharacterIPMapping(mapping_file=manual_mapping)],
+    result = (
+        session.infer(
+            _test_images()[0],
+            processors=[CharacterIPMapping(mapping_file=manual_mapping)],
+        )
+        .items[0]
+        .result
     )
 
     assert isinstance(result, TagResult)
@@ -200,9 +278,13 @@ def test_result_pipeline_applies_character_mapping_from_manual_json_path(tmp_pat
 
 def test_result_pipeline_optional_cleaning_preserves_kaomojis(tmp_path: Path) -> None:
     session, _ = _build_session(tmp_path)
-    result = session.infer(
-        _test_images()[0],
-        processors=[CleanTags()],
+    result = (
+        session.infer(
+            _test_images()[0],
+            processors=[CleanTags()],
+        )
+        .items[0]
+        .result
     )
 
     assert isinstance(result, TagResult)
@@ -210,7 +292,15 @@ def test_result_pipeline_optional_cleaning_preserves_kaomojis(tmp_path: Path) ->
     assert "blue hair" in names
     assert "miku hatsune" in names
     assert "^_^" in names
-    assert any(entry.tag == "cat ears" for entry in result.general)
+    assert any(entry.tag == "cat ears" for entry in result.category("general"))
+
+
+def test_as_score_dict_is_sorted_descending_by_default(tmp_path: Path) -> None:
+    session, _ = _build_session(tmp_path)
+    result = session.infer(_test_images()[0]).items[0].result
+
+    scores = list(result.as_score_dict().values())
+    assert scores == sorted(scores, reverse=True)
 
 
 def test_result_pipeline_mapping_and_cleaning_can_run_together(tmp_path: Path) -> None:
@@ -221,9 +311,13 @@ def test_result_pipeline_mapping_and_cleaning_can_run_together(tmp_path: Path) -
     )
 
     session, _ = _build_session(tmp_path)
-    result = session.infer(
-        _test_images()[0],
-        processors=[CharacterIPMapping(mapping_file=manual_mapping), CleanTags()],
+    result = (
+        session.infer(
+            _test_images()[0],
+            processors=[CharacterIPMapping(mapping_file=manual_mapping), CleanTags()],
+        )
+        .items[0]
+        .result
     )
 
     assert isinstance(result, TagResult)
@@ -242,7 +336,7 @@ def test_unsupported_processor_logs_warning_but_still_applies(tmp_path: Path, ca
     session, _ = _build_session(tmp_path)
 
     with caplog.at_level("WARNING"):
-        result = session.infer(_test_images()[0], processors=[_NoOpProcessor()])
+        result = session.infer(_test_images()[0], processors=[_NoOpProcessor()]).items[0].result
 
     assert isinstance(result, TagResult)
     assert "not declared as supported" in caplog.text
@@ -294,11 +388,11 @@ def test_real_world_smoke_batch_modes() -> None:
     )
 
     # One-by-one method
-    sequential_results = session.infer_many(images, batch_size=1, batch_method="sequential")
+    sequential_results = session.infer(images, batch_size=1, batch_method="sequential")
     assert len(sequential_results) == len(images)
 
     # True batching method
-    true_batch_results = session.infer_many(
+    true_batch_results = session.infer(
         images,
         batch_size=max(2, len(images)),
         batch_method="true",

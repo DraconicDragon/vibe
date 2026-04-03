@@ -19,7 +19,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from autotagger.results import InferenceResult, OutputType
+from autotagger.results import ModelResult, OutputType
 
 if TYPE_CHECKING:
     from autotagger.result_processors import ResultProcessor
@@ -170,7 +170,7 @@ class ModelPlugin(abc.ABC):
     def postprocess(
         self,
         raw_output: Any,
-    ) -> InferenceResult:
+    ) -> ModelResult:
         """
         Convert raw model output into a typed result.
 

@@ -40,10 +40,11 @@ def test_real_world_library_flow_with_processors() -> None:
     )
 
     result = session.infer(images[0], processors=[CharacterIPMapping(), CleanTags()])
-    assert isinstance(result, TagResult)
-    assert isinstance(result.to_dict(), dict)
+    single = result.items[0].result
+    assert isinstance(single, TagResult)
+    assert isinstance(single.to_dict(), dict)
 
-    batch_results = session.infer_many(
+    batch_results = session.infer(
         images,
         processors=[CharacterIPMapping(), CleanTags()],
         batch_size=max(1, len(images)),

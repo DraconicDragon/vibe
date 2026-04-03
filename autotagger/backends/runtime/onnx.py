@@ -264,7 +264,6 @@ class ONNXBackend:
         self,
         weights_path: Path,
         providers: list[str] | None = None,
-        input_name: str | None = None,
         device: str = "cpu",
     ) -> None:
         """
@@ -272,8 +271,6 @@ class ONNXBackend:
 
         providers:   Override the provider list.
                  If omitted, resolves from env and device preference.
-        input_name:  Override the input tensor name.
-                     Default: auto-detect from the session.
         device:      Logical device selector for auto-provider selection
                  (e.g. "cpu", "gpu", "gpu1", "cuda:0"). 'cuda' and 'gpu' are interchangeable.
         """
@@ -301,11 +298,7 @@ class ONNXBackend:
             providers=resolved_providers,
             provider_options=resolved_provider_options,
         )
-
-        if input_name:
-            self._input_name = input_name
-        else:
-            self._input_name = self._session.get_inputs()[0].name
+        self._input_name = self._session.get_inputs()[0].name
 
     def run(self, array: np.ndarray) -> np.ndarray:
         """
@@ -355,6 +348,10 @@ class ONNXBackend:
     @property
     def input_name(self) -> str:
         return self._input_name
+
+    def supports_true_batching(self) -> bool:
+        """True batching is generally useful when a non-CPU provider is active."""
+        return any(provider != "CPUExecutionProvider" for provider in self._providers)
 
 
 # endregion ONNXBackend

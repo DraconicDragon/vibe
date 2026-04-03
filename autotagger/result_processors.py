@@ -10,7 +10,7 @@ from autotagger.backends.char_ip_mapping import (
     resolve_character_ip_mapping,
 )
 from autotagger.loader import FileMap
-from autotagger.results import InferenceResult, TagEntry, TagResult
+from autotagger.results import ModelResult, TagEntry, TagResult
 
 KAOMOJIS = {
     "0_0",
@@ -47,10 +47,10 @@ class ResultProcessor:
 
     def process(
         self,
-        result: InferenceResult,
+        result: ModelResult,
         *,
         context: ResultProcessorContext,
-    ) -> InferenceResult:
+    ) -> ModelResult:
         del context
         return result
 
@@ -64,10 +64,10 @@ class CharacterIPMapping(ResultProcessor):
 
     def process(
         self,
-        result: InferenceResult,
+        result: ModelResult,
         *,
         context: ResultProcessorContext,
-    ) -> InferenceResult:
+    ) -> ModelResult:
         if not isinstance(result, TagResult):
             return result
 
@@ -115,10 +115,10 @@ class CleanTags(ResultProcessor):
 
     def process(
         self,
-        result: InferenceResult,
+        result: ModelResult,
         *,
         context: ResultProcessorContext,
-    ) -> InferenceResult:
+    ) -> ModelResult:
         del context
         if not isinstance(result, TagResult):
             return result

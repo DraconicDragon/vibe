@@ -25,9 +25,23 @@ from autotagger.hf_downloader import get_auto_download_default
 from autotagger.loader import FileMap, resolve_from_source_string
 from autotagger.memory_stats import MemoryTracker
 from autotagger.result_processors import ResultProcessor, ResultProcessorContext
-from autotagger.results import InferenceResult
+from autotagger.results import InferenceResult, InferenceResultItem, ModelResult
 
 logger = logging.getLogger(__name__)
+
+# Log pillow_jxl availability at module load time for diagnostics
+_has_pillow_jxl: bool
+try:
+    import pillow_jxl as _pjxl  # noqa: F401
+
+    _has_pillow_jxl = True
+except ImportError:
+    _has_pillow_jxl = False
+    logger.info(
+        "pillow-jxl-plugin not installed; JPEG XL image format support is unavailable. "
+        "Install 'pillow-jxl-plugin' package to enable JPEG XL support, e.g.: pip install pillow-jxl-plugin"
+    )
+    logger.debug("pillow-jxl-plugin import failed; JPEG XL support unavailable.", exc_info=True)
 
 
 _BACKEND_POOL_LOCK = threading.RLock()
@@ -81,34 +95,172 @@ class ModelSession:
 
     def infer(
         self,
-        image: Any,
+        images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
         processors: list[ResultProcessor] | None = None,
+        *,
+        batch_size: int = 1,
+        batch_method: Literal["auto", "true", "sequential"] = "auto",
     ) -> InferenceResult:
         """
-        Run inference on an image.
+        Run inference on one image or many images.
 
         Args:
-            image:  A PIL.Image.Image, or a numpy array (H×W×C uint8).
+                images: A single image/path, list of images/paths, or list of
+                    (image_or_path, ref) tuples.
                     The plugin's preprocess() handles conversion.
             processors: Optional ordered list of result processor instances.
                         Processors run after model postprocess in the order given.
+            batch_size: Batch chunk size used when true batching is selected.
+            batch_method:
+              - "auto": choose by backend/device (GPU-like -> true batching | CPU -> sequential).
+              - "true": run stacked tensor batches when supported
+              - "sequential": process one image at a time, like batch_size = 1
+
+            CPU inference usually does not benefit from batch tensors and may be slower than simply batch size 1/sequential processing.
 
         Returns:
-            A TagResult, ScoreResult, or MultiScoreResult depending on the model.
+            InferenceResult with one item per input image.
+            For single image input this still returns batch shape with one item.
         """
-        return self._infer_validated(image, processors=processors)
+        if self._closed:
+            raise SessionError("Session is closed. Load a new session before inferring.")
+        if batch_size < 1:
+            raise SessionError("batch_size must be >= 1")
 
-    def _infer_validated(
+        values, refs = self._normalize_input_format(images)
+        normalized_images = self._load_images(values)
+        if not normalized_images:
+            return InferenceResult(total_inputs=0, items=[])
+
+        method = self._resolve_batch_method(batch_method, batch_size)
+        before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
+
+        if method == "sequential":
+            raw_results = [self._infer_single(image, processors=processors) for image in normalized_images]
+        else:
+            raw_results = self._infer_many_true_batch(
+                normalized_images,
+                batch_size,
+                processors=processors,
+                fallback_to_sequential_on_stack_error=(batch_method == "auto"),
+            )
+
+        memory_record = None
+        if before is not None:
+            after = self._memory_tracker.snapshot()
+            memory_record = self._memory_tracker.observe("infer", before, after)
+            logger.debug(
+                "Memory telemetry op=%s call=%s rss_delta=%s gpu_delta=%s",
+                memory_record.operation,
+                memory_record.index,
+                memory_record.delta_process_rss_bytes,
+                memory_record.delta_gpu_process_used_bytes,
+            )
+
+        # Input ordering is preserved end-to-end; each item's index/ref maps to
+        # the exact input position used for preprocess, forward, and postprocess.
+        items = [
+            InferenceResultItem(
+                index=index,
+                input_ref=refs[index],
+                result=result,
+            )
+            for index, result in enumerate(raw_results)
+        ]
+        return InferenceResult(
+            total_inputs=len(normalized_images),
+            items=items,
+            memory=memory_record.to_dict() if memory_record is not None else None,
+        )
+
+    def _normalize_input_format(
+        self,
+        images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
+    ) -> tuple[list[Any | str], list[Any]]:
+        entries = images if isinstance(images, list) else [images]
+        if not entries:
+            return [], []
+
+        has_tuple_items = any(isinstance(item, tuple) for item in entries)
+        all_tuple_items = all(isinstance(item, tuple) for item in entries)
+        if has_tuple_items and not all_tuple_items:
+            raise SessionError(
+                "Mixed input formats are not supported. Use either all bare images/paths or all (image_or_path, ref) tuples."
+            )
+
+        values: list[Any | str] = []
+        refs: list[Any] = []
+        if all_tuple_items:
+            for i, item in enumerate(entries):
+                if not isinstance(item, tuple) or len(item) != 2:
+                    raise SessionError(f"Tuple input at index {i} must be exactly (image_or_path, ref).")
+                value, ref = item
+                values.append(value)
+                refs.append(ref)
+            duplicates = self._find_duplicates(refs)
+            if duplicates:
+                duplicate_str = ", ".join(repr(value) for value in duplicates)
+                raise SessionError(f"Explicit refs must be unique. Duplicate refs: {duplicate_str}")
+        else:
+            values = list(entries)
+            refs = list(range(len(values)))
+
+        return values, refs
+
+    def _load_images(self, values: list[Any | str]) -> list[Any]:
+        normalized_images = [self._load_image_if_path(value, index=i) for i, value in enumerate(values)]
+        return normalized_images
+
+    def _find_duplicates(self, values: list[Any]) -> list[Any]:
+        seen_hashable: set[Any] = set()
+        seen_unhashable: list[Any] = []
+        duplicates: list[Any] = []
+        duplicates_set: set[Any] = set()  # fast membership check for hashable dupes
+
+        for value in values:
+            try:
+                is_seen = value in seen_hashable
+            except TypeError:
+                # Unhashable, fall back to linear scan
+                if any(value == existing for existing in seen_unhashable):
+                    if not any(value == existing for existing in duplicates):
+                        duplicates.append(value)
+                else:
+                    seen_unhashable.append(value)
+                continue
+
+            if is_seen:
+                if value not in duplicates_set:
+                    duplicates.append(value)
+                    duplicates_set.add(value)
+            else:
+                seen_hashable.add(value)
+
+        return duplicates
+
+    def _load_image_if_path(self, value: Any | str, *, index: int) -> Any:
+        if not isinstance(value, (str, Path)):
+            return value
+
+        from PIL import Image
+
+        path = Path(value)
+        try:
+            with Image.open(path) as img:
+                return img.copy()
+        except Exception as exc:
+            suffix = Path(path).suffix.lower()
+            hint = ""
+            if suffix == ".jxl" and not _has_pillow_jxl:
+                hint = " Install 'pillow-jxl-plugin' to enable JPEG XL support: pip install pillow-jxl-plugin"
+            raise SessionError(f"Failed to load image at index {index} from path '{path}': {exc}.{hint}") from exc
+
+    def _infer_single(
         self,
         image: Any,
         processors: list[ResultProcessor] | None = None,
-    ) -> InferenceResult:
+    ) -> ModelResult:
         """Run inference for one image."""
-        if self._closed:
-            raise SessionError("Session is closed. Load a new session before inferring.")
-
-        before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
-
         # Preprocess: image → tensor/array
         try:
             tensor = self._plugin.preprocess(image)
@@ -127,47 +279,7 @@ class ModelSession:
         except Exception as exc:
             raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
 
-        output = self._apply_processors(result, processors=processors)
-
-        if self._memory_tracker.enabled and before is not None:
-            after = self._memory_tracker.snapshot()
-            record = self._memory_tracker.observe("infer", before, after)
-            logger.debug(
-                "Memory telemetry op=%s call=%s rss_delta=%s gpu_delta=%s",
-                record.operation,
-                record.index,
-                record.delta_process_rss_bytes,
-                record.delta_gpu_process_used_bytes,
-            )
-
-        return output
-
-    def infer_many(
-        self,
-        images: list[Any],
-        processors: list[ResultProcessor] | None = None,
-        *,
-        batch_size: int = 1,
-        batch_method: Literal["auto", "true", "sequential"] = "auto",
-    ) -> list[InferenceResult]:
-        """
-        Run inference over multiple images.
-
-        batch_method:
-          - "auto": choose by backend/device
-          - "true": run stacked tensor batches when supported
-          - "sequential": process one image at a time
-        """
-        if batch_size < 1:
-            raise SessionError("batch_size must be >= 1")
-        if not images:
-            return []
-
-        method = self._resolve_batch_method(batch_method, batch_size)
-        if method == "sequential":
-            return [self._infer_validated(image, processors=processors) for image in images]
-
-        return self._infer_many_true_batch(images, batch_size, processors=processors)
+        return self._apply_processors(result, processors=processors)
 
     def _resolve_batch_method(
         self,
@@ -181,26 +293,34 @@ class ModelSession:
         if requested == "sequential":
             return "sequential"
 
-        # Auto strategy: true batching on GPU-like contexts, sequential on CPU.
+        if self._supports_true_batching():
+            return "true"
+        return "sequential"
+
+    def _supports_true_batching(self) -> bool:
+        supports_fn = getattr(self._backend_instance, "supports_true_batching", None)
+        if callable(supports_fn):
+            try:
+                return bool(supports_fn())
+            except Exception:
+                logger.exception("Backend supports_true_batching() failed; using conservative fallback.")
+
+        # Legacy fallback for third-party/custom backend instances.
         if self._backend == Backend.PYTORCH:
             device = str(getattr(self._backend_instance, "device", "cpu")).lower()
-            return "true" if device != "cpu" else "sequential"
+            return device != "cpu"
 
         providers = [str(p) for p in getattr(self._backend_instance, "providers", [])]
-        has_accelerator_provider = any(p.strip() and p.strip() != "CPUExecutionProvider" for p in providers)
-        return "true" if has_accelerator_provider else "sequential"
+        return any(p.strip() and p.strip() != "CPUExecutionProvider" for p in providers)
 
     def _infer_many_true_batch(
         self,
         images: list[Any],
         batch_size: int,
         processors: list[ResultProcessor] | None = None,
-    ) -> list[InferenceResult]:
-        if self._closed:
-            raise SessionError("Session is closed. Load a new session before inferring.")
-
-        before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
-        results: list[InferenceResult] = []
+        fallback_to_sequential_on_stack_error: bool = False,
+    ) -> list[ModelResult]:
+        results: list[ModelResult] = []
         for start in range(0, len(images), batch_size):
             raw_chunk = images[start : start + batch_size]
             try:
@@ -208,7 +328,24 @@ class ModelSession:
             except Exception as exc:
                 raise SessionError(f"Preprocessing failed for model '{self.model_id}': {exc}") from exc
 
-            batch_tensor = self._stack_batch(chunk)
+            try:
+                batch_tensor = self._stack_batch(chunk)
+            except SessionError:
+                if fallback_to_sequential_on_stack_error:
+                    for tensor in chunk:
+                        try:
+                            raw_output = self._backend_instance.run(tensor)
+                        except Exception as exc:
+                            raise SessionError(f"Inference failed for model '{self.model_id}': {exc}") from exc
+
+                        try:
+                            result = self._plugin.postprocess(raw_output)
+                        except Exception as exc:
+                            raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
+                        results.append(self._apply_processors(result, processors=processors))
+                    continue
+                raise
+
             try:
                 raw_output = self._backend_instance.run(batch_tensor)
             except Exception as exc:
@@ -221,17 +358,6 @@ class ModelSession:
                     raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
                 results.append(self._apply_processors(result, processors=processors))
 
-        if self._memory_tracker.enabled and before is not None:
-            after = self._memory_tracker.snapshot()
-            record = self._memory_tracker.observe("infer_many", before, after)
-            logger.debug(
-                "Memory telemetry op=%s call=%s rss_delta=%s gpu_delta=%s",
-                record.operation,
-                record.index,
-                record.delta_process_rss_bytes,
-                record.delta_gpu_process_used_bytes,
-            )
-
         return results
 
     def _stack_batch(self, chunk: list[Any]) -> Any:
@@ -241,8 +367,9 @@ class ModelSession:
                 return np.concatenate(chunk, axis=0)
             except Exception as exc:
                 raise SessionError(
-                    "Could not build true batch tensor for numpy backend output. "
-                    f"Falling back to sequential is recommended: {exc}"
+                    "Could not build a true batch tensor. This usually means preprocessed "
+                    "samples have incompatible shapes for concatenation. "
+                    f"Details: {exc}"
                 ) from exc
 
         # Torch-like tensor handling without hard dependency.
@@ -257,20 +384,36 @@ class ModelSession:
         raise SessionError("Unsupported preprocessed tensor type for true batching. Use batch_method='sequential'.")
 
     def _split_batch_output(self, raw_output: Any, expected: int) -> list[Any]:
-        arr = np.asarray(raw_output)
+        shape = getattr(raw_output, "shape", None)
+        ndim = getattr(raw_output, "ndim", None)
+
+        if ndim == 0:
+            return [raw_output for _ in range(expected)]
+
+        if shape is not None and len(shape) > 0 and shape[0] == expected:
+            return [raw_output[i : i + 1] for i in range(expected)]
+
+        if expected == 1:
+            return [raw_output]
+
+        try:
+            arr = np.asarray(raw_output)
+        except Exception as exc:
+            raise SessionError(
+                f"Backend output batch dimension mismatch: expected {expected}, got unknown output type."
+            ) from exc
+
         if arr.ndim == 0:
             return [arr for _ in range(expected)]
         if arr.shape[0] == expected:
             return [arr[i : i + 1] for i in range(expected)]
-        if expected == 1:
-            return [arr]
         raise SessionError(f"Backend output batch dimension mismatch: expected {expected}, got {arr.shape}.")
 
     def _apply_processors(
         self,
-        result: InferenceResult,
+        result: ModelResult,
         processors: list[ResultProcessor] | None = None,
-    ) -> InferenceResult:
+    ) -> ModelResult:
         if not processors:
             return result
 
@@ -464,13 +607,11 @@ def build_session(
     weights_path = _find_weights(plugin_cls, file_map, backend)
 
     # Load or reuse a pooled runtime backend.
-    input_name = plugin_cls().get_input_name() if backend == Backend.ONNX else None
     pool_key = _make_backend_pool_key(
         backend=backend,
         weights_path=weights_path,
         device=normalized_device,
         providers=onnx_providers,
-        input_name=input_name,
     )
     rt, release_backend = _acquire_backend(
         key=pool_key,
@@ -478,7 +619,6 @@ def build_session(
         weights_path=weights_path,
         device=normalized_device,
         providers=onnx_providers,
-        input_name=input_name,
         pytorch_cls=PyTorchBackend,
         onnx_cls=ONNXBackend,
     )
@@ -514,13 +654,12 @@ def _make_backend_pool_key(
     weights_path: Path,
     device: str,
     providers: list[str] | None,
-    input_name: str | None,
 ) -> tuple[Any, ...]:
     resolved_path = str(weights_path.resolve())
     if backend == Backend.PYTORCH:
         return (backend.value, resolved_path, device)
     provider_key = tuple(providers) if providers is not None else ("AUTO",)
-    return (backend.value, resolved_path, provider_key, device, input_name or "")
+    return (backend.value, resolved_path, provider_key, device)
 
 
 def _acquire_backend(
@@ -530,7 +669,6 @@ def _acquire_backend(
     weights_path: Path,
     device: str,
     providers: list[str] | None,
-    input_name: str | None,
     pytorch_cls: Any,
     onnx_cls: Any,
 ) -> tuple[Any, Callable[[], None]]:
@@ -547,7 +685,7 @@ def _acquire_backend(
             instance.load(weights_path, device=device)
         else:
             instance = onnx_cls()
-            instance.load(weights_path, providers=providers, input_name=input_name, device=device)
+            instance.load(weights_path, providers=providers, device=device)
 
         _BACKEND_POOL[key] = (instance, 1)
         logger.debug("Created pooled backend key=%s refcount=1", key)
@@ -555,6 +693,7 @@ def _acquire_backend(
 
 
 def _release_backend(key: tuple[Any, ...]) -> None:
+    instance: Any | None = None
     with _BACKEND_POOL_LOCK:
         cached = _BACKEND_POOL.get(key)
         if cached is None:
@@ -566,7 +705,14 @@ def _release_backend(key: tuple[Any, ...]) -> None:
             logger.debug("Released pooled backend key=%s refcount=%s", key, refcount - 1)
             return
 
-        _BACKEND_POOL.pop(key, None)
+        popped = _BACKEND_POOL.pop(key, None)
+        if popped is not None:
+            instance, _ = popped
+        else:
+            instance = None
+
+    if instance is None:
+        return
 
     close_fn = getattr(instance, "close", None)
     if callable(close_fn):

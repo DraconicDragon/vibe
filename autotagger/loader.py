@@ -93,6 +93,10 @@ def resolve_from_hf_repo(
                 paths[spec.name] = Path(local)
         except HFDownloadError as exc:
             raise LoaderError(str(exc)) from None
+        except Exception as exc:
+            # Keep loader API error surface consistent (LoaderError), including
+            # hub-side validation errors such as invalid repo ID format.
+            raise LoaderError(str(exc)) from None
 
     return FileMap(paths)
 

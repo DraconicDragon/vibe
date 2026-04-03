@@ -7,8 +7,13 @@ Quick start
 
     # Load a registered model (downloads from HF automatically)
     session = autotagger.load("wd-eva02-large")
-    result = session.infer(image)
+    result = session.infer(image).first()
     print(result.general[:5])
+
+    # Batch processing: infer returns InferenceResult with multiple items
+    results = session.infer([image1, image2, image3])
+    for item in results:
+        print(f"Input {item.index}: {item.result.general[:3]}")
 
     # Use a local folder instead of HF
     session = autotagger.load("wd-eva02-large", source="local:/path/to/folder")
@@ -43,6 +48,8 @@ from autotagger.registry import ModelRegistry, RegistryError, _make_auto_registe
 from autotagger.result_processors import CharacterIPMapping, CleanTags, ResultProcessor
 from autotagger.results import (
     InferenceResult,
+    InferenceResultItem,
+    ModelResult,
     MultiScoreResult,
     OutputType,
     ScoreResult,
@@ -276,6 +283,8 @@ __all__ = [
     "ScoreResult",
     "MultiScoreResult",
     "OutputType",
+    "ModelResult",
+    "InferenceResultItem",
     "InferenceResult",
     "is_tag_result",
     "is_score_result",

@@ -127,3 +127,7 @@ class PyTorchBackend:
     @property
     def device(self) -> str:
         return self._device
+
+    def supports_true_batching(self) -> bool:
+        """True batching is generally not useful for CPU device type."""
+        return self._device != "cpu"

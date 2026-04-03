@@ -7,9 +7,12 @@ Consumers should check result.output_type before accessing type-specific fields.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Literal, TypeGuard
+
+logger = logging.getLogger(__name__)
 
 
 class OutputType(str, Enum):
@@ -62,11 +65,22 @@ class TagResult:
         return names
 
     def as_score_dict(self) -> dict[str, float]:
-        """Convenience: {tag: score} for all tags in all categories."""
-        scores: dict[str, float] = {}
+        """Convenience: {tag: score} sorted by score (highest first)."""
+        all_entries: list[TagEntry] = []
         for entries in self.categories().values():
-            for entry in entries:
-                scores[entry.tag] = entry.score
+            all_entries.extend(entries)
+
+        sorted_entries = sorted(all_entries, key=lambda entry: entry.score, reverse=True)
+        scores: dict[str, float] = {}
+        for entry in sorted_entries:
+            if entry.tag in scores:
+                # Duplicate tag: first occurrence already has the highest score
+                # shouldn't happen but checking and logging anyway
+                logger.warning(
+                    f"Duplicate tag '{entry.tag}' (score: {entry.score:.3f}) in result; keeping first occurrence"
+                )
+                continue
+            scores[entry.tag] = entry.score
         return scores
 
     def to_dict(self) -> dict[str, Any]:
@@ -74,7 +88,8 @@ class TagResult:
             "output_type": self.output_type.value,
         }
         for category, entries in self.categories().items():
-            d[category] = [entry.to_dict() for entry in entries]
+            sorted_entries = sorted(entries, key=lambda entry: entry.score, reverse=True)
+            d[category] = [entry.to_dict() for entry in sorted_entries]
         if self.character_mapping is None:
             return d
         d["character_mapping"] = {
@@ -132,27 +147,89 @@ class MultiScoreResult:
         return d
 
 
+@dataclass
+class InferenceResultItem:
+    """
+    Metadata wrapper for one input image and its model prediction.
+
+    Contains the input's position in the batch, the actual prediction
+    (ModelResult), and an optional reference back to the input source.
+    Returned as items within InferenceResult."""
+
+    index: int
+    result: "ModelResult"
+    input_ref: Any | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "index": self.index,
+            "result": self.result.to_dict(),
+        }
+        if self.input_ref is not None:
+            data["input_ref"] = self.input_ref
+        return data
+
+
+@dataclass
+class InferenceResult:
+    """
+    Batch envelope returned by session.infer() for one or more images.
+
+    Each input image produces one InferenceResultItem in the items list.
+    Supports both single and batch operations via the same structure.
+    Provides convenience methods: first() for single-image workflows,
+    results() to extract all ModelResult objects, and iteration.
+    """
+
+    total_inputs: int
+    items: list[InferenceResultItem] = field(default_factory=list)
+    memory: dict[str, Any] | None = None
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __iter__(self):
+        return iter(self.items)
+
+    def results(self) -> list["ModelResult"]:
+        return [item.result for item in self.items]
+
+    def first(self) -> "ModelResult":
+        if not self.items:
+            raise IndexError("Inference batch result is empty.")
+        return self.items[0].result
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "total_inputs": self.total_inputs,
+            "items": [item.to_dict() for item in self.items],
+        }
+        if self.memory is not None:
+            data["memory"] = self.memory
+        return data
+
+
 # endregion Result Dataclasses
 
 
 # Union type for type hints throughout the codebase
-InferenceResult = TagResult | ScoreResult | MultiScoreResult
+ModelResult = TagResult | ScoreResult | MultiScoreResult
 
 
 # region Type Narrowing Help
 
 
-def is_tag_result(result: InferenceResult) -> TypeGuard[TagResult]:
+def is_tag_result(result: ModelResult) -> TypeGuard[TagResult]:
     """Check if result is a TagResult (narrows type for type checkers)."""
     return result.output_type == OutputType.TAGS
 
 
-def is_score_result(result: InferenceResult) -> TypeGuard[ScoreResult]:
+def is_score_result(result: ModelResult) -> TypeGuard[ScoreResult]:
     """Check if result is a ScoreResult (narrows type for type checkers)."""
     return result.output_type == OutputType.SCORE
 
 
-def is_multi_score_result(result: InferenceResult) -> TypeGuard[MultiScoreResult]:
+def is_multi_score_result(result: ModelResult) -> TypeGuard[MultiScoreResult]:
     """Check if result is a MultiScoreResult (narrows type for type checkers)."""
     return result.output_type == OutputType.MULTI_SCORE
 
