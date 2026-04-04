@@ -59,7 +59,8 @@ from autotagger.results import (
     is_score_result,
     is_tag_result,
 )
-from autotagger.session import ModelSession, SessionError, build_session
+from autotagger.session import ModelSession, SessionError
+from autotagger.session_factory import build_session
 
 # region Global Registry
 

@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image
 
 import autotagger
-from autotagger.session import build_session
+from autotagger.session_factory import build_session
 
 
 class DummyONNXBackend:

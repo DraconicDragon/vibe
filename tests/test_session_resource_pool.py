@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 import autotagger
-from autotagger.session import SessionError, build_session
+from autotagger.session import SessionError
+from autotagger.session_factory import build_session
 
 
 class _DummyONNXBackend:

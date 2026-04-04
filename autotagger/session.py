@@ -15,14 +15,12 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, AsyncIterator, Callable, Iterator, Literal
 
 import numpy as np
 
 from autotagger.backends.base import Backend, ModelPlugin
-from autotagger.devices import normalize_device_string
-from autotagger.hf_downloader import get_auto_download_default
-from autotagger.loader import FileMap, resolve_from_source_string
+from autotagger.loader import FileMap
 from autotagger.memory_stats import MemoryTracker
 from autotagger.result_processors import ResultProcessor, ResultProcessorContext
 from autotagger.results import InferenceResult, InferenceResultItem, ModelResult
@@ -44,12 +42,15 @@ except ImportError:
     logger.debug("pillow-jxl-plugin import failed; JPEG XL support unavailable.", exc_info=True)
 
 
-_BACKEND_POOL_LOCK = threading.RLock()
-_BACKEND_POOL: dict[tuple[Any, ...], tuple[Any, int]] = {}
+_ASYNC_INFER_DONE = object()
 
 
 class SessionError(Exception):
     """Raised when session setup or inference fails."""
+
+
+class InferenceCancelled(SessionError):
+    """Raised when an in-flight inference run is cancelled by user request."""
 
 
 # region ModelSession
@@ -90,6 +91,10 @@ class ModelSession:
             source=source,
             auto_download=auto_download,
         )
+        self._inference_lock = threading.RLock()
+        self._cancel_event = threading.Event()
+        self._run_state_lock = threading.Lock()
+        self._run_active = False
 
     # region Primary Interface
 
@@ -100,6 +105,7 @@ class ModelSession:
         *,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
+        on_cancel: Literal["raise", "return_partial"] = "raise",
     ) -> InferenceResult:
         """
         Run inference on one image or many images.
@@ -115,6 +121,9 @@ class ModelSession:
               - "auto": choose by backend/device (GPU-like -> true batching | CPU -> sequential).
               - "true": run stacked tensor batches when supported
               - "sequential": process one image at a time, like batch_size = 1
+                        on_cancel:
+                            - "raise": raise InferenceCancelled when cancellation is requested (default).
+                            - "return_partial": return already processed items instead of raising.
 
             CPU inference usually does not benefit from batch tensors and may be slower than simply batch size 1/sequential processing.
 
@@ -122,56 +131,197 @@ class ModelSession:
             InferenceResult with one item per input image.
             For single image input this still returns batch shape with one item.
         """
-        if self._closed:
-            raise SessionError("Session is closed. Load a new session before inferring.")
-        if batch_size < 1:
-            raise SessionError("batch_size must be >= 1")
+        if on_cancel not in ("raise", "return_partial"):
+            raise SessionError("on_cancel must be one of: 'raise', 'return_partial'")
 
-        values, refs = self._normalize_input_format(images)
-        normalized_images = self._load_images(values)
-        if not normalized_images:
-            return InferenceResult(total_inputs=0, items=[])
+        tracker_before_calls = self._memory_tracker.stats().inference_calls
+        total_inputs: int | None = None
+        items: list[InferenceResultItem] = []
 
-        method = self._resolve_batch_method(batch_method, batch_size)
-        before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
-
-        if method == "sequential":
-            raw_results = [self._infer_single(image, processors=processors) for image in normalized_images]
-        else:
-            raw_results = self._infer_many_true_batch(
-                normalized_images,
-                batch_size,
+        try:
+            for chunk in self.infer_batches(
+                images,
                 processors=processors,
-                fallback_to_sequential_on_stack_error=(batch_method == "auto"),
-            )
+                batch_size=batch_size,
+                batch_method=batch_method,
+            ):
+                total_inputs = chunk.total_inputs
+                items.extend(chunk.items)
+        except InferenceCancelled:
+            if on_cancel == "raise":
+                raise
 
-        memory_record = None
-        if before is not None:
-            after = self._memory_tracker.snapshot()
-            memory_record = self._memory_tracker.observe("infer", before, after)
-            logger.debug(
-                "Memory telemetry op=%s call=%s rss_delta=%s gpu_delta=%s",
-                memory_record.operation,
-                memory_record.index,
-                memory_record.delta_process_rss_bytes,
-                memory_record.delta_gpu_process_used_bytes,
-            )
-
-        # Input ordering is preserved end-to-end; each item's index/ref maps to
-        # the exact input position used for preprocess, forward, and postprocess.
-        items = [
-            InferenceResultItem(
-                index=index,
-                input_ref=refs[index],
-                result=result,
-            )
-            for index, result in enumerate(raw_results)
-        ]
-        return InferenceResult(
-            total_inputs=len(normalized_images),
-            items=items,
-            memory=memory_record.to_dict() if memory_record is not None else None,
+        memory = self._last_memory_record_dict(
+            operation="infer_batches",
+            min_call_index=tracker_before_calls,
         )
+        return InferenceResult(
+            total_inputs=total_inputs if total_inputs is not None else len(items),
+            items=items,
+            memory=memory,
+        )
+
+    def infer_batches(
+        self,
+        images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
+        processors: list[ResultProcessor] | None = None,
+        *,
+        batch_size: int = 1,
+        batch_method: Literal["auto", "true", "sequential"] = "auto",
+    ) -> Iterator[InferenceResult]:
+        """
+        Stream inference results as each completed chunk becomes available.
+
+        Yields one InferenceResult per finished chunk. In sequential mode, each
+        yielded chunk contains exactly one item.
+        """
+        with self._inference_lock:
+            if self._closed:
+                raise SessionError("Session is closed. Load a new session before inferring.")
+            if batch_size < 1:
+                raise SessionError("batch_size must be >= 1")
+            self._start_run()
+
+            before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
+            try:
+                values, refs = self._normalize_input_format(images)
+                normalized_images = self._load_images(values)
+                if not normalized_images:
+                    return
+
+                total_inputs = len(normalized_images)
+                method = self._resolve_batch_method(batch_method, batch_size)
+
+                if method == "sequential":
+                    for index, image in enumerate(normalized_images):
+                        self._check_cancelled()
+                        result = self._infer_single(image, processors=processors)
+                        yield InferenceResult(
+                            total_inputs=total_inputs,
+                            items=[InferenceResultItem(index=index, input_ref=refs[index], result=result)],
+                        )
+                else:
+                    index = 0
+                    for chunk_results in self._infer_many_true_batch_chunks(
+                        normalized_images,
+                        batch_size,
+                        processors=processors,
+                        fallback_to_sequential_on_stack_error=(batch_method == "auto"),
+                    ):
+                        chunk_items: list[InferenceResultItem] = []
+                        for result in chunk_results:
+                            chunk_items.append(InferenceResultItem(index=index, input_ref=refs[index], result=result))
+                            index += 1
+                        self._check_cancelled()
+                        yield InferenceResult(total_inputs=total_inputs, items=chunk_items)
+            finally:
+                if before is not None:
+                    after = self._memory_tracker.snapshot()
+                    memory_record = self._memory_tracker.observe("infer_batches", before, after)
+                    logger.debug(
+                        "Memory telemetry op=%s call=%s rss_delta=%s gpu_delta=%s",
+                        memory_record.operation,
+                        memory_record.index,
+                        memory_record.delta_process_rss_bytes,
+                        memory_record.delta_gpu_process_used_bytes,
+                    )
+                self._finish_run()
+
+    async def infer_async(
+        self,
+        images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
+        processors: list[ResultProcessor] | None = None,
+        *,
+        batch_size: int = 1,
+        batch_method: Literal["auto", "true", "sequential"] = "auto",
+    ) -> AsyncIterator[InferenceResult]:
+        """
+        Async wrapper over infer_batches() for progressive consumption.
+
+        Backend execution is still blocking; work is moved to a worker thread so
+        callers can await chunk results as they complete.
+
+        Accepts the same input forms as infer(), including a single image/path.
+        Device selection is configured when the session is created via load().
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[object] = asyncio.Queue()
+
+        def _worker() -> None:
+            try:
+                for chunk in self.infer_batches(
+                    images,
+                    processors=processors,
+                    batch_size=batch_size,
+                    batch_method=batch_method,
+                ):
+                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, _ASYNC_INFER_DONE)
+
+        thread = threading.Thread(target=_worker, name="autotagger-infer-async", daemon=True)
+        thread.start()
+
+        while True:
+            payload = await queue.get()
+            if payload is _ASYNC_INFER_DONE:
+                break
+            if isinstance(payload, Exception):
+                raise payload
+            yield payload
+
+    def cancel_current_inference(self) -> bool:
+        """
+        Request cooperative cancellation of the currently running inference.
+
+        Returns True if a run was active and cancellation was requested, False
+        if no inference run is currently active.
+        """
+        with self._run_state_lock:
+            if not self._run_active:
+                return False
+        self._cancel_event.set()
+        return True
+
+    def is_inference_running(self) -> bool:
+        """Return whether an inference run is currently active."""
+        with self._run_state_lock:
+            return self._run_active
+
+    def is_cancellation_requested(self) -> bool:
+        """Return whether cancellation has been requested for the active run."""
+        return self._cancel_event.is_set()
+
+    def _start_run(self) -> None:
+        with self._run_state_lock:
+            self._run_active = True
+            self._cancel_event.clear()
+
+    def _finish_run(self) -> None:
+        with self._run_state_lock:
+            self._run_active = False
+            self._cancel_event.clear()
+
+    def _check_cancelled(self) -> None:
+        if self._cancel_event.is_set():
+            raise InferenceCancelled("Inference cancelled by user request.")
+
+    def _last_memory_record_dict(self, *, operation: str, min_call_index: int) -> dict[str, Any] | None:
+        if not self._memory_tracker.enabled:
+            return None
+        stats = self._memory_tracker.stats()
+        record = stats.last_record
+        if record is None:
+            return None
+        if record.operation != operation:
+            return None
+        if record.index <= min_call_index:
+            return None
+        return record.to_dict()
 
     def _normalize_input_format(
         self,
@@ -181,16 +331,17 @@ class ModelSession:
         if not entries:
             return [], []
 
-        has_tuple_items = any(isinstance(item, tuple) for item in entries)
-        all_tuple_items = all(isinstance(item, tuple) for item in entries)
-        if has_tuple_items and not all_tuple_items:
+        tuple_count = sum(1 for item in entries if isinstance(item, tuple))
+        if 0 < tuple_count < len(entries):
             raise SessionError(
-                "Mixed input formats are not supported. Use either all bare images/paths or all (image_or_path, ref) tuples."
+                "Mixed input formats are not supported. "
+                f"Received {tuple_count} tuple item(s) and {len(entries) - tuple_count} bare item(s). "
+                "Use either all bare images/paths or all (image_or_path, ref) tuples."
             )
 
         values: list[Any | str] = []
         refs: list[Any] = []
-        if all_tuple_items:
+        if tuple_count == len(entries):
             for i, item in enumerate(entries):
                 if not isinstance(item, tuple) or len(item) != 2:
                     raise SessionError(f"Tuple input at index {i} must be exactly (image_or_path, ref).")
@@ -313,26 +464,28 @@ class ModelSession:
         providers = [str(p) for p in getattr(self._backend_instance, "providers", [])]
         return any(p.strip() and p.strip() != "CPUExecutionProvider" for p in providers)
 
-    def _infer_many_true_batch(
+    def _infer_many_true_batch_chunks(
         self,
         images: list[Any],
         batch_size: int,
         processors: list[ResultProcessor] | None = None,
         fallback_to_sequential_on_stack_error: bool = False,
-    ) -> list[ModelResult]:
-        results: list[ModelResult] = []
+    ) -> Iterator[list[ModelResult]]:
         for start in range(0, len(images), batch_size):
+            self._check_cancelled()
             raw_chunk = images[start : start + batch_size]
             try:
                 chunk = [self._plugin.preprocess(image) for image in raw_chunk]
             except Exception as exc:
                 raise SessionError(f"Preprocessing failed for model '{self.model_id}': {exc}") from exc
 
+            chunk_results: list[ModelResult] = []
             try:
                 batch_tensor = self._stack_batch(chunk)
             except SessionError:
                 if fallback_to_sequential_on_stack_error:
                     for tensor in chunk:
+                        self._check_cancelled()
                         try:
                             raw_output = self._backend_instance.run(tensor)
                         except Exception as exc:
@@ -342,7 +495,8 @@ class ModelSession:
                             result = self._plugin.postprocess(raw_output)
                         except Exception as exc:
                             raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
-                        results.append(self._apply_processors(result, processors=processors))
+                        chunk_results.append(self._apply_processors(result, processors=processors))
+                    yield chunk_results
                     continue
                 raise
 
@@ -352,13 +506,13 @@ class ModelSession:
                 raise SessionError(f"Inference failed for model '{self.model_id}': {exc}") from exc
 
             for sample_output in self._split_batch_output(raw_output, len(chunk)):
+                self._check_cancelled()
                 try:
                     result = self._plugin.postprocess(sample_output)
                 except Exception as exc:
                     raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
-                results.append(self._apply_processors(result, processors=processors))
-
-        return results
+                chunk_results.append(self._apply_processors(result, processors=processors))
+            yield chunk_results
 
     def _stack_batch(self, chunk: list[Any]) -> Any:
         first = chunk[0]
@@ -470,26 +624,27 @@ class ModelSession:
 
     def close(self) -> None:
         """Release runtime resources for this session."""
-        if self._closed:
-            return
+        with self._inference_lock:
+            if self._closed:
+                return
 
-        logger.debug("Closing session model_id=%s backend=%s", self.model_id, self._backend.value)
+            logger.debug("Closing session model_id=%s backend=%s", self.model_id, self._backend.value)
 
-        if self._backend_release is not None:
-            try:
-                self._backend_release()
-            except Exception:
-                logger.exception("Failed to release pooled backend for model '%s'.", self.model_id)
-        else:
-            close_fn = getattr(self._backend_instance, "close", None)
-            if callable(close_fn):
+            if self._backend_release is not None:
                 try:
-                    close_fn()
+                    self._backend_release()
                 except Exception:
-                    logger.exception("Failed to close backend for model '%s'.", self.model_id)
+                    logger.exception("Failed to release pooled backend for model '%s'.", self.model_id)
+            else:
+                close_fn = getattr(self._backend_instance, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        logger.exception("Failed to close backend for model '%s'.", self.model_id)
 
-        self._closed = True
-        logger.debug("Session closed model_id=%s backend=%s", self.model_id, self._backend.value)
+            self._closed = True
+            logger.debug("Session closed model_id=%s backend=%s", self.model_id, self._backend.value)
 
     def is_closed(self) -> bool:
         """Return whether this session has been closed."""
@@ -532,233 +687,3 @@ class ModelSession:
 
 
 # endregion ModelSession
-
-
-# region Session Factory
-
-
-def build_session(
-    plugin_cls: type[ModelPlugin],
-    source: str,
-    backend: Backend | str | None = None,
-    device: str = "cpu",
-    onnx_providers: list[str] | None = None,
-    hf_revision: str | None = None,
-    hf_cache_dir: str | None = None,
-    auto_download: bool | None = None,
-    memory_tracking: bool = True,
-) -> ModelSession:
-    """
-    Build a ModelSession from a plugin class and a file source.
-
-    This is called by autotagger.load() — you don't usually call this directly.
-
-    Args:
-        plugin_cls:      The plugin class (from the registry).
-        source:          Where to load files from (source string).
-        backend:         "pytorch", "onnx", or Backend enum. None = auto-select:
-                         prefers ONNX if available, falls back to PyTorch.
-        device:          Logical device string ("cpu", "gpu", "gpu:1", "cuda:0", etc.).
-                 For ONNX, this guides auto provider selection. 'cuda' and 'gpu' are interchangeable.
-        onnx_providers:  Override ONNX execution providers.
-    """
-    from autotagger.backends.runtime.onnx import ONNXBackend
-    from autotagger.backends.runtime.pytorch import PyTorchBackend
-
-    # Resolve backend
-    if backend is None:
-        backend = _auto_select_backend(plugin_cls)
-    elif isinstance(backend, str):
-        try:
-            backend = Backend(backend.lower())
-        except ValueError:
-            raise SessionError(f"Unknown backend '{backend}'. Choose from: {[b.value for b in Backend]}")
-
-    if backend not in plugin_cls.supported_backends:
-        raise SessionError(
-            f"Model '{plugin_cls.model_id}' does not support backend '{backend.value}'. "
-            f"Supported: {[b.value for b in plugin_cls.supported_backends]}"
-        )
-
-    try:
-        normalized_device = normalize_device_string(
-            device,
-            backend="pytorch" if backend == Backend.PYTORCH else "onnx",
-        )
-    except ValueError as exc:
-        raise SessionError(str(exc)) from exc
-
-    effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
-
-    # Resolve files
-    try:
-        file_map = resolve_from_source_string(
-            source,
-            plugin_cls.required_files,
-            backend,
-            revision=hf_revision,
-            cache_dir=hf_cache_dir,
-            allow_download=effective_auto_download,
-        )
-    except Exception as exc:
-        raise SessionError(str(exc)) from exc
-
-    # Find the weights file for this backend
-    weights_path = _find_weights(plugin_cls, file_map, backend)
-
-    # Load or reuse a pooled runtime backend.
-    pool_key = _make_backend_pool_key(
-        backend=backend,
-        weights_path=weights_path,
-        device=normalized_device,
-        providers=onnx_providers,
-    )
-    rt, release_backend = _acquire_backend(
-        key=pool_key,
-        backend=backend,
-        weights_path=weights_path,
-        device=normalized_device,
-        providers=onnx_providers,
-        pytorch_cls=PyTorchBackend,
-        onnx_cls=ONNXBackend,
-    )
-
-    # Instantiate plugin and let it load ancillary files (tag lists, etc.)
-    try:
-        plugin = plugin_cls()
-        plugin.configure(
-            auto_download=effective_auto_download,
-        )
-        plugin.load_ancillary(file_map.as_path_dict())
-        return ModelSession(
-            plugin=plugin,
-            backend_instance=rt,
-            backend=backend,
-            file_map=file_map,
-            source=source,
-            auto_download=effective_auto_download,
-            memory_tracking=memory_tracking,
-            backend_release=release_backend,
-        )
-    except SessionError:
-        release_backend()
-        raise
-    except Exception as exc:
-        release_backend()
-        raise SessionError(f"Plugin '{plugin_cls.model_id}' failed to load ancillary files: {exc}") from exc
-
-
-def _make_backend_pool_key(
-    *,
-    backend: Backend,
-    weights_path: Path,
-    device: str,
-    providers: list[str] | None,
-) -> tuple[Any, ...]:
-    resolved_path = str(weights_path.resolve())
-    if backend == Backend.PYTORCH:
-        return (backend.value, resolved_path, device)
-    provider_key = tuple(providers) if providers is not None else ("AUTO",)
-    return (backend.value, resolved_path, provider_key, device)
-
-
-def _acquire_backend(
-    *,
-    key: tuple[Any, ...],
-    backend: Backend,
-    weights_path: Path,
-    device: str,
-    providers: list[str] | None,
-    pytorch_cls: Any,
-    onnx_cls: Any,
-) -> tuple[Any, Callable[[], None]]:
-    with _BACKEND_POOL_LOCK:
-        cached = _BACKEND_POOL.get(key)
-        if cached is not None:
-            instance, refcount = cached
-            _BACKEND_POOL[key] = (instance, refcount + 1)
-            logger.debug("Reusing pooled backend key=%s refcount=%s", key, refcount + 1)
-            return instance, lambda: _release_backend(key)
-
-        if backend == Backend.PYTORCH:
-            instance = pytorch_cls()
-            instance.load(weights_path, device=device)
-        else:
-            instance = onnx_cls()
-            instance.load(weights_path, providers=providers, device=device)
-
-        _BACKEND_POOL[key] = (instance, 1)
-        logger.debug("Created pooled backend key=%s refcount=1", key)
-        return instance, lambda: _release_backend(key)
-
-
-def _release_backend(key: tuple[Any, ...]) -> None:
-    instance: Any | None = None
-    with _BACKEND_POOL_LOCK:
-        cached = _BACKEND_POOL.get(key)
-        if cached is None:
-            return
-
-        instance, refcount = cached
-        if refcount > 1:
-            _BACKEND_POOL[key] = (instance, refcount - 1)
-            logger.debug("Released pooled backend key=%s refcount=%s", key, refcount - 1)
-            return
-
-        popped = _BACKEND_POOL.pop(key, None)
-        if popped is not None:
-            instance, _ = popped
-        else:
-            instance = None
-
-    if instance is None:
-        return
-
-    close_fn = getattr(instance, "close", None)
-    if callable(close_fn):
-        close_fn()
-    logger.debug("Closed pooled backend key=%s", key)
-
-
-def _auto_select_backend(plugin_cls: type[ModelPlugin]) -> Backend:
-    """Prefer ONNX if available; fall back to PyTorch."""
-    supported = plugin_cls.supported_backends
-    if Backend.ONNX in supported:
-        try:
-            import onnxruntime  # noqa: F401
-
-            return Backend.ONNX
-        except ImportError:
-            pass
-    if Backend.PYTORCH in supported:
-        return Backend.PYTORCH
-    raise SessionError(f"No supported backend available for '{plugin_cls.model_id}'. Install onnxruntime or torch.")
-
-
-def _find_weights(
-    plugin_cls: type[ModelPlugin],
-    file_map: FileMap,
-    backend: Backend,
-) -> Path:
-    """
-    Find the weights file from the resolved file map.
-
-    Looks for a FileSpec with role=WEIGHTS that is needed for this backend.
-    Raises SessionError if not found.
-    """
-    from autotagger.backends.base import FileRole
-
-    for spec in plugin_cls.required_files:
-        if spec.role == FileRole.WEIGHTS and spec.needed_for(backend):
-            path = file_map.get(spec.name)
-            if path is not None:
-                return path
-
-    raise SessionError(
-        f"No weights file found for model '{plugin_cls.model_id}' "
-        f"with backend '{backend.value}'. "
-        f"Check the plugin's required_files declaration."
-    )
-
-
-# endregion Session Factory

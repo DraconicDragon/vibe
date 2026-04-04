@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +15,7 @@ from autotagger.backends.base import Backend
 from autotagger.loader import FileMap
 from autotagger.result_processors import CharacterIPMapping, CleanTags, ResultProcessor
 from autotagger.results import TagResult
-from autotagger.session import ModelSession
+from autotagger.session import InferenceCancelled, ModelSession
 
 # Optional dev-configurable real-world smoke test variables.
 RUN_REAL_WORLD_SMOKE_TEST = os.getenv("AUTOTAGGER_REAL_WORLD_TEST", "0") == "1"
@@ -195,6 +198,130 @@ def test_infer_many_override_forces_sequential(tmp_path: Path) -> None:
 
     assert len(results) == 2
     assert backend.calls == [1, 1]
+
+
+def test_infer_batches_auto_streams_true_batch_chunks(tmp_path: Path) -> None:
+    session, backend = _build_session(
+        tmp_path,
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+
+    chunks = list(session.infer_batches(_test_images(), batch_size=2, batch_method="auto"))
+
+    assert len(chunks) == 1
+    assert chunks[0].total_inputs == 2
+    assert [item.index for item in chunks[0].items] == [0, 1]
+    assert backend.calls == [2]
+
+
+def test_infer_batches_auto_streams_sequential_items_on_cpu(tmp_path: Path) -> None:
+    session, backend = _build_session(tmp_path, providers=["CPUExecutionProvider"])
+
+    chunks = list(session.infer_batches(_test_images(), batch_size=2, batch_method="auto"))
+
+    assert len(chunks) == 2
+    assert all(len(chunk.items) == 1 for chunk in chunks)
+    assert [chunk.items[0].index for chunk in chunks] == [0, 1]
+    assert backend.calls == [1, 1]
+
+
+def test_infer_async_streams_chunks(tmp_path: Path) -> None:
+    session, backend = _build_session(
+        tmp_path,
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+
+    async def _collect() -> list[list[int]]:
+        collected: list[list[int]] = []
+        async for chunk in session.infer_async(_test_images(), batch_size=2, batch_method="auto"):
+            collected.append([item.index for item in chunk.items])
+        return collected
+
+    chunk_indices = asyncio.run(_collect())
+
+    assert chunk_indices == [[0, 1]]
+    assert backend.calls == [2]
+
+
+def test_infer_async_accepts_single_input_image(tmp_path: Path) -> None:
+    session, backend = _build_session(tmp_path)
+
+    async def _collect() -> list[list[int]]:
+        collected: list[list[int]] = []
+        async for chunk in session.infer_async(_test_images()[0], batch_size=2, batch_method="auto"):
+            collected.append([item.index for item in chunk.items])
+        return collected
+
+    chunk_indices = asyncio.run(_collect())
+
+    assert chunk_indices == [[0]]
+    assert backend.calls == [1]
+
+
+def test_cancel_current_inference_returns_false_when_idle(tmp_path: Path) -> None:
+    session, _ = _build_session(tmp_path)
+    assert session.cancel_current_inference() is False
+
+
+def test_infer_async_can_be_cancelled_cooperatively(tmp_path: Path) -> None:
+    session, backend = _build_session(tmp_path, providers=["CPUExecutionProvider"])
+    images = [
+        Image.new("RGB", (16, 16), (255, 0, 0)),
+        Image.new("RGB", (16, 16), (0, 255, 0)),
+        Image.new("RGB", (16, 16), (0, 0, 255)),
+    ]
+
+    async def _consume_and_cancel() -> None:
+        got_first = False
+        async for chunk in session.infer_async(images, batch_size=2, batch_method="sequential"):
+            if not got_first:
+                got_first = True
+                assert len(chunk.items) == 1
+                assert session.cancel_current_inference() is True
+
+    with pytest.raises(InferenceCancelled, match="cancelled"):
+        asyncio.run(_consume_and_cancel())
+
+    assert 1 <= len(backend.calls) < len(images)
+    assert all(call == 1 for call in backend.calls)
+    assert session.is_inference_running() is False
+    assert session.is_cancellation_requested() is False
+
+
+def test_infer_sync_can_return_partial_results_on_cancel(tmp_path: Path) -> None:
+    session, backend = _build_session(tmp_path, providers=["CPUExecutionProvider"])
+    images = [
+        Image.new("RGB", (16, 16), (255, 0, 0)),
+        Image.new("RGB", (16, 16), (0, 255, 0)),
+        Image.new("RGB", (16, 16), (0, 0, 255)),
+    ]
+
+    original_run = backend.run
+
+    def _slow_run(array: np.ndarray) -> np.ndarray:
+        time.sleep(0.03)
+        return original_run(array)
+
+    backend.run = _slow_run  # type: ignore[method-assign]
+
+    def _cancel_when_running() -> None:
+        while not backend.calls:
+            time.sleep(0.005)
+        session.cancel_current_inference()
+
+    canceller = threading.Thread(target=_cancel_when_running, daemon=True)
+    canceller.start()
+    result = session.infer(
+        images,
+        batch_size=2,
+        batch_method="sequential",
+        on_cancel="return_partial",
+    )
+    canceller.join(timeout=0.2)
+
+    assert 1 <= len(result.items) < len(images)
+    assert session.is_inference_running() is False
+    assert session.is_cancellation_requested() is False
 
 
 def test_infer_many_sequential_runs_for_all_inputs(tmp_path: Path) -> None:
