@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from autotagger.devices import list_available_devices, normalize_device_string
+from vibe.devices import list_available_devices, normalize_device_string
 
 
 def test_normalize_device_string_pytorch_accepts_cuda_syntax_and_gpu_alias() -> None:

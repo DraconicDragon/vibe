@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from autotagger.backends.char_ip_mapping import (
+from vibe.backends.char_ip_mapping import (
     apply_character_ip_mapping,
     resolve_character_ip_mapping,
 )
-from autotagger.loader import FileMap
-from autotagger.results import ModelResult, TagEntry, TagResult
+from vibe.loader import FileMap
+from vibe.results import ModelResult, TagEntry, TagResult
 
 KAOMOJIS = {
     "0_0",

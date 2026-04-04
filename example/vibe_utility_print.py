@@ -2,12 +2,12 @@
 Device discovery utility — lists available GPUs and hardware accelerators.
 """
 
-import autotagger
+import vibe
 
 
 def print_available_devices() -> None:
     """Print all available device selectors."""
-    devices = autotagger.list_available_devices()
+    devices = vibe.list_available_devices()
     print("Available devices:")
     for device in devices:
         print(f"  • {device}")

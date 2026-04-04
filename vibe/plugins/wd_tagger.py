@@ -8,9 +8,9 @@ from typing import Any
 
 import numpy as np
 
-from autotagger.backends.base import Backend, FileRole, FileSpec, ModelPlugin
-from autotagger.result_processors import CharacterIPMapping, CleanTags
-from autotagger.results import OutputType, TagEntry, TagResult
+from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.result_processors import CharacterIPMapping, CleanTags
+from vibe.results import OutputType, TagEntry, TagResult
 
 logger = logging.getLogger(__name__)
 

@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import autotagger
-from autotagger.plugins.wd_tagger import WDEva02Plugin, WDTagResult
-from autotagger.result_processors import CharacterIPMapping, CleanTags
+import vibe
+from vibe.plugins.wd_tagger import WDEva02Plugin, WDTagResult
+from vibe.result_processors import CharacterIPMapping, CleanTags
 
 
 def _write_selected_tags_csv(path: Path) -> None:
@@ -19,7 +19,7 @@ def _write_selected_tags_csv(path: Path) -> None:
 
 
 def test_registry_contains_non_caformer_wd_models() -> None:
-    models = set(autotagger.list_models())
+    models = set(vibe.list_models())
     assert "wd-eva02-large" in models
     assert "wd-swinv2" in models
     assert "wd-convnext" in models
@@ -27,7 +27,7 @@ def test_registry_contains_non_caformer_wd_models() -> None:
 
 
 def test_list_plugin_classes_contains_wd_classes() -> None:
-    classes = set(autotagger.list_plugin_classes())
+    classes = set(vibe.list_plugin_classes())
     assert "WDEva02Plugin" in classes
     assert "WDSwinV2Plugin" in classes
 

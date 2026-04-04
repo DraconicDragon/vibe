@@ -1,12 +1,12 @@
 """
-autotagger — modular image tagging library.
+vibe — vision transformer inference backend.
 
 Quick start
 -----------
-    import autotagger
+    import vibe
 
     # Load a registered model (downloads from HF automatically)
-    session = autotagger.load("wd-eva02-large")
+    session = vibe.load("wd-eva02-large")
     result = session.infer(image).first()
     print(result.general[:5])
 
@@ -16,37 +16,37 @@ Quick start
         print(f"Input {item.index}: {item.result.general[:3]}")
 
     # Use a local folder instead of HF
-    session = autotagger.load("wd-eva02-large", source="local:/path/to/folder")
+    session = vibe.load("wd-eva02-large", source="local:/path/to/folder")
 
     # Custom: arbitrary source with a chosen plugin
-    session = autotagger.load_custom(
+    session = vibe.load_custom(
         source="hf:SmilingWolf/wd-eva02-large-tagger-v3-updated",
         plugin="WDEva02Plugin",
     )
 
     # Inspect available models
-    autotagger.list_models()
-    autotagger.describe("wd-eva02-large")
+    vibe.list_models()
+    vibe.describe("wd-eva02-large")
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from autotagger.backends.base import Backend, FileRole, FileSpec, ModelPlugin
-from autotagger.devices import list_available_devices
-from autotagger.hf_downloader import (
+from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.devices import list_available_devices
+from vibe.hf_downloader import (
     get_auto_download_default,
     set_auto_download_default,
 )
-from autotagger.memory_stats import (
+from vibe.memory_stats import (
     InferenceMemoryRecord,
     MemorySnapshot,
     MemoryTrackerStats,
 )
-from autotagger.registry import ModelRegistry, RegistryError, _make_auto_register_hook
-from autotagger.result_processors import CharacterIPMapping, CleanTags, ResultProcessor
-from autotagger.results import (
+from vibe.registry import ModelRegistry, RegistryError, _make_auto_register_hook
+from vibe.result_processors import CharacterIPMapping, CleanTags, ResultProcessor
+from vibe.results import (
     InferenceResult,
     InferenceResultItem,
     ModelResult,
@@ -59,8 +59,8 @@ from autotagger.results import (
     is_score_result,
     is_tag_result,
 )
-from autotagger.session import ModelSession, SessionError
-from autotagger.session_factory import build_session
+from vibe.session import ModelSession, SessionError
+from vibe.session_factory import build_session
 
 # region Global Registry
 
@@ -105,7 +105,7 @@ def load(
 
     Args:
         model:          Model ID or alias (e.g. "wd-eva02-large", "eva02").
-                        Run autotagger.list_models() to see all options.
+                        Run vibe.list_models() to see all options.
                         # todo: check if doc gen will set optional by default through type hints or if i should put it in docstring explicitly, or maybe just in general
         source:         Optional. Where to load files from. String options:
                           - None (default): use the plugin's default HF repo.
@@ -171,7 +171,7 @@ def load_custom(
     """
     Load a model by specifying the plugin class explicitly.
 
-    This is the power-user path: point at any source and tell autotagger
+    This is the power-user path: point at any source and tell vibe
     which plugin's inference code to use. Useful when:
       - A new model was released that isn't registered yet.
       - You want to use a fine-tune with the same architecture as a known plugin.
@@ -187,12 +187,12 @@ def load_custom(
                               first tries local folder when it exists,
                               then tries HF repo/cache/download.
         plugin:         Plugin class name (e.g. "WDEva02Plugin").
-                        Run autotagger.list_plugin_classes() to see all options.
+                        Run vibe.list_plugin_classes() to see all options.
         backend, device, hf_revision, hf_cache_dir, onnx_providers:
                         Same as load().
 
     Example:
-        session = autotagger.load_custom(
+        session = vibe.load_custom(
             source="hf:SmilingWolf/wd-eva02-large-tagger-v3-updated",
             plugin="WDEva02Plugin",
         )
@@ -252,7 +252,7 @@ def _resolve_source(
             raise SessionError(
                 f"Model '{plugin_cls.model_id}' has no default HF repo. "
                 f"Provide a source explicitly: "
-                f"autotagger.load('{plugin_cls.model_id}', source=...)"
+                f"vibe.load('{plugin_cls.model_id}', source=...)"
             )
         return f"hf:{plugin_cls.default_hf_repo}"
 
@@ -266,7 +266,7 @@ def _resolve_source(
 
 
 # region Public re-Exports
-# for users doing from autotagger import ...
+# for users doing from vibe import ...
 
 __all__ = [
     # Core objects

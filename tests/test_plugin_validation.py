@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from autotagger.backends.base import Backend, FileRole, FileSpec, ModelPlugin
-from autotagger.plugin_validation import validate_plugin_declaration
-from autotagger.results import OutputType, TagEntry, TagResult
+from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.plugin_validation import validate_plugin_declaration
+from vibe.results import OutputType, TagEntry, TagResult
 
 
 @dataclass

@@ -7,11 +7,11 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from autotagger.backends.base import Backend, ModelPlugin
-from autotagger.devices import normalize_device_string
-from autotagger.hf_downloader import get_auto_download_default
-from autotagger.loader import FileMap, resolve_from_source_string
-from autotagger.session import ModelSession, SessionError
+from vibe.backends.base import Backend, ModelPlugin
+from vibe.devices import normalize_device_string
+from vibe.hf_downloader import get_auto_download_default
+from vibe.loader import FileMap, resolve_from_source_string
+from vibe.session import ModelSession, SessionError
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +33,10 @@ def build_session(
     """
     Build a ModelSession from a plugin class and a file source.
 
-    This is called by autotagger.load() - you don't usually call this directly.
+    This is called by vibe.load() - you don't usually call this directly.
     """
-    from autotagger.backends.runtime.onnx import ONNXBackend
-    from autotagger.backends.runtime.pytorch import PyTorchBackend
+    from vibe.backends.runtime.onnx import ONNXBackend
+    from vibe.backends.runtime.pytorch import PyTorchBackend
 
     if backend is None:
         backend = _auto_select_backend(plugin_cls)
@@ -209,7 +209,7 @@ def _find_weights(
     backend: Backend,
 ) -> Path:
     """Find the weights file from the resolved file map for the selected backend."""
-    from autotagger.backends.base import FileRole
+    from vibe.backends.base import FileRole
 
     for spec in plugin_cls.required_files:
         if spec.role == FileRole.WEIGHTS and spec.needed_for(backend):

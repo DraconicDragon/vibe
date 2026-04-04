@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 
-from autotagger.devices import normalize_device_string
+from vibe.devices import normalize_device_string
 
 # Auto-priority excludes TensorRT on purpose to keep behavior predictable.
 ONNX_AUTO_PROVIDER_PRIORITY: tuple[str, ...] = (
@@ -34,8 +34,8 @@ _GPU_CLASS_PROVIDERS: frozenset[str] = frozenset(
     }
 )
 
-_ENV_PROVIDER_SINGLE = "AUTOTAGGER_ONNX_PROVIDER"
-_ENV_PROVIDER_LIST = "AUTOTAGGER_ONNX_PROVIDERS"
+_ENV_PROVIDER_SINGLE = "VIBE_ONNX_PROVIDER"
+_ENV_PROVIDER_LIST = "VIBE_ONNX_PROVIDERS"
 
 
 # region Provider Setup

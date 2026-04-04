@@ -6,10 +6,10 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from autotagger.hf_downloader import HFDownloadError, download_or_cached
+from vibe.hf_downloader import HFDownloadError, download_or_cached
 
 if TYPE_CHECKING:
-    from autotagger.backends.base import Backend, FileSpec
+    from vibe.backends.base import Backend, FileSpec
 
 
 class LoaderError(Exception):

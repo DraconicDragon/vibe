@@ -10,23 +10,23 @@ import numpy as np
 import pytest
 from PIL import Image
 
-import autotagger
-from autotagger.backends.base import Backend
-from autotagger.loader import FileMap
-from autotagger.result_processors import CharacterIPMapping, CleanTags, ResultProcessor
-from autotagger.results import TagResult
-from autotagger.session import InferenceCancelled, ModelSession
+import vibe
+from vibe.backends.base import Backend
+from vibe.loader import FileMap
+from vibe.result_processors import CharacterIPMapping, CleanTags, ResultProcessor
+from vibe.results import TagResult
+from vibe.session import InferenceCancelled, ModelSession
 
 # Optional dev-configurable real-world smoke test variables.
-RUN_REAL_WORLD_SMOKE_TEST = os.getenv("AUTOTAGGER_REAL_WORLD_TEST", "0") == "1"
+RUN_REAL_WORLD_SMOKE_TEST = os.getenv("VIBE_REAL_WORLD_TEST", "0") == "1"
 REAL_WORLD_MODEL_SOURCE = os.getenv(
-    "AUTOTAGGER_REAL_WORLD_MODEL_SOURCE",
+    "VIBE_REAL_WORLD_MODEL_SOURCE",
     "/mnt/T7/Projects/GitHub/vibe/models/wd-eva02-large-tagger-v3",
 )
 REAL_WORLD_IMAGE_PATHS: list[str] = [
     p.strip()
     for p in os.getenv(
-        "AUTOTAGGER_REAL_WORLD_IMAGE_PATHS",
+        "VIBE_REAL_WORLD_IMAGE_PATHS",
         "/home/drac/Desktop/hakurei.jpg,/home/drac/Desktop/gogalking.jpg,/home/drac/Desktop/fern_and_frieren_sleep_help.webp",
     ).split(",")
     if p.strip()
@@ -63,7 +63,7 @@ def _build_session(
     tmp_path: Path,
     providers: list[str] | None = None,
 ) -> tuple[ModelSession, _DummyBackend]:
-    plugin = autotagger.registry.get("wd-eva02-large")()
+    plugin = vibe.registry.get("wd-eva02-large")()
     tags = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv(tags)
     plugin.configure(auto_download=False)
@@ -499,7 +499,7 @@ def test_session_memory_stats_tracking_controls(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(
     not RUN_REAL_WORLD_SMOKE_TEST,
-    reason="Set AUTOTAGGER_REAL_WORLD_TEST=1 and configure AUTOTAGGER_REAL_WORLD_* variables to run.",
+    reason="Set VIBE_REAL_WORLD_TEST=1 and configure VIBE_REAL_WORLD_* variables to run.",
 )
 def test_real_world_smoke_batch_modes() -> None:
     assert REAL_WORLD_MODEL_SOURCE, "REAL_WORLD_MODEL_SOURCE must be set"
@@ -507,7 +507,7 @@ def test_real_world_smoke_batch_modes() -> None:
 
     images = [Image.open(path).convert("RGB") for path in REAL_WORLD_IMAGE_PATHS]
 
-    session = autotagger.load(
+    session = vibe.load(
         "wd-eva02-large",
         source=REAL_WORLD_MODEL_SOURCE,
         backend="onnx",

@@ -6,9 +6,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-import autotagger
-from autotagger.result_processors import CharacterIPMapping, CleanTags
-from autotagger.results import TagResult
+import vibe
+from vibe.result_processors import CharacterIPMapping, CleanTags
+from vibe.results import TagResult
 
 
 def _env_list(name: str) -> list[str]:
@@ -19,20 +19,20 @@ def _env_list(name: str) -> list[str]:
 
 
 @pytest.mark.skipif(
-    os.getenv("AUTOTAGGER_REAL_WORLD_TEST", "0") != "1",
-    reason="Set AUTOTAGGER_REAL_WORLD_TEST=1 to run this integration smoke test.",
+    os.getenv("VIBE_REAL_WORLD_TEST", "0") != "1",
+    reason="Set VIBE_REAL_WORLD_TEST=1 to run this integration smoke test.",
 )
 def test_real_world_library_flow_with_processors() -> None:
     # This checks the same call shape downstream apps will use.
-    model_source = os.getenv("AUTOTAGGER_REAL_WORLD_MODEL_SOURCE", "")
-    image_paths = _env_list("AUTOTAGGER_REAL_WORLD_IMAGE_PATHS")
+    model_source = os.getenv("VIBE_REAL_WORLD_MODEL_SOURCE", "")
+    image_paths = _env_list("VIBE_REAL_WORLD_IMAGE_PATHS")
 
-    assert model_source, "Set AUTOTAGGER_REAL_WORLD_MODEL_SOURCE"
-    assert image_paths, "Set AUTOTAGGER_REAL_WORLD_IMAGE_PATHS as comma-separated paths"
+    assert model_source, "Set VIBE_REAL_WORLD_MODEL_SOURCE"
+    assert image_paths, "Set VIBE_REAL_WORLD_IMAGE_PATHS as comma-separated paths"
 
     images = [Image.open(Path(p)).convert("RGB") for p in image_paths]
 
-    session = autotagger.load(
+    session = vibe.load(
         "wd-eva02-large",
         source=model_source,
         backend="onnx",

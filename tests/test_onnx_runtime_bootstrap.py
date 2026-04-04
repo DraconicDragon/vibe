@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from autotagger.backends.runtime import onnx as onnx_runtime
+from vibe.backends.runtime import onnx as onnx_runtime
 
 
 class _FakeOrt:
@@ -86,7 +86,7 @@ def test_resolve_onnx_provider_chain_cpu_device_forces_cpu_only() -> None:
 
 
 def test_resolve_onnx_provider_chain_env_override(monkeypatch) -> None:
-    monkeypatch.setenv("AUTOTAGGER_ONNX_PROVIDERS", "CPUExecutionProvider,CUDAExecutionProvider")
+    monkeypatch.setenv("VIBE_ONNX_PROVIDERS", "CPUExecutionProvider,CUDAExecutionProvider")
 
     providers, options = onnx_runtime.resolve_onnx_provider_chain(
         device="gpu",

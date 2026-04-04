@@ -4,7 +4,7 @@ More advanced simple example: list available models and auto-load the first one.
 
 from typing import Any
 
-import autotagger
+import vibe
 
 
 def list_available_models() -> list[dict[str, Any]]:
@@ -18,8 +18,8 @@ def list_available_models() -> list[dict[str, Any]]:
       - description: what the model does
     """
     models = []
-    for model_id in autotagger.list_models():
-        info = autotagger.describe(model_id)
+    for model_id in vibe.list_models():
+        info = vibe.describe(model_id)
         models.append(
             {
                 "model_id": info["model_id"],
@@ -53,7 +53,7 @@ if chosen_aliases:
 # Everything below is commented out—uncomment to run inference
 # ============================================================================
 
-# session = autotagger.load(chosen_model_id)
+# session = vibe.load(chosen_model_id)
 #
 # # Load an image
 # from PIL import Image
@@ -63,14 +63,14 @@ if chosen_aliases:
 # result = session.infer(image)
 #
 # # Process result based on its type using TypeGuard narrowing
-# if autotagger.is_tag_result(result):
+# if vibe.is_tag_result(result):
 #     print("Tags:", result.tag_names())
 #     print("\nScores:")
 #     for tag, score in result.as_score_dict().items():
 #         print(f"  {tag}: {score:.3f}")
-# elif autotagger.is_score_result(result):
+# elif vibe.is_score_result(result):
 #     print(f"{result.label}: {result.score:.3f} (range {result.score_min}..{result.score_max})")
-# elif autotagger.is_multi_score_result(result):
+# elif vibe.is_multi_score_result(result):
 #     for name, value in result.scores.items():
 #         print(f"  {name}: {value:.3f}")
 # else:

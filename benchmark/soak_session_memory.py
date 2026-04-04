@@ -12,8 +12,8 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-import autotagger
-from autotagger.session_factory import build_session
+import vibe
+from vibe.session_factory import build_session
 
 
 class DummyONNXBackend:
@@ -87,7 +87,7 @@ def _configure_logging(level: str) -> None:
         level=resolved_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    logging.getLogger("autotagger.session").setLevel(resolved_level)
+    logging.getLogger("vibe.session").setLevel(resolved_level)
 
 
 def _prepare_temp_source(root: Path) -> str:
@@ -122,7 +122,7 @@ def _resolve_real_model_dir(explicit: str) -> Path | None:
 def _select_real_providers() -> tuple[list[str], list[str]]:
     notes: list[str] = []
     try:
-        from autotagger.backends.runtime.onnx import (
+        from vibe.backends.runtime.onnx import (
             prepare_onnxruntime_environment,
             resolve_onnx_provider_chain,
         )
@@ -212,7 +212,7 @@ def _run_phase(
     gc_every: int,
     onnx_providers: list[str] | None,
 ) -> tuple[dict[str, Any], int]:
-    plugin_cls = autotagger.registry.get("wd-eva02-large")
+    plugin_cls = vibe.registry.get("wd-eva02-large")
     image = Image.new("RGB", (32, 32), (255, 0, 0))
 
     elapsed_ms: list[float] = []
@@ -339,7 +339,7 @@ def main() -> int:
     summaries: list[dict[str, Any]] = []
 
     if not args.skip_dummy:
-        import autotagger.backends.runtime.onnx as onnx_runtime
+        import vibe.backends.runtime.onnx as onnx_runtime
 
         original_onnx_backend = onnx_runtime.ONNXBackend
         onnx_runtime.ONNXBackend = DummyONNXBackend  # type: ignore[assignment]

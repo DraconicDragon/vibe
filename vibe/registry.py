@@ -2,11 +2,11 @@
 ModelRegistry — central index of all known plugins.
 
 Plugins are registered in two ways:
-  1. Auto-discovery: all modules in autotagger/plugins/ are imported at
+  1. Auto-discovery: all modules in vibe/plugins/ are imported at
      startup, and any ModelPlugin subclass with a non-empty model_id is
      registered automatically.
   2. Third-party entry points: packages can ship plugins by declaring an
-     entry point in their pyproject.toml under the group "autotagger.plugins".
+     entry point in their pyproject.toml under the group "vibe.plugins".
 
 After discovery, the registry resolves names/aliases to plugin classes and
 supports override — useful when a user wants to run an arbitrary HF repo
@@ -21,10 +21,10 @@ import pkgutil
 import warnings
 from typing import TYPE_CHECKING, Any
 
-from autotagger.plugin_validation import validate_plugin_declaration
+from vibe.plugin_validation import validate_plugin_declaration
 
 if TYPE_CHECKING:
-    from autotagger.backends.base import ModelPlugin
+    from vibe.backends.base import ModelPlugin
 
 
 class RegistryError(Exception):
@@ -169,13 +169,13 @@ class ModelRegistry:
 
     def discover_builtins(self) -> None:
         """
-        Import every module in autotagger/plugins/ so their ModelPlugin
+        Import every module in vibe/plugins/ so their ModelPlugin
         subclasses get defined and trigger auto-registration.
         """
-        import autotagger.plugins as plugins_pkg
+        import vibe.plugins as plugins_pkg
 
         for module_info in pkgutil.iter_modules(plugins_pkg.__path__):
-            module_name = f"autotagger.plugins.{module_info.name}"
+            module_name = f"vibe.plugins.{module_info.name}"
             try:
                 importlib.import_module(module_name)
             except Exception as exc:
@@ -190,13 +190,13 @@ class ModelRegistry:
 
         Third-party packages add plugins by declaring in pyproject.toml:
 
-            [project.entry-points."autotagger.plugins"]
+            [project.entry-points."vibe.plugins"]
             my_plugin = "my_package.my_module:MyPlugin"
 
         Each entry point value should be a ModelPlugin subclass.
         """
         try:
-            eps = importlib.metadata.entry_points(group="autotagger.plugins")
+            eps = importlib.metadata.entry_points(group="vibe.plugins")
         except Exception:
             return
 
@@ -239,7 +239,7 @@ class ModelRegistry:
 # needed in plugin code.
 #
 # We do this by monkeypatching __init_subclass__ on ModelPlugin after the
-# registry is created. See autotagger/__init__.py where this is wired up.
+# registry is created. See vibe/__init__.py where this is wired up.
 
 
 def _make_auto_register_hook(registry: ModelRegistry):

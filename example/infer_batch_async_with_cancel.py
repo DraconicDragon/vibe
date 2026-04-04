@@ -6,8 +6,8 @@ import threading
 import tty
 from pathlib import Path
 
-import autotagger
-from autotagger.session import InferenceCancelled
+import vibe
+from vibe.session import InferenceCancelled
 
 MODEL_SOURCE = "local:/mnt/T7/Projects/GitHub/vibe/models/wd-eva02-large-tagger-v3"
 IMAGE_FOLDER = Path("example/images/")
@@ -40,7 +40,7 @@ def _load_images_from_folder(folder: Path) -> list[str]:
     return paths
 
 
-def _start_cancel_listener(session: autotagger.ModelSession, stop_event: threading.Event) -> threading.Thread | None:
+def _start_cancel_listener(session: vibe.ModelSession, stop_event: threading.Event) -> threading.Thread | None:
     # Cancel is not async-exclusive: this same cancel API can also be invoked from
     # another thread while a synchronous session.infer(...) call is running.
     # Note: if using infer() (non-async), cancellation still works, but this listener
@@ -82,7 +82,7 @@ async def main() -> None:
     image_paths = _load_images_from_folder(IMAGE_FOLDER)
 
     # Using 'with' is optional but calls session.close() automatically to free resources when done.
-    with autotagger.load("wd-eva02-large", source=MODEL_SOURCE, auto_download=False, device="cuda") as session:
+    with vibe.load("wd-eva02-large", source=MODEL_SOURCE, auto_download=False, device="cuda") as session:
         # Prepare inputs
         inputs = [(path, path) for path in image_paths]
         stop_cancel_listener = threading.Event()

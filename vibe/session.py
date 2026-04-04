@@ -1,11 +1,11 @@
 """
 ModelSession — a loaded model, ready to run inference.
 
-This is the object users interact with after calling autotagger.load().
+This is the object users interact with after calling vibe.load().
 It holds the resolved plugin instance, the active runtime backend,
 and optional result processors. Calling .infer() is the one thing you do with it.
 
-session = autotagger.load("wd-eva02-large")
+session = vibe.load("wd-eva02-large")
 result  = session.infer(image)
 result  = session.infer(image, processors=[...])
 """
@@ -19,11 +19,11 @@ from typing import Any, AsyncIterator, Callable, Iterator, Literal
 
 import numpy as np
 
-from autotagger.backends.base import Backend, ModelPlugin
-from autotagger.loader import FileMap
-from autotagger.memory_stats import MemoryTracker
-from autotagger.result_processors import ResultProcessor, ResultProcessorContext
-from autotagger.results import InferenceResult, InferenceResultItem, ModelResult
+from vibe.backends.base import Backend, ModelPlugin
+from vibe.loader import FileMap
+from vibe.memory_stats import MemoryTracker
+from vibe.result_processors import ResultProcessor, ResultProcessorContext
+from vibe.results import InferenceResult, InferenceResultItem, ModelResult
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +263,7 @@ class ModelSession:
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, _ASYNC_INFER_DONE)
 
-        thread = threading.Thread(target=_worker, name="autotagger-infer-async", daemon=True)
+        thread = threading.Thread(target=_worker, name="vibe-infer-async", daemon=True)
         thread.start()
 
         while True:

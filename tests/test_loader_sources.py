@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from autotagger.backends.base import Backend, FileRole, FileSpec
-from autotagger.loader import (
+from vibe.backends.base import Backend, FileRole, FileSpec
+from vibe.loader import (
     FileMap,
     LoaderError,
     resolve_from_hf_repo,
@@ -65,7 +65,7 @@ def test_resolve_hf_repo_skips_missing_optional(monkeypatch: pytest.MonkeyPatch,
         raise AssertionError("Unexpected filename")
 
     required_path = required
-    monkeypatch.setattr("autotagger.loader.download_or_cached", fake_download_or_cached)
+    monkeypatch.setattr("vibe.loader.download_or_cached", fake_download_or_cached)
 
     specs = [
         FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
@@ -129,7 +129,7 @@ def test_source_string_auto_tries_hf_after_local_failure(monkeypatch: pytest.Mon
         del args, kwargs
         raise LoaderError("hf missing")
 
-    monkeypatch.setattr("autotagger.loader.resolve_from_hf_repo", _always_missing)
+    monkeypatch.setattr("vibe.loader.resolve_from_hf_repo", _always_missing)
 
     with pytest.raises(LoaderError) as excinfo:
         resolve_from_source_string(str(local_dir), specs, Backend.ONNX, allow_download=False)

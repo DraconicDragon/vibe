@@ -19,10 +19,10 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from autotagger.results import ModelResult, OutputType
+from vibe.results import ModelResult, OutputType
 
 if TYPE_CHECKING:
-    from autotagger.result_processors import ResultProcessor
+    from vibe.result_processors import ResultProcessor
 
 
 # region File Spec
@@ -78,7 +78,7 @@ class FileSpec:
 
 class ModelPlugin(abc.ABC):
     """
-    Abstract base class for all autotagger model plugins.
+    Abstract base class for all vibe model plugins.
 
     Subclasses must set class-level attributes and implement the abstract
     methods. The registry uses the class attributes for discovery and the

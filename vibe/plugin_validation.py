@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from autotagger.backends.base import FileRole, ModelPlugin
+from vibe.backends.base import FileRole, ModelPlugin
 
 
 def validate_plugin_declaration(plugin_cls: type[ModelPlugin]) -> list[str]:

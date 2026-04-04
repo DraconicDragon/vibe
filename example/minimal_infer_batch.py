@@ -1,4 +1,4 @@
-import autotagger
+import vibe
 
 MODEL_SOURCE = "local:/mnt/T7/Projects/GitHub/vibe/models/wd-eva02-large-tagger-v3"
 
@@ -8,7 +8,7 @@ image_paths = [
 ]
 
 # Using 'with' is optional but calls session.close() automatically to free resources when done.
-with autotagger.load("wd-eva02-large", source=MODEL_SOURCE, auto_download=False) as session:
+with vibe.load("wd-eva02-large", source=MODEL_SOURCE, auto_download=False) as session:
     # Prepare inputs as (input, reference) pairs
     inputs = [(path, path) for path in image_paths]
 

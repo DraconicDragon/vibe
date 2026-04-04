@@ -1,7 +1,7 @@
 from PIL import Image
 
-import autotagger
-from autotagger import is_multi_score_result, is_score_result, is_tag_result
+import vibe
+from vibe import is_multi_score_result, is_score_result, is_tag_result
 
 MODEL_NAME = "wd-eva02-large"
 MODEL_SOURCE = "local:/mnt/T7/Projects/GitHub/vibe/models/wd-eva02-large-tagger-v3"
@@ -11,7 +11,7 @@ IMAGE_LIST = [
     "example/example.jxl",
 ]
 
-with autotagger.load(MODEL_NAME, source=MODEL_SOURCE, auto_download=False) as session:
+with vibe.load(MODEL_NAME, source=MODEL_SOURCE, auto_download=False) as session:
     # Supported input forms:
     # session.infer(image)
     # session.infer("path/to/image.jpg")
