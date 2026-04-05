@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import sys
 import termios
@@ -12,13 +13,24 @@ from vibe.session import InferenceCancelled
 MODEL_SOURCE = "local:/mnt/T7/Projects/GitHub/vibe/models/wd-eva02-large-tagger-v3"
 IMAGE_FOLDER = Path("example/images/")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".jxl"}
-
+ANSI_GREEN = "\033[92m"
 ANSI_YELLOW = "\033[93m"
 ANSI_CYAN = "\033[96m"
-ANSI_GREEN = "\033[92m"
 ANSI_RED = "\033[91m"
 ANSI_MAGENTA = "\033[95m"
 ANSI_RESET = "\033[0m"
+
+
+def _configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+    logging.getLogger("vibe").setLevel(logging.INFO)
+    # Keep Pillow parser internals out of normal debugging signal.
+    logging.getLogger("PIL").setLevel(logging.WARNING)
+
 
 
 def _natural_sort_key(path: Path) -> list[int | str]:
@@ -79,6 +91,7 @@ def _start_cancel_listener(session: vibe.ModelSession, stop_event: threading.Eve
 
 
 async def main() -> None:
+    _configure_logging()
     image_paths = _load_images_from_folder(IMAGE_FOLDER)
 
     # Using 'with' is optional but calls session.close() automatically to free resources when done.
@@ -92,7 +105,7 @@ async def main() -> None:
             print(f"{ANSI_YELLOW}press c to cancel{ANSI_RESET}")
 
         # Run async inference in batches
-        batch_size = min(3, len(inputs))
+        batch_size = min(5, len(inputs))
         try:
             async for chunk in session.infer_async(
                 inputs,

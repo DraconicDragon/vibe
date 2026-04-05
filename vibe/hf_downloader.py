@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 AUTO_DOWNLOAD_DEFAULT = True
+logger = logging.getLogger(__name__)
 
 
 # region Policy
@@ -79,20 +81,32 @@ def download_or_cached(
         cache_dir=cache_dir,
     )
     if cached and Path(cached).is_file():
+        logger.debug("HF cache hit repo='%s' file='%s' -> %s", repo_id, filename, cached)
         return Path(cached)
 
-    if not is_auto_download_enabled(allow_download):
+    auto_download_enabled = is_auto_download_enabled(allow_download)
+    logger.debug(
+        "HF cache miss repo='%s' file='%s' auto_download=%s required=%s",
+        repo_id,
+        filename,
+        auto_download_enabled,
+        required,
+    )
+
+    if not auto_download_enabled:
         if required:
             raise HFDownloadError(f"Auto-download disabled and '{filename}' is not in cache for '{repo_id}'.")
         return None
 
     try:
+        logger.debug("Downloading HF file repo='%s' file='%s'", repo_id, filename)
         resolved = hf_hub_download(
             repo_id=repo_id,
             filename=filename,
             revision=revision,
             cache_dir=cache_dir,
         )
+        logger.debug("Downloaded HF file repo='%s' file='%s'", repo_id, filename)
         return Path(resolved)
     except EntryNotFoundError:
         if required:

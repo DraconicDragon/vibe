@@ -27,6 +27,15 @@ from vibe.results import InferenceResult, InferenceResultItem, ModelResult
 
 logger = logging.getLogger(__name__)
 
+
+def _fmt_shape(value: Any) -> Any:
+    return getattr(value, "shape", None)
+
+
+def _fmt_dtype(value: Any) -> Any:
+    return getattr(value, "dtype", None)
+
+
 # Log pillow_jxl availability at module load time for diagnostics
 _has_pillow_jxl: bool
 try:
@@ -95,6 +104,18 @@ class ModelSession:
         self._cancel_event = threading.Event()
         self._run_state_lock = threading.Lock()
         self._run_active = False
+        logger.debug("Session created model_id=%s backend=%s", self.model_id, self._backend.value)
+        logger.debug("Session memory_tracking=%s", self._memory_tracker.enabled)
+        if not self._memory_tracker.enabled:
+            logger.info("Memory tracking disabled by user for model_id=%s", self.model_id)
+        else:
+            snap = self._memory_tracker.snapshot()
+            if snap.process_rss_bytes is None:
+                logger.debug("Memory tracking available with partial metrics for model_id=%s", self.model_id)
+            else:
+                logger.info("Memory tracking enabled")
+            if snap.gpu_process_used_bytes is None:
+                logger.debug("GPU process memory metric unavailable (likely missing NVML/pynvml).")
 
     # region Primary Interface
 
@@ -134,6 +155,9 @@ class ModelSession:
         if on_cancel not in ("raise", "return_partial"):
             raise SessionError("on_cancel must be one of: 'raise', 'return_partial'")
 
+        logger.info("Starting inference model_id=%s batch_size=%s", self.model_id, batch_size)
+        logger.debug("Infer options batch_size=%s batch_method=%s on_cancel=%s", batch_size, batch_method, on_cancel)
+
         tracker_before_calls = self._memory_tracker.stats().inference_calls
         total_inputs: int | None = None
         items: list[InferenceResultItem] = []
@@ -154,6 +178,13 @@ class ModelSession:
         memory = self._last_memory_record_dict(
             operation="infer_batches",
             min_call_index=tracker_before_calls,
+        )
+        logger.info(
+            "Inference completed model_id=%s outputs=%s batch_size=%s cancelled=%s",
+            self.model_id,
+            len(items),
+            batch_size,
+            bool(total_inputs is not None and len(items) < total_inputs),
         )
         return InferenceResult(
             total_inputs=total_inputs if total_inputs is not None else len(items),
@@ -187,15 +218,23 @@ class ModelSession:
                 values, refs = self._normalize_input_format(images)
                 normalized_images = self._load_images(values)
                 if not normalized_images:
+                    logger.warning("No input images provided for model_id=%s", self.model_id)
                     return
 
                 total_inputs = len(normalized_images)
                 method = self._resolve_batch_method(batch_method, batch_size)
+                logger.debug(
+                    "Inference run prepared model_id=%s inputs=%s resolved_batch_method=%s",
+                    self.model_id,
+                    total_inputs,
+                    method,
+                )
 
                 if method == "sequential":
                     for index, image in enumerate(normalized_images):
                         self._check_cancelled()
                         result = self._infer_single(image, processors=processors)
+                        logger.debug("Completed sequential item index=%s/%s", index + 1, total_inputs)
                         yield InferenceResult(
                             total_inputs=total_inputs,
                             items=[InferenceResultItem(index=index, input_ref=refs[index], result=result)],
@@ -213,6 +252,12 @@ class ModelSession:
                             chunk_items.append(InferenceResultItem(index=index, input_ref=refs[index], result=result))
                             index += 1
                         self._check_cancelled()
+                        logger.debug(
+                            "Completed inference batch model_id=%s done=%s/%s",
+                            self.model_id,
+                            index,
+                            total_inputs,
+                        )
                         yield InferenceResult(total_inputs=total_inputs, items=chunk_items)
             finally:
                 if before is not None:
@@ -226,6 +271,7 @@ class ModelSession:
                         memory_record.delta_gpu_process_used_bytes,
                     )
                 self._finish_run()
+                logger.debug("Inference run finished model_id=%s", self.model_id)
 
     async def infer_async(
         self,
@@ -285,6 +331,7 @@ class ModelSession:
             if not self._run_active:
                 return False
         self._cancel_event.set()
+        logger.warning("Cancellation requested for model_id=%s", self.model_id)
         return True
 
     def is_inference_running(self) -> bool:
@@ -300,14 +347,17 @@ class ModelSession:
         with self._run_state_lock:
             self._run_active = True
             self._cancel_event.clear()
+        logger.debug("Run state -> active for model_id=%s", self.model_id)
 
     def _finish_run(self) -> None:
         with self._run_state_lock:
             self._run_active = False
             self._cancel_event.clear()
+        logger.debug("Run state -> idle for model_id=%s", self.model_id)
 
     def _check_cancelled(self) -> None:
         if self._cancel_event.is_set():
+            logger.warning("Inference cancelled before completing current step model_id=%s", self.model_id)
             raise InferenceCancelled("Inference cancelled by user request.")
 
     def _last_memory_record_dict(self, *, operation: str, min_call_index: int) -> dict[str, Any] | None:
@@ -360,6 +410,7 @@ class ModelSession:
 
     def _load_images(self, values: list[Any | str]) -> list[Any]:
         normalized_images = [self._load_image_if_path(value, index=i) for i, value in enumerate(values)]
+        logger.debug("Prepared %d input image(s) for model_id=%s", len(normalized_images), self.model_id)
         return normalized_images
 
     def _find_duplicates(self, values: list[Any]) -> list[Any]:
@@ -415,12 +466,14 @@ class ModelSession:
         # Preprocess: image → tensor/array
         try:
             tensor = self._plugin.preprocess(image)
+            logger.debug("Preprocess output shape=%s dtype=%s", _fmt_shape(tensor), _fmt_dtype(tensor))
         except Exception as exc:
             raise SessionError(f"Preprocessing failed for model '{self.model_id}': {exc}") from exc
 
         # Forward pass via runtime backend
         try:
             raw_output = self._backend_instance.run(tensor)
+            logger.debug("Raw backend output shape=%s dtype=%s", _fmt_shape(raw_output), _fmt_dtype(raw_output))
         except Exception as exc:
             raise SessionError(f"Inference failed for model '{self.model_id}': {exc}") from exc
 
@@ -518,7 +571,9 @@ class ModelSession:
         first = chunk[0]
         if isinstance(first, np.ndarray):
             try:
-                return np.concatenate(chunk, axis=0)
+                stacked = np.concatenate(chunk, axis=0)
+                logger.debug("Stacked numpy batch shape=%s dtype=%s", stacked.shape, stacked.dtype)
+                return stacked
             except Exception as exc:
                 raise SessionError(
                     "Could not build a true batch tensor. This usually means preprocessed "
@@ -531,7 +586,9 @@ class ModelSession:
             import torch
 
             if isinstance(first, torch.Tensor):
-                return torch.cat(chunk, dim=0)
+                stacked = torch.cat(chunk, dim=0)
+                logger.debug("Stacked torch batch shape=%s dtype=%s", stacked.shape, stacked.dtype)
+                return stacked
         except Exception:
             pass
 

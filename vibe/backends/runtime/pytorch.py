@@ -7,6 +7,7 @@ interface so the session layer doesn't need to know which backend is active.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +15,8 @@ import numpy as np
 
 if TYPE_CHECKING:
     pass
+
+logger = logging.getLogger(__name__)
 
 
 class PyTorchBackend:
@@ -36,6 +39,8 @@ class PyTorchBackend:
 
     def load(self, weights_path: Path, device: str = "cpu") -> None:
         """Load weights from disk. Raises if torch is not installed."""
+        logger.debug("Loading PyTorch model")
+        logger.debug("PyTorch weights path=%s", weights_path)
         try:
             import torch
         except ImportError as exc:
@@ -58,6 +63,7 @@ class PyTorchBackend:
             # for building the architecture and calling load_state_dict.
             # See note in ModelPlugin.load_ancillary.
             self._model = state
+            logger.debug("Loaded safetensors state dict device=%s", device)
         else:
             # .pt / .pth — attempt full model load first
             self._model = torch.load(
@@ -65,6 +71,7 @@ class PyTorchBackend:
                 map_location=device,
                 weights_only=False,
             )
+            logger.debug("Loaded torch checkpoint device=%s", device)
 
         # Put in eval mode if it's an nn.Module
         try:
@@ -73,6 +80,15 @@ class PyTorchBackend:
             if isinstance(self._model, nn.Module):
                 self._model.eval()
                 self._model.to(device)
+                first_param = next(self._model.parameters(), None)
+                if first_param is not None:
+                    logger.debug(
+                        "PyTorch model ready device=%s weight_dtype=%s compute_dtype=%s",
+                        device,
+                        first_param.dtype,
+                        first_param.dtype,
+                    )
+                logger.debug("PyTorch model class=%s", self._model.__class__.__name__)
         except Exception:
             pass  # state dict case — handled by plugin
 
@@ -104,17 +120,25 @@ class PyTorchBackend:
             )
 
         with torch.no_grad():
+            logger.debug("PyTorch run input_shape=%s input_dtype=%s", getattr(tensor, "shape", None), tensor.dtype)
             output = self._model(tensor.to(self._device))
 
         if isinstance(output, torch.Tensor):
+            logger.debug("PyTorch run output_shape=%s output_dtype=%s", output.shape, output.dtype)
             return output.cpu().numpy()
         # Some models return tuples/lists
         if isinstance(output, (tuple, list)):
+            logger.debug(
+                "PyTorch run output tuple/list first_shape=%s first_dtype=%s",
+                getattr(output[0], "shape", None),
+                getattr(output[0], "dtype", None),
+            )
             return output[0].cpu().numpy()
         return np.array(output)
 
     def close(self) -> None:
         """Release model references and try to free backend-side cache."""
+        logger.debug("Closing PyTorch backend device=%s", self._device)
         self._model = None
         try:
             import torch

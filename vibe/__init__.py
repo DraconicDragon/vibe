@@ -31,6 +31,7 @@ Quick start
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
@@ -61,6 +62,8 @@ from vibe.results import (
 )
 from vibe.session import ModelSession, SessionError
 from vibe.session_factory import build_session
+
+logger = logging.getLogger(__name__)
 
 # region Global Registry
 
@@ -143,6 +146,17 @@ def load(
         plugin_cls,
     )
 
+    logger.info("Loading model '%s' from '%s'", model, resolved_source)
+    logger.debug(
+        "Load options plugin=%s source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
+        plugin_cls.__name__,
+        resolved_source,
+        backend.value if isinstance(backend, Backend) else backend or "auto",
+        device,
+        effective_auto_download,
+        memory_tracking,
+    )
+
     return build_session(
         plugin_cls=plugin_cls,
         source=resolved_source,
@@ -202,6 +216,16 @@ def load_custom(
     resolved_source = _resolve_source(
         source,
         plugin_cls,
+    )
+
+    logger.info("Loading custom plugin '%s' from '%s'", plugin_cls.__name__, resolved_source)
+    logger.debug(
+        "Load custom options source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
+        resolved_source,
+        backend.value if isinstance(backend, Backend) else backend or "auto",
+        device,
+        effective_auto_download,
+        memory_tracking,
     )
 
     return build_session(

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from vibe.hf_downloader import HFDownloadError, download_or_cached
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from vibe.backends.base import Backend, FileSpec
@@ -78,9 +81,21 @@ def resolve_from_hf_repo(
     """
     paths: dict[str, Path] = {}
     needed = [s for s in file_specs if s.needed_for(backend)]
+    logger.debug(
+        "Resolving model files from HF repo '%s' backend=%s files=%d",
+        repo_id,
+        backend.value,
+        len(needed),
+    )
 
     for spec in needed:
         try:
+            logger.debug(
+                "Resolving file from HF repo='%s' filename='%s' required=%s",
+                repo_id,
+                spec.name,
+                spec.required,
+            )
             local = download_or_cached(
                 repo_id=repo_id,
                 filename=spec.name,
@@ -91,6 +106,7 @@ def resolve_from_hf_repo(
             )
             if local is not None:
                 paths[spec.name] = Path(local)
+                logger.debug("Resolved file '%s' -> %s", spec.name, local)
         except HFDownloadError as exc:
             raise LoaderError(str(exc)) from None
         except Exception as exc:
@@ -98,6 +114,7 @@ def resolve_from_hf_repo(
             # hub-side validation errors such as invalid repo ID format.
             raise LoaderError(str(exc)) from None
 
+    logger.debug("Resolved %d file(s) from HF repo '%s'", len(paths), repo_id)
     return FileMap(paths)
 
 
@@ -122,11 +139,18 @@ def resolve_from_local_folder(
 
     paths: dict[str, Path] = {}
     needed = [s for s in file_specs if s.needed_for(backend)]
+    logger.debug(
+        "Resolving model files from local folder '%s' backend=%s files=%d",
+        folder,
+        backend.value,
+        len(needed),
+    )
 
     for spec in needed:
         candidate = folder / spec.name
         if candidate.is_file():
             paths[spec.name] = candidate
+            logger.debug("Resolved local file '%s' -> %s", spec.name, candidate)
         elif spec.required:
             # List what IS in the folder to help the user debug
             present = [f.name for f in folder.iterdir() if f.is_file()]
@@ -137,6 +161,7 @@ def resolve_from_local_folder(
             )
         # else: optional, skip silently
 
+    logger.debug("Resolved %d file(s) from local folder '%s'", len(paths), folder)
     return FileMap(paths)
 
 
@@ -179,6 +204,8 @@ def resolve_from_source_string(
     source = source.strip()
     if not source:
         raise LoaderError("Source cannot be empty.")
+
+    logger.debug("Resolving source '%s' for backend=%s", source, backend.value)
 
     if source.startswith("local:"):
         return _resolve_local_prefixed(source[6:], file_specs, backend)

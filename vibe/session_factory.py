@@ -38,6 +38,14 @@ def build_session(
     from vibe.backends.runtime.onnx import ONNXBackend
     from vibe.backends.runtime.pytorch import PyTorchBackend
 
+    logger.debug(
+        "Building session model_id=%s requested_backend=%s requested_device=%s source=%s",
+        plugin_cls.model_id,
+        backend.value if isinstance(backend, Backend) else backend or "auto",
+        device,
+        source,
+    )
+
     if backend is None:
         backend = _auto_select_backend(plugin_cls)
     elif isinstance(backend, str):
@@ -61,6 +69,13 @@ def build_session(
         raise SessionError(str(exc)) from exc
 
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
+    logger.debug(
+        "Session backend selected model_id=%s backend=%s device=%s",
+        plugin_cls.model_id,
+        backend.value,
+        normalized_device,
+    )
+    logger.debug("Session auto_download=%s", effective_auto_download)
 
     try:
         file_map = resolve_from_source_string(
@@ -75,6 +90,7 @@ def build_session(
         raise SessionError(str(exc)) from exc
 
     weights_path = _find_weights(plugin_cls, file_map, backend)
+    logger.debug("Resolved model weights for model_id=%s path=%s", plugin_cls.model_id, weights_path)
 
     pool_key = _make_backend_pool_key(
         backend=backend,
@@ -98,6 +114,7 @@ def build_session(
             auto_download=effective_auto_download,
         )
         plugin.load_ancillary(file_map.as_path_dict())
+        logger.debug("Session ready model_id=%s", plugin_cls.model_id)
         return ModelSession(
             plugin=plugin,
             backend_instance=rt,
@@ -145,9 +162,12 @@ def _acquire_backend(
         if cached is not None:
             instance, refcount = cached
             _BACKEND_POOL[key] = (instance, refcount + 1)
-            logger.debug("Reusing pooled backend key=%s refcount=%s", key, refcount + 1)
+            logger.debug("Reusing pooled backend instance backend=%s refcount=%s", backend.value, refcount + 1)
+            logger.debug("Reusing pooled backend key=%s", key)
             return instance, lambda: _release_backend(key)
 
+        logger.debug("Loading backend backend=%s", backend.value)
+        logger.debug("Backend load options backend=%s device=%s weights_path=%s", backend.value, device, weights_path)
         if backend == Backend.PYTORCH:
             instance = pytorch_cls()
             instance.load(weights_path, device=device)
@@ -156,6 +176,27 @@ def _acquire_backend(
             instance.load(weights_path, providers=providers, device=device)
 
         _BACKEND_POOL[key] = (instance, 1)
+        if backend == Backend.ONNX:
+            providers = list(getattr(instance, "providers", []) or [])
+            primary_provider = providers[0] if providers else "CPUExecutionProvider"
+            fallback_providers = providers[1:]
+            if fallback_providers:
+                logger.info(
+                    "Backend ready backend=%s device=%s using=%s fallback=%s",
+                    backend.value,
+                    device,
+                    primary_provider,
+                    fallback_providers,
+                )
+            else:
+                logger.info(
+                    "Backend ready backend=%s device=%s using=%s",
+                    backend.value,
+                    device,
+                    primary_provider,
+                )
+        else:
+            logger.info("Backend ready backend=%s device=%s", backend.value, device)
         logger.debug("Created pooled backend key=%s refcount=1", key)
         return instance, lambda: _release_backend(key)
 

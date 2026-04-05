@@ -8,6 +8,7 @@ Wraps an onnxruntime.InferenceSession and provides a uniform
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import sys
 from pathlib import Path
@@ -16,6 +17,8 @@ from typing import Any
 import numpy as np
 
 from vibe.devices import normalize_device_string
+
+logger = logging.getLogger(__name__)
 
 # Auto-priority excludes TensorRT on purpose to keep behavior predictable.
 ONNX_AUTO_PROVIDER_PRIORITY: tuple[str, ...] = (
@@ -147,6 +150,17 @@ def resolve_onnx_provider_chain(
             provider_options.append({})
 
     has_non_empty_options = any(bool(options) for options in provider_options)
+    logger.debug(
+        "ONNX providers resolved device=%s providers=%s",
+        device,
+        providers,
+    )
+    logger.debug(
+        "ONNX provider resolution details available=%s explicit=%s provider_options=%s",
+        available,
+        explicit,
+        provider_options if has_non_empty_options else None,
+    )
     return providers, provider_options if has_non_empty_options else None
 
 
@@ -274,6 +288,7 @@ class ONNXBackend:
         device:      Logical device selector for auto-provider selection
                  (e.g. "cpu", "gpu", "gpu1", "cuda:0"). 'cuda' and 'gpu' are interchangeable.
         """
+        logger.debug("Loading ONNX model from %s", weights_path)
         prepare_onnxruntime_environment()
 
         try:
@@ -299,6 +314,31 @@ class ONNXBackend:
             provider_options=resolved_provider_options,
         )
         self._input_name = self._session.get_inputs()[0].name
+        input_meta = self._session.get_inputs()[0]
+        output_meta = self._session.get_outputs()[0] if self._session.get_outputs() else None
+        primary_provider = self._providers[0] if self._providers else "CPUExecutionProvider"
+        fallback_providers = self._providers[1:]
+        if fallback_providers:
+            logger.info(
+                "ONNX model loaded: using %s with fallback %s",
+                primary_provider,
+                fallback_providers,
+            )
+        else:
+            logger.info("ONNX model loaded: using %s", primary_provider)
+        logger.debug(
+            "ONNX precision input_type=%s output_type=%s weight_precision=graph-defined compute_precision=runtime-defined casted_weight_precision=no casted_compute_precision=no",
+            getattr(input_meta, "type", None),
+            getattr(output_meta, "type", None),
+        )
+        logger.debug(
+            "ONNX graph io input_name=%s input_shape=%s input_type=%s output_shape=%s output_type=%s",
+            input_meta.name,
+            input_meta.shape,
+            getattr(input_meta, "type", None),
+            getattr(output_meta, "shape", None),
+            getattr(output_meta, "type", None),
+        )
 
     def run(self, array: np.ndarray) -> np.ndarray:
         """
@@ -313,13 +353,23 @@ class ONNXBackend:
         if self._session is None:
             raise RuntimeError("ONNXBackend.load() has not been called.")
 
+        logger.debug("ONNX run input_shape=%s input_dtype=%s", array.shape, array.dtype)
+
         # TODO: support selecting a specific output name/index per model to avoid
         # fetching all outputs when only one tensor is needed.
         outputs = self._session.run(None, {self._input_name: array})
+        if outputs:
+            first = outputs[0]
+            logger.debug(
+                "ONNX run output_shape=%s output_dtype=%s",
+                getattr(first, "shape", None),
+                getattr(first, "dtype", None),
+            )
         return outputs[0]
 
     def close(self) -> None:
         """Release runtime references so memory can be reclaimed promptly."""
+        logger.debug("Closing ONNX backend")
         self._session = None
         self._input_name = ""
         self._providers = []
