@@ -11,6 +11,7 @@ import ctypes
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -288,6 +289,7 @@ class ONNXBackend:
         device:      Logical device selector for auto-provider selection
                  (e.g. "cpu", "gpu", "gpu1", "cuda:0"). 'cuda' and 'gpu' are interchangeable.
         """
+        started_at = time.perf_counter()
         logger.debug("Loading ONNX model from %s", weights_path)
         prepare_onnxruntime_environment()
 
@@ -313,21 +315,21 @@ class ONNXBackend:
             providers=resolved_providers,
             provider_options=resolved_provider_options,
         )
+        load_seconds = time.perf_counter() - started_at
         inputs = self._session.get_inputs()
         outputs = self._session.get_outputs()
         self._input_name = inputs[0].name
         input_meta = inputs[0]
         output_meta = outputs[0] if outputs else None
+        available_providers = _available_onnx_providers(ort)
         primary_provider = self._providers[0] if self._providers else "CPUExecutionProvider"
-        fallback_providers = self._providers[1:]
-        if fallback_providers:
-            logger.info(
-                "ONNX model loaded: using %s with fallback %s",
-                primary_provider,
-                fallback_providers,
-            )
-        else:
-            logger.info("ONNX model loaded: using %s", primary_provider)
+        logger.info(
+            "ONNX model loaded in %.2fs | available EPs=%s | selected EP=%s | provider chain=%s",
+            load_seconds,
+            available_providers,
+            primary_provider,
+            self._providers,
+        )
         logger.debug(
             "ONNX precision input_type=%s output_type=%s weight_precision=graph-defined compute_precision=runtime-defined casted_weight_precision=no casted_compute_precision=no",
             getattr(input_meta, "type", None),

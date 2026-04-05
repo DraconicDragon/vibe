@@ -216,12 +216,13 @@ class ModelSession:
             before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
             try:
                 values, refs = self._normalize_input_format(images)
-                normalized_images = self._load_images(values)
-                if not normalized_images:
+                if not values:
                     logger.warning("No input images provided for model_id=%s", self.model_id)
                     return
 
-                total_inputs = len(normalized_images)
+                total_inputs = len(values)
+                path_inputs = sum(1 for value in values if isinstance(value, (str, Path)))
+                loaded_path_inputs = 0
                 method = self._resolve_batch_method(batch_method, batch_size)
                 if batch_size > 1 and method == "sequential" and batch_method != "sequential":
                     logger.warning(
@@ -235,9 +236,19 @@ class ModelSession:
                     total_inputs,
                     method,
                 )
+                if path_inputs:
+                    logger.info(
+                        "Loading input images model_id=%s paths=%s total_inputs=%s",
+                        self.model_id,
+                        path_inputs,
+                        total_inputs,
+                    )
 
                 if method == "sequential":
-                    for index, image in enumerate(normalized_images):
+                    for index, value in enumerate(values):
+                        image = self._load_image_if_path(value, index=index)
+                        if isinstance(value, (str, Path)):
+                            loaded_path_inputs += 1
                         self._check_cancelled()
                         result = self._infer_single(image, processors=processors)
                         logger.debug("Completed sequential item index=%s/%s", index + 1, total_inputs)
@@ -247,12 +258,19 @@ class ModelSession:
                         )
                 else:
                     index = 0
-                    for chunk_results in self._infer_many_true_batch_chunks(
-                        normalized_images,
-                        batch_size,
-                        processors=processors,
-                        fallback_to_sequential_on_stack_error=(batch_method == "auto"),
-                    ):
+                    for start in range(0, total_inputs, batch_size):
+                        self._check_cancelled()
+                        chunk_values = values[start : start + batch_size]
+                        chunk_images = self._load_images(chunk_values, start_index=start)
+                        loaded_path_inputs += sum(1 for value in chunk_values if isinstance(value, (str, Path)))
+                        chunk_results = next(
+                            self._infer_many_true_batch_chunks(
+                                chunk_images,
+                                len(chunk_images),
+                                processors=processors,
+                                fallback_to_sequential_on_stack_error=(batch_method == "auto"),
+                            )
+                        )
                         chunk_items: list[InferenceResultItem] = []
                         for result in chunk_results:
                             chunk_items.append(InferenceResultItem(index=index, input_ref=refs[index], result=result))
@@ -265,6 +283,14 @@ class ModelSession:
                             total_inputs,
                         )
                         yield InferenceResult(total_inputs=total_inputs, items=chunk_items)
+
+                if path_inputs:
+                    logger.info(
+                        "Loaded input images model_id=%s loaded=%s/%s",
+                        self.model_id,
+                        loaded_path_inputs,
+                        path_inputs,
+                    )
             finally:
                 if before is not None:
                     after = self._memory_tracker.snapshot()
@@ -414,8 +440,12 @@ class ModelSession:
 
         return values, refs
 
-    def _load_images(self, values: list[Any | str]) -> list[Any]:
-        normalized_images = [self._load_image_if_path(value, index=i) for i, value in enumerate(values)]
+    def _load_images(self, values: list[Any | str], *, start_index: int = 0) -> list[Any]:
+        normalized_images: list[Any] = []
+        for offset, value in enumerate(values):
+            self._check_cancelled()
+            normalized_images.append(self._load_image_if_path(value, index=start_index + offset))
+        self._check_cancelled()
         logger.debug("Prepared %d input image(s) for model_id=%s", len(normalized_images), self.model_id)
         return normalized_images
 
@@ -447,15 +477,22 @@ class ModelSession:
         return duplicates
 
     def _load_image_if_path(self, value: Any | str, *, index: int) -> Any:
+        self._check_cancelled()
         if not isinstance(value, (str, Path)):
             return value
 
         from PIL import Image
 
         path = Path(value)
+        logger.debug("Loading image index=%s path=%s", index, path)
         try:
             with Image.open(path) as img:
-                return img.copy()
+                loaded = img.copy()
+            self._check_cancelled()
+            logger.debug("Loaded image index=%s path=%s", index, path)
+            return loaded
+        except InferenceCancelled:
+            raise
         except Exception as exc:
             suffix = Path(path).suffix.lower()
             hint = ""

@@ -176,27 +176,7 @@ def _acquire_backend(
             instance.load(weights_path, providers=providers, device=device)
 
         _BACKEND_POOL[key] = (instance, 1)
-        if backend == Backend.ONNX:
-            providers = list(getattr(instance, "providers", []) or [])
-            primary_provider = providers[0] if providers else "CPUExecutionProvider"
-            fallback_providers = providers[1:]
-            if fallback_providers:
-                logger.info(
-                    "Backend ready backend=%s device=%s using=%s fallback=%s",
-                    backend.value,
-                    device,
-                    primary_provider,
-                    fallback_providers,
-                )
-            else:
-                logger.info(
-                    "Backend ready backend=%s device=%s using=%s",
-                    backend.value,
-                    device,
-                    primary_provider,
-                )
-        else:
-            logger.info("Backend ready backend=%s device=%s", backend.value, device)
+        logger.info("Backend ready backend=%s device=%s", backend.value, device)
         logger.debug("Created pooled backend key=%s refcount=1", key)
         return instance, lambda: _release_backend(key)
 

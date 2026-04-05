@@ -324,6 +324,60 @@ def test_infer_sync_can_return_partial_results_on_cancel(tmp_path: Path) -> None
     assert session.is_cancellation_requested() is False
 
 
+def test_infer_sync_can_be_cancelled_during_image_loading(tmp_path: Path) -> None:
+    session, backend = _build_session(tmp_path, providers=["CPUExecutionProvider"])
+    paths: list[str] = []
+    for i in range(3):
+        path = tmp_path / f"load-{i}.png"
+        _write_test_image(path, (255, 0, 0))
+        paths.append(str(path))
+
+    original_loader = session._load_image_if_path
+
+    def _slow_loader(value: object, *, index: int) -> object:
+        time.sleep(0.03)
+        return original_loader(value, index=index)
+
+    session._load_image_if_path = _slow_loader  # type: ignore[method-assign]
+
+    def _cancel_while_loading() -> None:
+        while not session.is_inference_running():
+            time.sleep(0.005)
+        time.sleep(0.04)
+        session.cancel_current_inference()
+
+    canceller = threading.Thread(target=_cancel_while_loading, daemon=True)
+    canceller.start()
+    with pytest.raises(InferenceCancelled, match="cancelled"):
+        session.infer(paths, batch_size=2, batch_method="sequential")
+    canceller.join(timeout=0.2)
+
+    assert len(backend.calls) < len(paths)
+    assert session.is_inference_running() is False
+    assert session.is_cancellation_requested() is False
+
+
+def test_load_image_if_path_preserves_inference_cancelled(tmp_path: Path) -> None:
+    session, _ = _build_session(tmp_path)
+    img_path = tmp_path / "one.png"
+    _write_test_image(img_path, (255, 0, 0))
+
+    original_check = session._check_cancelled
+    calls = 0
+
+    def _raise_on_second_check() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise InferenceCancelled("cancelled")
+        original_check()
+
+    session._check_cancelled = _raise_on_second_check  # type: ignore[method-assign]
+
+    with pytest.raises(InferenceCancelled, match="cancelled"):
+        session._load_image_if_path(str(img_path), index=0)
+
+
 def test_infer_many_sequential_runs_for_all_inputs(tmp_path: Path) -> None:
     session, _ = _build_session(tmp_path, providers=["CPUExecutionProvider"])
     results = session.infer(
