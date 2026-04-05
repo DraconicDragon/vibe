@@ -223,6 +223,12 @@ class ModelSession:
 
                 total_inputs = len(normalized_images)
                 method = self._resolve_batch_method(batch_method, batch_size)
+                if batch_size > 1 and method == "sequential" and batch_method != "sequential":
+                    logger.warning(
+                        "Batching disabled for model_id=%s backend=%s; using sequential processing",
+                        self.model_id,
+                        self._backend.value,
+                    )
                 logger.debug(
                     "Inference run prepared model_id=%s inputs=%s resolved_batch_method=%s",
                     self.model_id,
@@ -492,12 +498,19 @@ class ModelSession:
     ) -> Literal["true", "sequential"]:
         if batch_size <= 1:
             return "sequential"
+        supports_true_batching = self._supports_true_batching()
         if requested == "true":
+            if not supports_true_batching:
+                logger.warning(
+                    "Model_id=%s backend=%s does not support true batching; the run may fail if the export is batch-incompatible",
+                    self.model_id,
+                    self._backend.value,
+                )
             return "true"
         if requested == "sequential":
             return "sequential"
 
-        if self._supports_true_batching():
+        if supports_true_batching:
             return "true"
         return "sequential"
 
@@ -575,6 +588,11 @@ class ModelSession:
                 logger.debug("Stacked numpy batch shape=%s dtype=%s", stacked.shape, stacked.dtype)
                 return stacked
             except Exception as exc:
+                logger.error(
+                    "Failed to stack numpy batch for model_id=%s sample_shapes=%s",
+                    self.model_id,
+                    [getattr(item, "shape", None) for item in chunk],
+                )
                 raise SessionError(
                     "Could not build a true batch tensor. This usually means preprocessed "
                     "samples have incompatible shapes for concatenation. "
@@ -592,6 +610,11 @@ class ModelSession:
         except Exception:
             pass
 
+        logger.error(
+            "Unsupported preprocessed batch type for model_id=%s sample_shapes=%s",
+            self.model_id,
+            [getattr(item, "shape", None) for item in chunk],
+        )
         raise SessionError("Unsupported preprocessed tensor type for true batching. Use batch_method='sequential'.")
 
     def _split_batch_output(self, raw_output: Any, expected: int) -> list[Any]:
@@ -618,6 +641,12 @@ class ModelSession:
             return [arr for _ in range(expected)]
         if arr.shape[0] == expected:
             return [arr[i : i + 1] for i in range(expected)]
+        logger.error(
+            "Backend output batch mismatch model_id=%s expected=%s actual_shape=%s",
+            self.model_id,
+            expected,
+            arr.shape,
+        )
         raise SessionError(f"Backend output batch dimension mismatch: expected {expected}, got {arr.shape}.")
 
     def _apply_processors(

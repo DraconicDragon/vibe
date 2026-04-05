@@ -313,9 +313,11 @@ class ONNXBackend:
             providers=resolved_providers,
             provider_options=resolved_provider_options,
         )
-        self._input_name = self._session.get_inputs()[0].name
-        input_meta = self._session.get_inputs()[0]
-        output_meta = self._session.get_outputs()[0] if self._session.get_outputs() else None
+        inputs = self._session.get_inputs()
+        outputs = self._session.get_outputs()
+        self._input_name = inputs[0].name
+        input_meta = inputs[0]
+        output_meta = outputs[0] if outputs else None
         primary_provider = self._providers[0] if self._providers else "CPUExecutionProvider"
         fallback_providers = self._providers[1:]
         if fallback_providers:
@@ -330,6 +332,11 @@ class ONNXBackend:
             "ONNX precision input_type=%s output_type=%s weight_precision=graph-defined compute_precision=runtime-defined casted_weight_precision=no casted_compute_precision=no",
             getattr(input_meta, "type", None),
             getattr(output_meta, "type", None),
+        )
+        logger.debug(
+            "ONNX model io inputs=%s outputs=%s",
+            [{"name": meta.name, "shape": meta.shape, "type": getattr(meta, "type", None)} for meta in inputs],
+            [{"name": meta.name, "shape": meta.shape, "type": getattr(meta, "type", None)} for meta in outputs],
         )
         logger.debug(
             "ONNX graph io input_name=%s input_shape=%s input_type=%s output_shape=%s output_type=%s",
@@ -354,10 +361,26 @@ class ONNXBackend:
             raise RuntimeError("ONNXBackend.load() has not been called.")
 
         logger.debug("ONNX run input_shape=%s input_dtype=%s", array.shape, array.dtype)
+        if array.ndim == 0:
+            logger.error(
+                "ONNX input is scalar for input_name=%s expected_shape=%s actual_shape=%s",
+                self._input_name,
+                self.input_shape(),
+                array.shape,
+            )
 
         # TODO: support selecting a specific output name/index per model to avoid
         # fetching all outputs when only one tensor is needed.
-        outputs = self._session.run(None, {self._input_name: array})
+        try:
+            outputs = self._session.run(None, {self._input_name: array})
+        except Exception:
+            logger.error(
+                "ONNX inference failed input_name=%s input_shape=%s expected_input_shape=%s",
+                self._input_name,
+                array.shape,
+                self.input_shape(),
+            )
+            raise
         if outputs:
             first = outputs[0]
             logger.debug(

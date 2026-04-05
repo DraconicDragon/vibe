@@ -7,6 +7,7 @@ interface so the session layer doesn't need to know which backend is active.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -80,6 +81,10 @@ class PyTorchBackend:
             if isinstance(self._model, nn.Module):
                 self._model.eval()
                 self._model.to(device)
+                try:
+                    forward_params = list(inspect.signature(self._model.forward).parameters.keys())
+                except Exception:
+                    forward_params = []
                 first_param = next(self._model.parameters(), None)
                 if first_param is not None:
                     logger.debug(
@@ -88,6 +93,7 @@ class PyTorchBackend:
                         first_param.dtype,
                         first_param.dtype,
                     )
+                logger.debug("PyTorch model input_names=%s", forward_params or ["input"])
                 logger.debug("PyTorch model class=%s", self._model.__class__.__name__)
         except Exception:
             pass  # state dict case — handled by plugin
@@ -121,7 +127,15 @@ class PyTorchBackend:
 
         with torch.no_grad():
             logger.debug("PyTorch run input_shape=%s input_dtype=%s", getattr(tensor, "shape", None), tensor.dtype)
-            output = self._model(tensor.to(self._device))
+            try:
+                output = self._model(tensor.to(self._device))
+            except Exception:
+                logger.error(
+                    "PyTorch inference failed input_shape=%s device=%s",
+                    getattr(tensor, "shape", None),
+                    self._device,
+                )
+                raise
 
         if isinstance(output, torch.Tensor):
             logger.debug("PyTorch run output_shape=%s output_dtype=%s", output.shape, output.dtype)
