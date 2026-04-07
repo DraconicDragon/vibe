@@ -1,8 +1,8 @@
 import vibe
 
-model_id = "wd-eva02-large"
+model_id = "wd-eva02-large-v3"
 info = vibe.describe(model_id)
-
+print(info)
 print(f"Files for {model_id}:")
 for f in info["required_files"]:
     # Show backends in brackets, or [all] if empty
