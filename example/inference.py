@@ -3,7 +3,7 @@ from PIL import Image
 import vibe
 from vibe import is_multi_score_result, is_score_result, is_tag_result
 
-MODEL_NAME = "wd-eva02-large"
+MODEL_NAME = "wd-eva02-large-v3"
 MODEL_SOURCE = "local:/mnt/T7/Projects/GitHub/vibe/models/wd-eva02-large-tagger-v3"
 
 IMAGE_LIST = [

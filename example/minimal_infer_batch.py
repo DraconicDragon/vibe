@@ -1,18 +1,18 @@
 import vibe
 
-MODEL_SOURCE = "local:/mnt/T7/Projects/GitHub/vibe/models/wd-eva02-large-tagger-v3"
-
 image_paths = [
     "example/example.jpg",
     "example/example.jxl",
 ]
 
 # Using 'with' is optional but calls session.close() automatically to free resources when done.
-with vibe.load("wd-eva02-large", source=MODEL_SOURCE, auto_download=False) as session:
+with vibe.load("wd-swinv2-v3", auto_download=False) as session:
     # Prepare inputs as (input, reference) pairs
     inputs = [(path, path) for path in image_paths]
 
-    # Run inference in batches (auto handles file types like jpg/jxl)
+    # Run inference in batches 
+    # batch_method="auto" will choose "true" if device is GPU, "sequential" if device is CPU.
+    # if both are available, it will prefer to use GPU
     batch = session.infer(inputs, batch_size=min(8, len(inputs)), batch_method="auto")
 
     for item in batch:
