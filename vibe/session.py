@@ -5,7 +5,7 @@ This is the object users interact with after calling vibe.load().
 It holds the resolved plugin instance, the active runtime backend,
 and optional result processors. Calling .infer() is the one thing you do with it.
 
-session = vibe.load("wd-eva02-large")
+session = vibe.load("wd-eva02-v3")
 result  = session.infer(image)
 result  = session.infer(image, processors=[...])
 """

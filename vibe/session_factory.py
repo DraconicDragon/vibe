@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from vibe.backends.base import Backend, ModelPlugin
 from vibe.devices import normalize_device_string
@@ -28,6 +28,7 @@ def build_session(
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
     auto_download: bool | None = None,
+    local_file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = True,
 ) -> ModelSession:
     """
@@ -85,6 +86,7 @@ def build_session(
             revision=hf_revision,
             cache_dir=hf_cache_dir,
             allow_download=effective_auto_download,
+            local_file_name_map=local_file_name_map,
         )
     except Exception as exc:
         raise SessionError(str(exc)) from exc

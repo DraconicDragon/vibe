@@ -33,7 +33,7 @@ def test_real_world_library_flow_with_processors() -> None:
     images = [Image.open(Path(p)).convert("RGB") for p in image_paths]
 
     session = vibe.load(
-        "wd-eva02-large",
+        "wd-eva02-v3",
         source=model_source,
         backend="onnx",
         auto_download=False,

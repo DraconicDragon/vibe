@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Mapping
 
 from vibe.hf_downloader import HFDownloadError, download_or_cached
 
@@ -65,6 +65,7 @@ def resolve_from_hf_repo(
     revision: str | None = None,
     cache_dir: str | None = None,
     allow_download: bool | None = None,
+    file_name_map: Mapping[str, str] | None = None,
 ) -> FileMap:
     """
     Download (or reuse cached) files from a HuggingFace repo.
@@ -78,7 +79,11 @@ def resolve_from_hf_repo(
         backend:    Which inference backend is being used.
         revision:   Git revision (branch/tag/commit). None = default branch.
         cache_dir:  Override the HF cache directory. None = HF default.
+        file_name_map:
+                    Optional mapping from plugin-declared filename to repo
+                    filename override. Useful when a repo renamed files.
     """
+    normalized_file_name_map = _normalize_file_name_map(file_name_map, file_specs)
     paths: dict[str, Path] = {}
     needed = [s for s in file_specs if s.needed_for(backend)]
     logger.debug(
@@ -89,16 +94,18 @@ def resolve_from_hf_repo(
     )
 
     for spec in needed:
+        mapped_name = normalized_file_name_map.get(spec.name, spec.name)
         try:
             logger.debug(
-                "Resolving file from HF repo='%s' filename='%s' required=%s",
+                "Resolving file from HF repo='%s' spec='%s' mapped='%s' required=%s",
                 repo_id,
                 spec.name,
+                mapped_name,
                 spec.required,
             )
             local = download_or_cached(
                 repo_id=repo_id,
-                filename=spec.name,
+                filename=mapped_name,
                 revision=revision,
                 cache_dir=cache_dir,
                 allow_download=allow_download,
@@ -106,7 +113,7 @@ def resolve_from_hf_repo(
             )
             if local is not None:
                 paths[spec.name] = Path(local)
-                logger.debug("Resolved file '%s' -> %s", spec.name, local)
+                logger.debug("Resolved HF file spec='%s' mapped='%s' -> %s", spec.name, mapped_name, local)
         except HFDownloadError as exc:
             raise LoaderError(str(exc)) from None
         except Exception as exc:
@@ -122,6 +129,8 @@ def resolve_from_local_folder(
     folder: Path,
     file_specs: list[FileSpec],
     backend: Backend,
+    *,
+    file_name_map: Mapping[str, str] | None = None,
 ) -> FileMap:
     """
     Resolve files from a local folder.
@@ -137,6 +146,7 @@ def resolve_from_local_folder(
     if not folder.is_dir():
         raise LoaderError(f"Local folder does not exist: {folder}")
 
+    normalized_file_name_map = _normalize_file_name_map(file_name_map, file_specs)
     paths: dict[str, Path] = {}
     needed = [s for s in file_specs if s.needed_for(backend)]
     logger.debug(
@@ -147,15 +157,24 @@ def resolve_from_local_folder(
     )
 
     for spec in needed:
-        candidate = folder / spec.name
+        mapped_name = normalized_file_name_map.get(spec.name, spec.name)
+        candidate = folder / mapped_name
         if candidate.is_file():
             paths[spec.name] = candidate
-            logger.debug("Resolved local file '%s' -> %s", spec.name, candidate)
+            logger.debug(
+                "Resolved local file spec='%s' mapped='%s' -> %s",
+                spec.name,
+                mapped_name,
+                candidate,
+            )
         elif spec.required:
             # List what IS in the folder to help the user debug
             present = [f.name for f in folder.iterdir() if f.is_file()]
+            map_hint = ""
+            if mapped_name != spec.name:
+                map_hint = f" (mapped from '{spec.name}' to '{mapped_name}')"
             raise LoaderError(
-                f"Required file '{spec.name}' not found in {folder}.\n"
+                f"Required file '{mapped_name}' not found in {folder}{map_hint}.\n"
                 f"Files present: {present}\n"
                 f"Rename your file to match exactly, or check the plugin docs."
             )
@@ -169,6 +188,8 @@ def resolve_from_hf_cache_path(
     snapshot_path: Path,
     file_specs: list[FileSpec],
     backend: Backend,
+    *,
+    file_name_map: Mapping[str, str] | None = None,
 ) -> FileMap:
     """
     Resolve files from an already-downloaded HF snapshot directory.
@@ -178,7 +199,7 @@ def resolve_from_hf_cache_path(
     Behaves identically to resolve_from_local_folder — it's a separate function
     purely for clarity at the call site.
     """
-    return resolve_from_local_folder(snapshot_path, file_specs, backend)
+    return resolve_from_local_folder(snapshot_path, file_specs, backend, file_name_map=file_name_map)
 
 
 def resolve_from_source_string(
@@ -189,6 +210,7 @@ def resolve_from_source_string(
     revision: str | None = None,
     cache_dir: str | None = None,
     allow_download: bool | None = None,
+    local_file_name_map: Mapping[str, str] | None = None,
 ) -> FileMap:
     """
     Resolve files from a user-facing source string.
@@ -208,7 +230,7 @@ def resolve_from_source_string(
     logger.debug("Resolving source '%s' for backend=%s", source, backend.value)
 
     if source.startswith("local:"):
-        return _resolve_local_prefixed(source[6:], file_specs, backend)
+        return _resolve_local_prefixed(source[6:], file_specs, backend, file_name_map=local_file_name_map)
 
     if source.startswith("hf:"):
         return _resolve_hf_prefixed(
@@ -218,10 +240,11 @@ def resolve_from_source_string(
             revision=revision,
             cache_dir=cache_dir,
             allow_download=allow_download,
+            file_name_map=local_file_name_map,
         )
 
     if source.startswith("hf_cache:"):
-        return _resolve_hf_cache_prefixed(source[9:], file_specs, backend)
+        return _resolve_hf_cache_prefixed(source[9:], file_specs, backend, file_name_map=local_file_name_map)
 
     return _resolve_auto_source(
         source,
@@ -230,6 +253,7 @@ def resolve_from_source_string(
         revision=revision,
         cache_dir=cache_dir,
         allow_download=allow_download,
+        file_name_map=local_file_name_map,
     )
 
 
@@ -237,6 +261,8 @@ def _resolve_local_prefixed(
     raw_value: str,
     file_specs: list[FileSpec],
     backend: Backend,
+    *,
+    file_name_map: Mapping[str, str] | None,
 ) -> FileMap:
     value = raw_value.strip()
     if not value:
@@ -244,7 +270,7 @@ def _resolve_local_prefixed(
 
     folder = Path(value).expanduser()
     try:
-        return resolve_from_local_folder(folder, file_specs, backend)
+        return resolve_from_local_folder(folder, file_specs, backend, file_name_map=file_name_map)
     except LoaderError as exc:
         hint = ""
         if _looks_like_hf_repo_id(value):
@@ -260,6 +286,7 @@ def _resolve_hf_prefixed(
     revision: str | None,
     cache_dir: str | None,
     allow_download: bool | None,
+    file_name_map: Mapping[str, str] | None,
 ) -> FileMap:
     value = raw_value.strip()
     if not value:
@@ -273,6 +300,7 @@ def _resolve_hf_prefixed(
             revision=revision,
             cache_dir=cache_dir,
             allow_download=allow_download,
+            file_name_map=file_name_map,
         )
     except LoaderError as exc:
         hint = ""
@@ -285,6 +313,8 @@ def _resolve_hf_cache_prefixed(
     raw_value: str,
     file_specs: list[FileSpec],
     backend: Backend,
+    *,
+    file_name_map: Mapping[str, str] | None,
 ) -> FileMap:
     value = raw_value.strip()
     if not value:
@@ -292,7 +322,7 @@ def _resolve_hf_cache_prefixed(
 
     path = Path(value).expanduser()
     try:
-        return resolve_from_hf_cache_path(path, file_specs, backend)
+        return resolve_from_hf_cache_path(path, file_specs, backend, file_name_map=file_name_map)
     except LoaderError as exc:
         hint = ""
         if _looks_like_local_folder(value):
@@ -312,6 +342,7 @@ def _resolve_auto_source(
     revision: str | None,
     cache_dir: str | None,
     allow_download: bool | None,
+    file_name_map: Mapping[str, str] | None,
 ) -> FileMap:
     local_candidate = Path(source).expanduser()
     local_error: str | None = None
@@ -319,7 +350,7 @@ def _resolve_auto_source(
     if local_candidate.exists():
         if local_candidate.is_dir():
             try:
-                return resolve_from_local_folder(local_candidate, file_specs, backend)
+                return resolve_from_local_folder(local_candidate, file_specs, backend, file_name_map=file_name_map)
             except LoaderError as exc:
                 local_error = str(exc)
         else:
@@ -334,6 +365,7 @@ def _resolve_auto_source(
             revision=revision,
             cache_dir=cache_dir,
             allow_download=allow_download,
+            file_name_map=file_name_map,
         )
     except LoaderError as exc:
         hf_error = str(exc)
@@ -360,6 +392,31 @@ def _looks_like_local_folder(value: str) -> bool:
 
     raw = value.strip()
     return raw.startswith(("./", "../", "/", "~/"))
+
+
+def _normalize_file_name_map(
+    file_name_map: Mapping[str, str] | None,
+    file_specs: list[FileSpec],
+) -> dict[str, str]:
+    if not file_name_map:
+        return {}
+
+    allowed_names = {spec.name for spec in file_specs}
+    normalized: dict[str, str] = {}
+    for original_name, mapped_name in file_name_map.items():
+        key = str(original_name).strip()
+        value = str(mapped_name).strip()
+        if not key:
+            raise LoaderError("local_file_name_map has an empty key; expected original plugin file names.")
+        if not value:
+            raise LoaderError(f"local_file_name_map entry for '{key}' has an empty mapped filename.")
+        if key not in allowed_names:
+            raise LoaderError(
+                f"local_file_name_map contains unknown key '{key}'. Known plugin files: {sorted(allowed_names)}"
+            )
+        normalized[key] = value
+
+    return normalized
 
 
 # endregion Resolve Files

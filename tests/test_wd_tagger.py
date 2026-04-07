@@ -20,10 +20,13 @@ def _write_selected_tags_csv(path: Path) -> None:
 
 def test_registry_contains_non_caformer_wd_models() -> None:
     models = set(vibe.list_models())
-    assert "wd-eva02-large" in models
-    assert "wd-swinv2" in models
-    assert "wd-convnext" in models
-    assert "wd-vit" in models
+    assert "wd-eva02-large-v3" in models
+    assert "wd-swinv2-v3" in models
+    assert "wd-convnext-v3" in models
+    assert "wd-vit-v3" in models
+
+    # list_models() returns canonical model IDs; aliases should still resolve.
+    assert vibe.registry.get("wd-eva02-v3").model_id == "wd-eva02-large-v3"
 
 
 def test_list_plugin_classes_contains_wd_classes() -> None:

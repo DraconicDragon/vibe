@@ -212,7 +212,7 @@ def _run_phase(
     gc_every: int,
     onnx_providers: list[str] | None,
 ) -> tuple[dict[str, Any], int]:
-    plugin_cls = vibe.registry.get("wd-eva02-large")
+    plugin_cls = vibe.registry.get("wd-eva02-v3")
     image = Image.new("RGB", (32, 32), (255, 0, 0))
 
     elapsed_ms: list[float] = []

@@ -5,7 +5,7 @@ import vibe
 MODEL_SOURCE = "local:/mnt/T7/Projects/GitHub/vibe/models/wd-eva02-large-tagger-v3"
 
 # Using 'with' is optional but calls session.close() automatically to free resources when done.
-with vibe.load("wd-eva02-large", source=MODEL_SOURCE) as session:
+with vibe.load("wd-eva02-v3", source=MODEL_SOURCE) as session:
     result = session.infer(Image.open("example/example.jpg")).first()
 
     # Result already sorted by score (high to low)

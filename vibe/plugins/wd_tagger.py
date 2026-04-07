@@ -44,19 +44,16 @@ class WDTaggerBasePlugin(ModelPlugin):
         FileSpec(
             name="model.onnx",
             role=FileRole.WEIGHTS,
-            required=True,
             backends=[Backend.ONNX],
         ),
         FileSpec(
             name="model.safetensors",
             role=FileRole.WEIGHTS,
-            required=True,
             backends=[Backend.PYTORCH],
         ),
         FileSpec(
             name="selected_tags.csv",
             role=FileRole.TAG_LIST,
-            required=True,
             backends=[],  # empty = needed for all backends
         ),
     ]

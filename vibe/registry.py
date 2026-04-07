@@ -19,12 +19,12 @@ import importlib
 import importlib.metadata
 import pkgutil
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from vibe.plugin_validation import validate_plugin_declaration
 
 if TYPE_CHECKING:
-    from vibe.backends.base import ModelPlugin
+    from vibe.backends.base import ModelPlugin, ModelPluginInfo
 
 
 class RegistryError(Exception):
@@ -88,11 +88,9 @@ class ModelRegistry:
             for alias in plugin.aliases:
                 self._aliases.pop(alias, None)
 
+    # endregion Registration
 
-# endregion Registration
-
-
-# region Lookup
+    # region Lookup
 
     def get(self, name: str) -> type[ModelPlugin]:
         """
@@ -128,25 +126,23 @@ class ModelRegistry:
             if cls.__name__ == class_name:
                 return cls
         raise RegistryError(
-            f"No plugin class named '{class_name}'. " f"Known classes: {[c.__name__ for c in self._plugins.values()]}"
+            f"No plugin class named '{class_name}'. Known classes: {[c.__name__ for c in self._plugins.values()]}"
         )
 
     def is_known(self, name: str) -> bool:
         """Return True if name resolves to a registered plugin."""
         return name in self._plugins or name in self._aliases
 
+    # endregion Lookup
 
-# endregion Lookup
-
-
-# region List
+    # region List
 
     def list_model_ids(self) -> list[str]:
         return sorted(self._plugins.keys())
 
-    def list_all(self) -> list[dict[str, Any]]:
-        """Return a list of dicts describing every registered plugin."""
-        return [cls.to_dict() for cls in self._plugins.values()]
+    def list_all(self) -> list[ModelPluginInfo]:
+        """Return typed metadata describing every registered plugin."""
+        return [cls.describe() for cls in self._plugins.values()]
 
     def list_plugin_classes(self) -> list[str]:
         """Return plugin class names in model-id order."""
@@ -161,11 +157,9 @@ class ModelRegistry:
     def __repr__(self) -> str:
         return f"ModelRegistry({self.list_model_ids()})"
 
+    # endregion List
 
-# endregion List
-
-
-# region Discovery
+    # region Discovery
 
     def discover_builtins(self) -> None:
         """
@@ -215,11 +209,9 @@ class ModelRegistry:
         self.discover_builtins()
         self.discover_entry_points()
 
+    # endregion Discovery
 
-# endregion Discovery
-
-
-# region Internal Helpers
+    # region Internal Helpers
 
     def _suggest(self, name: str, max_suggestions: int = 3) -> list[str]:
         """Very basic fuzzy suggestion — find names that share a substring."""

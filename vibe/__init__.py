@@ -6,7 +6,7 @@ Quick start
     import vibe
 
     # Load a registered model (downloads from HF automatically)
-    session = vibe.load("wd-eva02-large")
+    session = vibe.load("wd-eva02-v3")
     result = session.infer(image).first()
     print(result.general[:5])
 
@@ -16,7 +16,7 @@ Quick start
         print(f"Input {item.index}: {item.result.general[:3]}")
 
     # Use a local folder instead of HF
-    session = vibe.load("wd-eva02-large", source="local:/path/to/folder")
+    session = vibe.load("wd-eva02-v3", source="local:/path/to/folder")
 
     # Custom: arbitrary source with a chosen plugin
     session = vibe.load_custom(
@@ -26,15 +26,15 @@ Quick start
 
     # Inspect available models
     vibe.list_models()
-    vibe.describe("wd-eva02-large")
+    vibe.describe("wd-eva02-v3")
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Mapping
 
-from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin, ModelPluginInfo
 from vibe.devices import list_available_devices
 from vibe.hf_downloader import (
     get_auto_download_default,
@@ -101,13 +101,14 @@ def load(
     hf_cache_dir: str | None = None,
     onnx_providers: list[str] | None = None,
     auto_download: bool | None = None,
+    local_file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = True,
 ) -> ModelSession:
     """
     Load a model and return a ready-to-use ModelSession.
 
     Args:
-        model:          Model ID or alias (e.g. "wd-eva02-large", "eva02").
+        model:          Model ID or alias (e.g. "wd-eva02-v3", "eva02").
                         Run vibe.list_models() to see all options.
                         # todo: check if doc gen will set optional by default through type hints or if i should put it in docstring explicitly, or maybe just in general
         source:         Optional. Where to load files from. String options:
@@ -129,6 +130,12 @@ def load(
         onnx_providers: Override ONNX execution providers.
         auto_download: Per-session download policy. None uses global default.
                    False uses only local/cached files; no downloads.
+        local_file_name_map:
+            Optional filename remapping for file resolution across
+            local folders, HF repos, and HF cache paths.
+            Keys are plugin-declared filenames (e.g. "model.onnx"),
+            values are source filenames to use instead
+            (e.g. "wdeva02.onnx").
         memory_tracking: Enable per-call memory telemetry inside this session.
 
     Returns:
@@ -166,6 +173,7 @@ def load(
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
         auto_download=effective_auto_download,
+        local_file_name_map=local_file_name_map,
         memory_tracking=memory_tracking,
     )
 
@@ -180,6 +188,7 @@ def load_custom(
     hf_cache_dir: str | None = None,
     onnx_providers: list[str] | None = None,
     auto_download: bool | None = None,
+    local_file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = True,
 ) -> ModelSession:
     """
@@ -204,6 +213,9 @@ def load_custom(
                         Run vibe.list_plugin_classes() to see all options.
         backend, device, hf_revision, hf_cache_dir, onnx_providers:
                         Same as load().
+        local_file_name_map:
+                Same as load(). Maps plugin file names to source file
+                names across local/HF/HF-cache resolution.
 
     Example:
         session = vibe.load_custom(
@@ -237,6 +249,7 @@ def load_custom(
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
         auto_download=effective_auto_download,
+        local_file_name_map=local_file_name_map,
         memory_tracking=memory_tracking,
     )
 
@@ -251,13 +264,13 @@ def list_plugin_classes() -> list[str]:
     return registry.list_plugin_classes()
 
 
-def describe(model: str) -> dict[str, Any]:
-    """Return a full description dict for a model ID or alias."""
-    return registry.get(model).to_dict()
+def describe(model: str) -> ModelPluginInfo:
+    """Return typed model metadata for a model ID or alias."""
+    return registry.get(model).describe()
 
 
-def describe_all() -> list[dict[str, Any]]:
-    """Return description dicts for all registered models."""
+def describe_all() -> list[ModelPluginInfo]:
+    """Return typed metadata objects for all registered models."""
     return registry.list_all()
 
 
@@ -299,6 +312,7 @@ __all__ = [
     "FileSpec",
     "FileRole",
     "Backend",
+    "ModelPluginInfo",
     "MemorySnapshot",
     "InferenceMemoryRecord",
     "MemoryTrackerStats",

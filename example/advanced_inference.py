@@ -22,10 +22,10 @@ def list_available_models() -> list[dict[str, Any]]:
         info = vibe.describe(model_id)
         models.append(
             {
-                "model_id": info["model_id"],
-                "aliases": info["aliases"],
-                "display_name": info["display_name"],
-                "description": info["description"],
+                "model_id": info.model_id,
+                "aliases": info.aliases,
+                "display_name": info.display_name,
+                "description": info.description,
             }
         )
     return models

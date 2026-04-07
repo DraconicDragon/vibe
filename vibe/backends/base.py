@@ -70,6 +70,32 @@ class FileSpec:
         return d
 
 
+@dataclass(frozen=True)
+class ModelPluginInfo:
+    """Typed metadata returned by vibe.describe()."""
+
+    model_id: str
+    aliases: list[str]
+    display_name: str
+    description: str
+    output_type: OutputType
+    default_hf_repo: str | None
+    supported_backends: list[Backend]
+    supported_processors: list[str]
+    required_files: list[FileSpec]
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["output_type"] = self.output_type.value
+        d["supported_backends"] = [b.value for b in self.supported_backends]
+        d["required_files"] = [f.to_dict() for f in self.required_files]
+        return d
+
+    def __getitem__(self, key: str) -> Any:
+        """Backwards-compatible dict-like access for existing callers."""
+        return self.to_dict()[key]
+
+
 # endregion File Spec
 
 
@@ -195,18 +221,22 @@ class ModelPlugin(abc.ABC):
         return [f.name for f in cls.files_for_backend(backend) if f.required]
 
     @classmethod
+    def describe(cls) -> ModelPluginInfo:
+        return ModelPluginInfo(
+            model_id=cls.model_id,
+            aliases=list(cls.aliases),
+            display_name=cls.display_name,
+            description=cls.description,
+            output_type=cls.output_type,
+            default_hf_repo=cls.default_hf_repo,
+            supported_backends=list(cls.supported_backends),
+            supported_processors=[processor.__name__ for processor in cls.supported_processors],
+            required_files=list(cls.required_files),
+        )
+
+    @classmethod
     def to_dict(cls) -> dict[str, Any]:
-        return {
-            "model_id": cls.model_id,
-            "aliases": cls.aliases,
-            "display_name": cls.display_name,
-            "description": cls.description,
-            "output_type": cls.output_type.value,
-            "default_hf_repo": cls.default_hf_repo,
-            "supported_backends": [b.value for b in cls.supported_backends],
-            "supported_processors": [processor.__name__ for processor in cls.supported_processors],
-            "required_files": [f.to_dict() for f in cls.required_files],
-        }
+        return cls.describe().to_dict()
 
 
 # endregion ModelPlugin API

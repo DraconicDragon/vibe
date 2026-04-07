@@ -12,7 +12,7 @@ from vibe.session import InferenceCancelled
 
 MODEL_SOURCE = "local:/mnt/T7/Projects/GitHub/vibe/models/wd-eva02-large-tagger-v3"
 IMAGE_FOLDER = Path("example/images/")
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".jxl"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 ANSI_GREEN = "\033[92m"
 ANSI_YELLOW = "\033[93m"
 ANSI_CYAN = "\033[96m"
@@ -27,10 +27,9 @@ def _configure_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         force=True,
     )
-    logging.getLogger("vibe").setLevel(logging.INFO)
+    logging.getLogger("vibe").setLevel(logging.DEBUG)
     # Keep Pillow parser internals out of normal debugging signal.
     logging.getLogger("PIL").setLevel(logging.WARNING)
-
 
 
 def _natural_sort_key(path: Path) -> list[int | str]:
@@ -95,7 +94,7 @@ async def main() -> None:
     image_paths = _load_images_from_folder(IMAGE_FOLDER)
 
     # Using 'with' is optional but calls session.close() automatically to free resources when done.
-    with vibe.load("wd-eva02-large", source=MODEL_SOURCE, auto_download=False, device="cuda") as session:
+    with vibe.load("wd-eva02-large-v3", source=MODEL_SOURCE, auto_download=False, device="cuda") as session:
         # Prepare inputs
         inputs = [(path, path) for path in image_paths]
         stop_cancel_listener = threading.Event()
