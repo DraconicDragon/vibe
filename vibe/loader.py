@@ -210,7 +210,7 @@ def resolve_from_source_string(
     revision: str | None = None,
     cache_dir: str | None = None,
     allow_download: bool | None = None,
-    local_file_name_map: Mapping[str, str] | None = None,
+    file_name_map: Mapping[str, str] | None = None,
 ) -> FileMap:
     """
     Resolve files from a user-facing source string.
@@ -230,7 +230,7 @@ def resolve_from_source_string(
     logger.debug("Resolving source '%s' for backend=%s", source, backend.value)
 
     if source.startswith("local:"):
-        return _resolve_local_prefixed(source[6:], file_specs, backend, file_name_map=local_file_name_map)
+        return _resolve_local_prefixed(source[6:], file_specs, backend, file_name_map=file_name_map)
 
     if source.startswith("hf:"):
         return _resolve_hf_prefixed(
@@ -240,11 +240,11 @@ def resolve_from_source_string(
             revision=revision,
             cache_dir=cache_dir,
             allow_download=allow_download,
-            file_name_map=local_file_name_map,
+            file_name_map=file_name_map,
         )
 
     if source.startswith("hf_cache:"):
-        return _resolve_hf_cache_prefixed(source[9:], file_specs, backend, file_name_map=local_file_name_map)
+        return _resolve_hf_cache_prefixed(source[9:], file_specs, backend, file_name_map=file_name_map)
 
     return _resolve_auto_source(
         source,
@@ -253,7 +253,7 @@ def resolve_from_source_string(
         revision=revision,
         cache_dir=cache_dir,
         allow_download=allow_download,
-        file_name_map=local_file_name_map,
+        file_name_map=file_name_map,
     )
 
 
@@ -407,12 +407,12 @@ def _normalize_file_name_map(
         key = str(original_name).strip()
         value = str(mapped_name).strip()
         if not key:
-            raise LoaderError("local_file_name_map has an empty key; expected original plugin file names.")
+            raise LoaderError("file_name_map has an empty key; expected original plugin file names.")
         if not value:
-            raise LoaderError(f"local_file_name_map entry for '{key}' has an empty mapped filename.")
+            raise LoaderError(f"file_name_map entry for '{key}' has an empty mapped filename.")
         if key not in allowed_names:
             raise LoaderError(
-                f"local_file_name_map contains unknown key '{key}'. Known plugin files: {sorted(allowed_names)}"
+                f"file_name_map contains unknown key '{key}'. Known plugin files: {sorted(allowed_names)}"
             )
         normalized[key] = value
 

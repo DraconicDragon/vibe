@@ -96,12 +96,12 @@ def load(
     *,
     source: str | None = None,
     backend: str | Backend | None = None,
-    device: str = "cpu",
+    device: str = "auto",
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
     onnx_providers: list[str] | None = None,
     auto_download: bool | None = None,
-    local_file_name_map: Mapping[str, str] | None = None,
+    file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = True,
 ) -> ModelSession:
     """
@@ -123,14 +123,14 @@ def load(
         backend:        "pytorch" or "onnx". None = auto-detect.
         device:         Logical device selector. For ONNX it guides provider
             auto-selection (e.g. "cpu", "gpu", "gpu:1", "cuda:0").
-                Default "cpu". 'cuda' and 'gpu' are interchangeable.
+            Default "auto". 'cuda' and 'gpu' are interchangeable.
         hf_revision:    HF repo revision (branch/tag/commit). Only used when
                         source is None (default HF repo) or source is "hf:...".
         hf_cache_dir:   Override HF cache directory.
         onnx_providers: Override ONNX execution providers.
         auto_download: Per-session download policy. None uses global default.
                    False uses only local/cached files; no downloads.
-        local_file_name_map:
+        file_name_map:
             Optional filename remapping for file resolution across
             local folders, HF repos, and HF cache paths.
             Keys are plugin-declared filenames (e.g. "model.onnx"),
@@ -173,7 +173,7 @@ def load(
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
         auto_download=effective_auto_download,
-        local_file_name_map=local_file_name_map,
+        file_name_map=file_name_map,
         memory_tracking=memory_tracking,
     )
 
@@ -183,12 +183,12 @@ def load_custom(
     source: str | None = None,
     plugin: str,
     backend: str | Backend | None = None,
-    device: str = "cpu",
+    device: str = "auto",
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
     onnx_providers: list[str] | None = None,
     auto_download: bool | None = None,
-    local_file_name_map: Mapping[str, str] | None = None,
+    file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = True,
 ) -> ModelSession:
     """
@@ -213,7 +213,7 @@ def load_custom(
                         Run vibe.list_plugin_classes() to see all options.
         backend, device, hf_revision, hf_cache_dir, onnx_providers:
                         Same as load().
-        local_file_name_map:
+        file_name_map:
                 Same as load(). Maps plugin file names to source file
                 names across local/HF/HF-cache resolution.
 
@@ -249,7 +249,7 @@ def load_custom(
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
         auto_download=effective_auto_download,
-        local_file_name_map=local_file_name_map,
+        file_name_map=file_name_map,
         memory_tracking=memory_tracking,
     )
 

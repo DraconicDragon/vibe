@@ -154,7 +154,7 @@ def test_source_string_hf_prefix_supports_file_name_map(monkeypatch: pytest.Monk
         "hf:owner/repo",
         specs,
         Backend.ONNX,
-        local_file_name_map={"model.onnx": "renamed_model.onnx"},
+        file_name_map={"model.onnx": "renamed_model.onnx"},
         allow_download=False,
     )
 
@@ -262,4 +262,4 @@ def test_resolve_local_folder_rejects_unknown_file_name_map_key(tmp_path: Path) 
             file_name_map={"unknown.bin": "custom.bin"},
         )
 
-    assert "local_file_name_map contains unknown key 'unknown.bin'" in str(excinfo.value)
+    assert "file_name_map contains unknown key 'unknown.bin'" in str(excinfo.value)

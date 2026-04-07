@@ -279,7 +279,7 @@ class ONNXBackend:
         self,
         weights_path: Path,
         providers: list[str] | None = None,
-        device: str = "cpu",
+        device: str = "auto",
     ) -> None:
         """
         Load an ONNX model. Raises if onnxruntime is not installed.
@@ -287,7 +287,7 @@ class ONNXBackend:
         providers:   Override the provider list.
                  If omitted, resolves from env and device preference.
         device:      Logical device selector for auto-provider selection
-                 (e.g. "cpu", "gpu", "gpu1", "cuda:0"). 'cuda' and 'gpu' are interchangeable.
+                 (e.g. "auto", "cpu", "gpu", "gpu1", "cuda:0"). 'cuda' and 'gpu' are interchangeable.
         """
         started_at = time.perf_counter()
         logger.debug("Loading ONNX model from %s", weights_path)

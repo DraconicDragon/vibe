@@ -23,12 +23,12 @@ def build_session(
     plugin_cls: type[ModelPlugin],
     source: str,
     backend: Backend | str | None = None,
-    device: str = "cpu",
+    device: str = "auto",
     onnx_providers: list[str] | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
     auto_download: bool | None = None,
-    local_file_name_map: Mapping[str, str] | None = None,
+    file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = True,
 ) -> ModelSession:
     """
@@ -48,7 +48,7 @@ def build_session(
     )
 
     if backend is None:
-        backend = _auto_select_backend(plugin_cls)
+        backend = _auto_select_backend(plugin_cls, requested_device=device)
     elif isinstance(backend, str):
         try:
             backend = Backend(backend.lower())
@@ -69,6 +69,10 @@ def build_session(
     except ValueError as exc:
         raise SessionError(str(exc)) from exc
 
+    if backend == Backend.PYTORCH and normalized_device == "auto":
+        normalized_device = _auto_select_pytorch_device()
+        logger.info("PyTorch device auto-selected: %s", normalized_device)
+
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
     logger.debug(
         "Session backend selected model_id=%s backend=%s device=%s",
@@ -86,7 +90,7 @@ def build_session(
             revision=hf_revision,
             cache_dir=hf_cache_dir,
             allow_download=effective_auto_download,
-            local_file_name_map=local_file_name_map,
+            file_name_map=file_name_map,
         )
     except Exception as exc:
         raise SessionError(str(exc)) from exc
@@ -211,19 +215,90 @@ def _release_backend(key: tuple[Any, ...]) -> None:
     logger.debug("Closed pooled backend key=%s", key)
 
 
-def _auto_select_backend(plugin_cls: type[ModelPlugin]) -> Backend:
-    """Prefer ONNX if available; fall back to PyTorch."""
+def _auto_select_backend(plugin_cls: type[ModelPlugin], *, requested_device: str = "auto") -> Backend:
+    """Select backend using runtime availability + accelerator preference."""
     supported = plugin_cls.supported_backends
-    if Backend.ONNX in supported:
-        try:
-            import onnxruntime  # noqa: F401
 
+    onnx_runtime_ok, onnx_has_accel = _onnx_runtime_capabilities()
+    torch_runtime_ok, torch_has_accel = _pytorch_runtime_capabilities()
+
+    onnx_candidate = Backend.ONNX in supported and onnx_runtime_ok
+    torch_candidate = Backend.PYTORCH in supported and torch_runtime_ok
+
+    if onnx_candidate and torch_candidate:
+        requested = str(requested_device or "auto").strip().lower()
+        # Backend-specific selectors should be respected early.
+        if requested in {"mps"}:
+            logger.info("Backend auto-selection chose PyTorch due to requested device '%s'.", requested)
+            return Backend.PYTORCH
+        if requested in {"rocm", "dml"} or requested.startswith(("rocm:", "dml:")):
+            logger.info("Backend auto-selection chose ONNX due to requested device '%s'.", requested)
             return Backend.ONNX
-        except ImportError:
-            pass
-    if Backend.PYTORCH in supported:
+
+        if onnx_has_accel and not torch_has_accel:
+            logger.info("Backend auto-selection chose ONNX (accelerator available, PyTorch accelerator unavailable).")
+            return Backend.ONNX
+        if torch_has_accel and not onnx_has_accel:
+            logger.info("Backend auto-selection chose PyTorch (accelerator available, ONNX accelerator unavailable).")
+            return Backend.PYTORCH
+
+        logger.info("Backend auto-selection chose ONNX (default preference when capabilities are equivalent).")
+        return Backend.ONNX
+
+    if onnx_candidate:
+        logger.info("Backend auto-selection chose ONNX (runtime available).")
+        return Backend.ONNX
+    if torch_candidate:
+        logger.info("Backend auto-selection chose PyTorch (runtime available).")
         return Backend.PYTORCH
+
     raise SessionError(f"No supported backend available for '{plugin_cls.model_id}'. Install onnxruntime or torch.")
+
+
+def _onnx_runtime_capabilities() -> tuple[bool, bool]:
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return False, False
+
+    try:
+        available = {str(provider) for provider in ort.get_available_providers()}
+    except Exception:
+        available = set()
+    has_accelerator = any(provider != "CPUExecutionProvider" for provider in available)
+    return True, has_accelerator
+
+
+def _pytorch_runtime_capabilities() -> tuple[bool, bool]:
+    try:
+        import torch
+    except ImportError:
+        return False, False
+
+    has_cuda = bool(torch.cuda.is_available())
+    mps_backend = getattr(torch.backends, "mps", None)
+    has_mps = False
+    if mps_backend is not None and callable(getattr(mps_backend, "is_available", None)):
+        has_mps = bool(mps_backend.is_available())
+
+    return True, (has_cuda or has_mps)
+
+
+def _auto_select_pytorch_device() -> str:
+    try:
+        import torch
+    except ImportError:
+        return "cpu"
+
+    if bool(torch.cuda.is_available()):
+        return "cuda"
+
+    mps_backend = getattr(torch.backends, "mps", None)
+    if mps_backend is not None and callable(getattr(mps_backend, "is_available", None)):
+        if bool(mps_backend.is_available()):
+            return "mps"
+
+    return "cpu"
 
 
 def _find_weights(
