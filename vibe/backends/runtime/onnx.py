@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from vibe.devices import normalize_device_string
+from vibe.precision import normalize_precision_string
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,21 @@ _ENV_PROVIDER_LIST = "VIBE_ONNX_PROVIDERS"
 
 
 # region Provider Setup
+
+
+def _onnx_type_to_precision(type_name: str | None) -> str | None:
+    if not type_name:
+        return None
+    value = str(type_name).lower()
+    if "float16" in value:
+        return "fp16"
+    if "bfloat16" in value:
+        return "bf16"
+    if "float" in value:
+        return "fp32"
+    if "int8" in value:
+        return "int8"
+    return None
 
 
 def _normalize_provider_list(values: list[str]) -> list[str]:
@@ -274,12 +290,14 @@ class ONNXBackend:
         self._input_name: str = ""
         self._providers: list[str] = []
         self._provider_options: list[dict[str, Any]] = []
+        self._requested_precision: str = "auto"
 
     def load(
         self,
         weights_path: Path,
         providers: list[str] | None = None,
         device: str = "auto",
+        precision: str = "auto",
     ) -> None:
         """
         Load an ONNX model. Raises if onnxruntime is not installed.
@@ -291,6 +309,7 @@ class ONNXBackend:
         """
         started_at = time.perf_counter()
         logger.debug("Loading ONNX model from %s", weights_path)
+        self._requested_precision = normalize_precision_string(precision)
         prepare_onnxruntime_environment()
 
         try:
@@ -323,6 +342,18 @@ class ONNXBackend:
         output_meta = outputs[0] if outputs else None
         available_providers = _available_onnx_providers(ort)
         primary_provider = self._providers[0] if self._providers else "CPUExecutionProvider"
+
+        if self._requested_precision in {"fp16", "bf16", "fp32"}:
+            logger.warning(
+                "ONNX precision request '%s' is advisory only; most precision behavior is defined by model graph "
+                "and execution provider kernels.",
+                self._requested_precision,
+            )
+        elif self._requested_precision == "int8_ov":
+            logger.info(
+                "ONNX precision request 'int8_ov' accepted as future provider-specific option; no runtime cast applied yet."
+            )
+
         logger.info(
             "ONNX model loaded in %.2fs | available EPs=%s | selected EP=%s | provider chain=%s",
             load_seconds,
@@ -330,11 +361,20 @@ class ONNXBackend:
             primary_provider,
             self._providers,
         )
-        logger.debug(
-            "ONNX precision input_type=%s output_type=%s weight_precision=graph-defined compute_precision=runtime-defined casted_weight_precision=no casted_compute_precision=no",
+        input_precision = _onnx_type_to_precision(getattr(input_meta, "type", None))
+        output_precision = _onnx_type_to_precision(getattr(output_meta, "type", None))
+        model_precision = input_precision or output_precision or "unknown"
+        if input_precision and output_precision and input_precision != output_precision:
+            model_precision = f"mixed(input={input_precision}, output={output_precision})"
+
+        logger.info(
+            "ONNX model precision=%s (graph io: input_type=%s output_type=%s)",
+            model_precision,
             getattr(input_meta, "type", None),
             getattr(output_meta, "type", None),
         )
+        if self._requested_precision == "int8_ov":
+            logger.info("ONNX cast status: int8_ov requested (provider-specific cast path not enabled yet).")
         logger.debug(
             "ONNX model io inputs=%s outputs=%s",
             [{"name": meta.name, "shape": meta.shape, "type": getattr(meta, "type", None)} for meta in inputs],

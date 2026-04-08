@@ -45,6 +45,7 @@ from vibe.memory_stats import (
     MemorySnapshot,
     MemoryTrackerStats,
 )
+from vibe.precision import normalize_precision_string
 from vibe.registry import ModelRegistry, RegistryError, _make_auto_register_hook
 from vibe.result_processors import CharacterIPMapping, CleanTags, ResultProcessor
 from vibe.results import (
@@ -97,6 +98,7 @@ def load(
     source: str | None = None,
     backend: str | Backend | None = None,
     device: str = "auto",
+    precision: str = "auto",
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
     onnx_providers: list[str] | None = None,
@@ -124,6 +126,11 @@ def load(
         device:         Logical device selector. For ONNX it guides provider
             auto-selection (e.g. "cpu", "gpu", "gpu:1", "cuda:0").
             Default "auto". 'cuda' and 'gpu' are interchangeable.
+        precision:      Runtime precision selector. Supported values:
+                        "auto" (default): Backend/model will dictate weight & compute precision.
+                        - PyTorch: "fp32", "fp16", "bf16"
+                        - ONNX: "ov", "int8_ov"
+                        Note: ONNX precision is usually based on model weight precision outside of ov/openvino.
         hf_revision:    HF repo revision (branch/tag/commit). Only used when
                         source is None (default HF repo) or source is "hf:...".
         hf_cache_dir:   Override HF cache directory.
@@ -147,6 +154,7 @@ def load(
     """
     plugin_cls = registry.get(model)
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
+    normalized_precision = normalize_precision_string(precision)
 
     resolved_source = _resolve_source(
         source,
@@ -163,12 +171,14 @@ def load(
         effective_auto_download,
         memory_tracking,
     )
+    logger.debug("Load precision request=%s normalized=%s", precision, normalized_precision)
 
     return build_session(
         plugin_cls=plugin_cls,
         source=resolved_source,
         backend=backend,
         device=device,
+        precision=normalized_precision,
         onnx_providers=onnx_providers,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
@@ -184,6 +194,7 @@ def load_custom(
     plugin: str,
     backend: str | Backend | None = None,
     device: str = "auto",
+    precision: str = "auto",
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
     onnx_providers: list[str] | None = None,
@@ -211,7 +222,7 @@ def load_custom(
                               then tries HF repo/cache/download.
         plugin:         Plugin class name (e.g. "WDEva02Plugin").
                         Run vibe.list_plugin_classes() to see all options.
-        backend, device, hf_revision, hf_cache_dir, onnx_providers:
+        backend, device, precision, hf_revision, hf_cache_dir, onnx_providers:
                         Same as load().
         file_name_map:
                 Same as load(). Maps plugin file names to source file
@@ -225,6 +236,7 @@ def load_custom(
     """
     plugin_cls = registry.get_by_class_name(plugin)
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
+    normalized_precision = normalize_precision_string(precision)
     resolved_source = _resolve_source(
         source,
         plugin_cls,
@@ -239,12 +251,14 @@ def load_custom(
         effective_auto_download,
         memory_tracking,
     )
+    logger.debug("Load custom precision request=%s normalized=%s", precision, normalized_precision)
 
     return build_session(
         plugin_cls=plugin_cls,
         source=resolved_source,
         backend=backend,
         device=device,
+        precision=normalized_precision,
         onnx_providers=onnx_providers,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
@@ -346,6 +360,7 @@ __all__ = [
     "describe_all",
     "set_auto_download_default",
     "get_auto_download_default",
+    "normalize_precision_string",
 ]
 
 

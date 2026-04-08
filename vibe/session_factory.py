@@ -11,6 +11,7 @@ from vibe.backends.base import Backend, ModelPlugin
 from vibe.devices import normalize_device_string
 from vibe.hf_downloader import get_auto_download_default
 from vibe.loader import FileMap, resolve_from_source_string
+from vibe.precision import normalize_precision_string
 from vibe.session import ModelSession, SessionError
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ def build_session(
     source: str,
     backend: Backend | str | None = None,
     device: str = "auto",
+    precision: str = "auto",
     onnx_providers: list[str] | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
@@ -40,10 +42,11 @@ def build_session(
     from vibe.backends.runtime.pytorch import PyTorchBackend
 
     logger.debug(
-        "Building session model_id=%s requested_backend=%s requested_device=%s source=%s",
+        "Building session model_id=%s requested_backend=%s requested_device=%s requested_precision=%s source=%s",
         plugin_cls.model_id,
         backend.value if isinstance(backend, Backend) else backend or "auto",
         device,
+        precision,
         source,
     )
 
@@ -73,12 +76,30 @@ def build_session(
         normalized_device = _auto_select_pytorch_device()
         logger.info("PyTorch device auto-selected: %s", normalized_device)
 
+    try:
+        normalized_precision = normalize_precision_string(precision)
+    except ValueError as exc:
+        raise SessionError(str(exc)) from exc
+
+    if backend == Backend.ONNX and normalized_precision in {"fp16", "bf16"}:
+        logger.warning(
+            "Precision '%s' requested while running ONNX backend; runtime casting is provider/model dependent. "
+            "The model's graph precision will generally be used.",
+            normalized_precision,
+        )
+    if backend == Backend.PYTORCH and normalized_precision == "int8_ov":
+        logger.warning(
+            "Precision 'int8_ov'/'ov' is ONNX/OpenVINO-oriented and is not supported by PyTorch backend; falling back to auto.",
+        )
+        normalized_precision = "auto"
+
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
     logger.debug(
-        "Session backend selected model_id=%s backend=%s device=%s",
+        "Session backend selected model_id=%s backend=%s device=%s precision=%s",
         plugin_cls.model_id,
         backend.value,
         normalized_device,
+        normalized_precision,
     )
     logger.debug("Session auto_download=%s", effective_auto_download)
 
@@ -103,6 +124,7 @@ def build_session(
         weights_path=weights_path,
         device=normalized_device,
         providers=onnx_providers,
+        precision=normalized_precision,
     )
     rt, release_backend = _acquire_backend(
         key=pool_key,
@@ -110,6 +132,7 @@ def build_session(
         weights_path=weights_path,
         device=normalized_device,
         providers=onnx_providers,
+        precision=normalized_precision,
         pytorch_cls=PyTorchBackend,
         onnx_cls=ONNXBackend,
     )
@@ -145,12 +168,13 @@ def _make_backend_pool_key(
     weights_path: Path,
     device: str,
     providers: list[str] | None,
+    precision: str,
 ) -> tuple[Any, ...]:
     resolved_path = str(weights_path.resolve())
     if backend == Backend.PYTORCH:
-        return (backend.value, resolved_path, device)
+        return (backend.value, resolved_path, device, precision)
     provider_key = tuple(providers) if providers is not None else ("AUTO",)
-    return (backend.value, resolved_path, provider_key, device)
+    return (backend.value, resolved_path, provider_key, device, precision)
 
 
 def _acquire_backend(
@@ -160,6 +184,7 @@ def _acquire_backend(
     weights_path: Path,
     device: str,
     providers: list[str] | None,
+    precision: str,
     pytorch_cls: Any,
     onnx_cls: Any,
 ) -> tuple[Any, Callable[[], None]]:
@@ -173,13 +198,19 @@ def _acquire_backend(
             return instance, lambda: _release_backend(key)
 
         logger.debug("Loading backend backend=%s", backend.value)
-        logger.debug("Backend load options backend=%s device=%s weights_path=%s", backend.value, device, weights_path)
+        logger.debug(
+            "Backend load options backend=%s device=%s precision=%s weights_path=%s",
+            backend.value,
+            device,
+            precision,
+            weights_path,
+        )
         if backend == Backend.PYTORCH:
             instance = pytorch_cls()
-            instance.load(weights_path, device=device)
+            instance.load(weights_path, device=device, precision=precision)
         else:
             instance = onnx_cls()
-            instance.load(weights_path, providers=providers, device=device)
+            instance.load(weights_path, providers=providers, device=device, precision=precision)
 
         _BACKEND_POOL[key] = (instance, 1)
         logger.info("Backend ready backend=%s device=%s", backend.value, device)

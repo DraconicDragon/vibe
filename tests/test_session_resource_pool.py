@@ -21,8 +21,9 @@ class _DummyONNXBackend:
         weights_path: Path,
         providers: list[str] | None = None,
         device: str = "cpu",
+        precision: str = "auto",
     ) -> None:
-        del weights_path, device
+        del weights_path, device, precision
         self.providers = providers or ["CPUExecutionProvider"]
         type(self).load_calls += 1
 

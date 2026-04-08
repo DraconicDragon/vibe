@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from vibe.precision import normalize_precision_string
+
 if TYPE_CHECKING:
     pass
 
@@ -37,8 +39,12 @@ class PyTorchBackend:
     def __init__(self) -> None:
         self._model: Any = None
         self._device: str = "cpu"
+        self._requested_precision: str = "auto"
+        self._resolved_precision: str = "fp32"
+        self._weight_dtype: Any = None
+        self._compute_dtype: Any = None
 
-    def load(self, weights_path: Path, device: str = "cpu") -> None:
+    def load(self, weights_path: Path, device: str = "cpu", precision: str = "auto") -> None:
         """Load weights from disk. Raises if torch is not installed."""
         logger.debug("Loading PyTorch model")
         logger.debug("PyTorch weights path=%s", weights_path)
@@ -50,6 +56,7 @@ class PyTorchBackend:
             ) from exc
 
         self._device = device
+        self._requested_precision = normalize_precision_string(precision)
         suffix = weights_path.suffix.lower()
 
         if suffix == ".safetensors":
@@ -81,6 +88,7 @@ class PyTorchBackend:
             if isinstance(self._model, nn.Module):
                 self._model.eval()
                 self._model.to(device)
+                self._apply_precision_plan(torch)
                 try:
                     forward_params = list(inspect.signature(self._model.forward).parameters.keys())
                 except Exception:
@@ -88,10 +96,12 @@ class PyTorchBackend:
                 first_param = next(self._model.parameters(), None)
                 if first_param is not None:
                     logger.debug(
-                        "PyTorch model ready device=%s weight_dtype=%s compute_dtype=%s",
+                        "PyTorch model ready device=%s requested_precision=%s resolved_precision=%s weight_dtype=%s compute_dtype=%s",
                         device,
+                        self._requested_precision,
+                        self._resolved_precision,
                         first_param.dtype,
-                        first_param.dtype,
+                        self._compute_dtype,
                     )
                 logger.debug("PyTorch model input_names=%s", forward_params or ["input"])
                 logger.debug("PyTorch model class=%s", self._model.__class__.__name__)
@@ -128,14 +138,27 @@ class PyTorchBackend:
         with torch.no_grad():
             logger.debug("PyTorch run input_shape=%s input_dtype=%s", getattr(tensor, "shape", None), tensor.dtype)
             try:
-                output = self._model(tensor.to(self._device))
+                model_input = tensor.to(device=self._device, dtype=self._compute_dtype)
+                output = self._model(model_input)
             except Exception:
-                logger.error(
-                    "PyTorch inference failed input_shape=%s device=%s",
-                    getattr(tensor, "shape", None),
-                    self._device,
-                )
-                raise
+                if self._compute_dtype != torch.float32:
+                    logger.warning(
+                        "PyTorch inference failed with compute_dtype=%s on device=%s; retrying with float32 fallback.",
+                        self._compute_dtype,
+                        self._device,
+                    )
+                    self._compute_dtype = torch.float32
+                    self._resolved_precision = "fp32"
+                    self._model.to(device=self._device, dtype=torch.float32)
+                    model_input = tensor.to(device=self._device, dtype=torch.float32)
+                    output = self._model(model_input)
+                else:
+                    logger.error(
+                        "PyTorch inference failed input_shape=%s device=%s",
+                        getattr(tensor, "shape", None),
+                        self._device,
+                    )
+                    raise
 
         if isinstance(output, torch.Tensor):
             logger.debug("PyTorch run output_shape=%s output_dtype=%s", output.shape, output.dtype)
@@ -169,3 +192,58 @@ class PyTorchBackend:
     def supports_true_batching(self) -> bool:
         """True batching is generally not useful for CPU device type."""
         return self._device != "cpu"
+
+    def _apply_precision_plan(self, torch_module: Any) -> None:
+        requested = self._requested_precision
+        if requested == "int8_ov":
+            requested = "auto"
+
+        gpu_like_device = self._device.startswith(("cuda", "gpu", "mps"))
+        has_cuda = bool(getattr(torch_module.cuda, "is_available", lambda: False)())
+        bf16_supported = False
+        if has_cuda and callable(getattr(torch_module.cuda, "is_bf16_supported", None)):
+            try:
+                bf16_supported = bool(torch_module.cuda.is_bf16_supported())
+            except Exception:
+                bf16_supported = False
+
+        resolved = "fp32" if requested == "auto" else requested
+        if resolved == "bf16" and gpu_like_device and self._device.startswith(("cuda", "gpu")) and not bf16_supported:
+            has_fp16_gpu = has_cuda
+            if has_fp16_gpu:
+                logger.warning(
+                    "Requested bf16 on device=%s but CUDA bf16 is unavailable; falling back to fp16.",
+                    self._device,
+                )
+                resolved = "fp16"
+            else:
+                logger.warning(
+                    "Requested bf16 on device=%s but accelerator bf16/fp16 support is unavailable; falling back to fp32.",
+                    self._device,
+                )
+                resolved = "fp32"
+
+        dtype_map = {
+            "fp32": torch_module.float32,
+            "fp16": torch_module.float16,
+            "bf16": torch_module.bfloat16,
+        }
+        target_dtype = dtype_map.get(resolved, torch_module.float32)
+
+        if self._device == "cpu" and resolved in {"fp16", "bf16"}:
+            logger.info(
+                "Requested %s on CPU; keeping requested weight/compute dtype where possible. "
+                "If ops are unsupported at runtime, backend will retry with fp32.",
+                resolved,
+            )
+
+        self._model.to(device=self._device, dtype=target_dtype)
+        self._resolved_precision = resolved
+        self._weight_dtype = target_dtype
+        self._compute_dtype = target_dtype
+        logger.info(
+            "PyTorch precision configured requested=%s resolved=%s device=%s",
+            self._requested_precision,
+            self._resolved_precision,
+            self._device,
+        )
