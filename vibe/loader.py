@@ -184,24 +184,6 @@ def resolve_from_local_folder(
     return FileMap(paths)
 
 
-def resolve_from_hf_cache_path(
-    snapshot_path: Path,
-    file_specs: list[FileSpec],
-    backend: Backend,
-    *,
-    file_name_map: Mapping[str, str] | None = None,
-) -> FileMap:
-    """
-    Resolve files from an already-downloaded HF snapshot directory.
-
-    This is for users who point directly to a path inside their HF cache
-    (e.g. ~/.cache/huggingface/hub/models--SmilingWolf--wd.../snapshots/abc123/).
-    Behaves identically to resolve_from_local_folder — it's a separate function
-    purely for clarity at the call site.
-    """
-    return resolve_from_local_folder(snapshot_path, file_specs, backend, file_name_map=file_name_map)
-
-
 def resolve_from_source_string(
     source: str,
     file_specs: list[FileSpec],
@@ -218,7 +200,6 @@ def resolve_from_source_string(
     Supported source formats:
       - "local:/path/to/folder"  (strict local mode)
       - "hf:owner/repo"          (strict HuggingFace mode)
-      - "hf_cache:/path"         (strict local HF snapshot mode)
       - unprefixed text           (auto mode: local folder if it exists, then HF repo)
 
     Prefix modes are strict and do not fall back to other source kinds.
@@ -242,9 +223,6 @@ def resolve_from_source_string(
             allow_download=allow_download,
             file_name_map=file_name_map,
         )
-
-    if source.startswith("hf_cache:"):
-        return _resolve_hf_cache_prefixed(source[9:], file_specs, backend, file_name_map=file_name_map)
 
     return _resolve_auto_source(
         source,
@@ -307,31 +285,6 @@ def _resolve_hf_prefixed(
         if _looks_like_local_folder(value):
             hint = " It looks like a local folder; use 'local:/path' instead if that was intended."
         raise LoaderError(f"Requested HF source via 'hf:' but failed to resolve '{value}': {exc}.{hint}".rstrip())
-
-
-def _resolve_hf_cache_prefixed(
-    raw_value: str,
-    file_specs: list[FileSpec],
-    backend: Backend,
-    *,
-    file_name_map: Mapping[str, str] | None,
-) -> FileMap:
-    value = raw_value.strip()
-    if not value:
-        raise LoaderError("HF cache source prefix requires a path: hf_cache:/path/to/snapshot")
-
-    path = Path(value).expanduser()
-    try:
-        return resolve_from_hf_cache_path(path, file_specs, backend, file_name_map=file_name_map)
-    except LoaderError as exc:
-        hint = ""
-        if _looks_like_local_folder(value):
-            hint = " It looks like a local folder path; verify this HF snapshot folder contains the required files."
-        elif _looks_like_hf_repo_id(value):
-            hint = " It looks like a HuggingFace repo ID; use 'hf:<owner/repo>' instead if that was intended."
-        raise LoaderError(
-            f"Requested HF cache source via 'hf_cache:' but failed to resolve '{value}': {exc}.{hint}".rstrip()
-        )
 
 
 def _resolve_auto_source(

@@ -188,19 +188,6 @@ def test_source_string_hf_prefix_suggests_local_when_path_exists(tmp_path: Path)
     assert "looks like a local folder" in message
 
 
-def test_source_string_hf_cache_prefix_mentions_local_folder_path(tmp_path: Path) -> None:
-    specs = [
-        FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
-    ]
-
-    with pytest.raises(LoaderError) as excinfo:
-        resolve_from_source_string(f"hf_cache:{tmp_path}", specs, Backend.ONNX)
-
-    message = str(excinfo.value)
-    assert "Requested HF cache source via 'hf_cache:'" in message
-    assert "looks like a local folder path" in message
-
-
 def test_source_string_auto_tries_hf_after_local_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     specs = [
         FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),

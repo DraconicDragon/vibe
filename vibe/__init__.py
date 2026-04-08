@@ -118,7 +118,6 @@ def load(
                           - Prefix forms (strict mode):
                               "local:/path/to/folder"
                               "hf:owner/repo-name"
-                              "hf_cache:/path/to/snapshot"
                           - Unprefixed (auto mode):
                               first tries local folder when it exists,
                               then tries HF repo/cache/download.
@@ -216,7 +215,6 @@ def load_custom(
                           - Prefix forms (strict mode):
                               "local:/path/to/folder"
                               "hf:owner/repo-name"
-                              "hf_cache:/path/to/snapshot"
                           - Unprefixed (auto mode):
                               first tries local folder when it exists,
                               then tries HF repo/cache/download.
