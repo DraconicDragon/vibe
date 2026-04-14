@@ -107,14 +107,14 @@ class ScoreResult:
         score:      The predicted score.
         score_min:  The minimum of the model's output range (informational).
         score_max:  The maximum of the model's output range (informational).
-        label:      Optional human-readable label for what the score means.
+        label:      Human-readable label for what the score means.
     """
 
-    output_type: Literal[OutputType.SCORE] = OutputType.SCORE
+    output_type: Literal[OutputType.SCORE] = field(default=OutputType.SCORE, init=False)
+    label: str
     score: float = 0.0
     score_min: float = 0.0
     score_max: float = 1.0
-    label: str = "score"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -129,14 +129,12 @@ class MultiScoreResult:
     (e.g. good/normal/bad).
 
     Attributes:
-        scores:     Ordered dict of {label: value}.
+        scores:     Mapping of {label: value} for each named score.
         score_min:  Minimum of each score's range.
         score_max:  Maximum of each score's range.
     """
 
-    # todo: no labels like scoreresult? where does scoreresult get label from? unify more to be like scoreresult?
-
-    output_type: Literal[OutputType.MULTI_SCORE] = OutputType.MULTI_SCORE
+    output_type: Literal[OutputType.MULTI_SCORE] = field(default=OutputType.MULTI_SCORE, init=False)
     scores: dict[str, float] = field(default_factory=dict)
     score_min: float = 0.0
     score_max: float = 1.0
