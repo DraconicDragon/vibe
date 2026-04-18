@@ -40,32 +40,32 @@ class TagEntry:
 @dataclass
 class TagResult:
     """
-    Base result type for tagger models with named score categories.
+    Structured result for tagger model outputs.
 
-    Concrete tagger results should subclass this and expose explicit fields for
-    each category (for example: rating/general/character).
+    Subclasses should expose category lists such as rating, general, and
+    character through categories().
     """
 
     output_type: Literal[OutputType.TAGS] = field(default=OutputType.TAGS, init=False)
     character_mapping: dict[str, list[str]] | None = None
 
     def categories(self) -> dict[str, list[TagEntry]]:
-        """Return category name -> entries for this result."""
+        """Return category name -> entries."""
         raise NotImplementedError("TagResult subclasses must implement categories().")
 
     def category(self, name: str) -> list[TagEntry]:
-        """Return one category by name, or an empty list if missing."""
+        """Return tags of one category by name, or an empty list if missing."""
         return self.categories().get(name, [])
 
     def tag_names(self) -> list[str]:
-        """Convenience: flattened tag names from all categories."""
+        """Return all tag names flattened across categories."""
         names: list[str] = []
         for entries in self.categories().values():
             names.extend(entry.tag for entry in entries)
         return names
 
     def as_score_dict(self) -> dict[str, float]:
-        """Convenience: {tag: score} sorted by score (highest first)."""
+        """Return a flat {tag: score} dict sorted by score descending."""
         all_entries: list[TagEntry] = []
         for entries in self.categories().values():
             all_entries.extend(entries)
