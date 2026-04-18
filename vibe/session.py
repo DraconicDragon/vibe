@@ -101,6 +101,8 @@ class ModelSession:
             file_map=file_map,
             source=source,
             auto_download=auto_download,
+            model_id=plugin.model_id,
+            warning_keys=set(),
         )
         self._inference_lock = threading.RLock()
         self._cancel_event = threading.Event()

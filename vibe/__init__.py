@@ -47,7 +47,7 @@ from vibe.memory_stats import (
 )
 from vibe.precision import normalize_precision_string
 from vibe.registry import ModelRegistry, RegistryError, _make_auto_register_hook
-from vibe.result_processors import CharacterIPMapping, CleanTags, ResultProcessor
+from vibe.result_processors import CharacterIPMapping, CleanTags, ResultProcessor, TagLevelThresholds
 from vibe.results import (
     InferenceResult,
     InferenceResultItem,
@@ -344,6 +344,7 @@ __all__ = [
     "ResultProcessor",
     "CleanTags",
     "CharacterIPMapping",
+    "TagLevelThresholds",
     # Registry
     "registry",
     "RegistryError",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,8 +8,15 @@ from typing import Any
 import numpy as np
 
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.plugins.shared.tagger_shared import (
+    build_entries_for_indices,
+    load_tag_metadata,
+    normalize_output_scores,
+    preprocess_tagger_image,
+)
 from vibe.result_processors import CharacterIPMapping, CleanTags
 from vibe.results import OutputType, TagEntry, TagResult
+from vibe.tag_categories import DanbooruTagCategory
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +44,7 @@ class WDTaggerBasePlugin(ModelPlugin):
 
     output_type = OutputType.TAGS
     supported_backends = [Backend.ONNX, Backend.PYTORCH]
-    supported_processors = [CleanTags, CharacterIPMapping]
+    supported_processors = [CharacterIPMapping]
 
     required_files = [
         FileSpec(
@@ -64,37 +70,23 @@ class WDTaggerBasePlugin(ModelPlugin):
 
     # Internal state loaded by load_ancillary()
     _raw_tag_names: list[str]
+    _per_tag_thresholds: list[float | None]
     _rating_indices: list[int]
     _general_indices: list[int]
     _character_indices: list[int]
 
     def load_ancillary(self, file_map: dict[str, Path]) -> None:
-        """Load tag metadata"""
+        """Load tag metadata from selected_tags.csv."""
         csv_path = file_map["selected_tags.csv"]
 
         logger.info("Loading tag list from %s", csv_path)
-        self._raw_tag_names = []
-        self._rating_indices = []
-        self._general_indices = []
-        self._character_indices = []
+        metadata = load_tag_metadata(csv_path)
 
-        with csv_path.open("r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for idx, row in enumerate(reader):
-                raw_name = row.get("name", "")
-                self._raw_tag_names.append(raw_name)
-
-                try:
-                    category = int(row.get("category", "0"))
-                except ValueError:
-                    category = 0
-
-                if category == 9:
-                    self._rating_indices.append(idx)
-                elif category == 4:
-                    self._character_indices.append(idx)
-                elif category == 0:
-                    self._general_indices.append(idx)
+        self._raw_tag_names = metadata.raw_tag_names
+        self._per_tag_thresholds = metadata.per_tag_thresholds
+        self._rating_indices = metadata.indices_for(int(DanbooruTagCategory.RATING))
+        self._general_indices = metadata.indices_for(int(DanbooruTagCategory.GENERAL))
+        self._character_indices = metadata.indices_for(int(DanbooruTagCategory.CHARACTER))
 
         logger.info(
             "Loaded WD tags: total=%d general=%d character=%d rating=%d",
@@ -106,50 +98,20 @@ class WDTaggerBasePlugin(ModelPlugin):
 
     def preprocess(self, image: Any) -> np.ndarray:
         """Convert image to float32 BGR array for ONNX runtime."""
-        from PIL import Image
-
-        # Ensure PIL image
-        if not isinstance(image, Image.Image):
-            image = Image.fromarray(np.asarray(image))
-
-        if image.mode == "RGBA":
-            background = Image.new("RGB", image.size, (255, 255, 255))
-            background.paste(image, mask=image.split()[3])
-            image = background
-        else:
-            image = image.convert("RGB")
-
-        width, height = image.size
-        if width != height:
-            size = max(width, height)
-            squared = Image.new("RGB", (size, size), (255, 255, 255))
-            squared.paste(image, ((size - width) // 2, (size - height) // 2))
-            image = squared
-
-        image = image.resize((self.IMAGE_SIZE, self.IMAGE_SIZE), Image.Resampling.BICUBIC)
-
-        arr = np.asarray(image, dtype=np.float32)
-        arr = arr[:, :, ::-1]  # RGB -> BGR
-
-        if self.INPUT_LAYOUT == "NCHW":
-            arr = np.transpose(arr, (2, 0, 1))
-
-        arr = np.expand_dims(arr, axis=0).astype(np.float32)
-        return arr
+        return preprocess_tagger_image(
+            image,
+            image_size=self.IMAGE_SIZE,
+            input_layout=self.INPUT_LAYOUT,
+            rgb_to_bgr=True,
+            normalize_to_unit=False,
+        )
 
     def postprocess(
         self,
         raw_output: Any,
     ) -> WDTagResult:
         """Return full scored output grouped by WD tag category."""
-        scores = np.asarray(raw_output)
-        if scores.ndim > 1:
-            scores = np.squeeze(scores, axis=0)
-        scores = scores.astype(np.float32)
-
-        # Most exports already return probabilities, but apply sigmoid for logits.
-        if np.min(scores) < 0.0 or np.max(scores) > 1.0:
-            scores = 1.0 / (1.0 + np.exp(-scores))
+        scores = normalize_output_scores(raw_output)
 
         usable_count = min(len(scores), len(self._raw_tag_names))
         if usable_count != len(self._raw_tag_names):
@@ -169,16 +131,18 @@ class WDTaggerBasePlugin(ModelPlugin):
             character=character,
         )
 
-    # todo: move to mixin or some other shared utility file since this is pretty universal
     def _entries_for_indices(
         self,
         indices: list[int],
         scores: np.ndarray,
         usable_count: int,
     ) -> list[TagEntry]:
-        entries = [TagEntry(tag=self._raw_tag_names[i], score=float(scores[i])) for i in indices if i < usable_count]
-        entries.sort(key=lambda item: item.score, reverse=True)
-        return entries
+        return build_entries_for_indices(
+            tag_names=self._raw_tag_names,
+            indices=indices,
+            scores=scores,
+            usable_count=usable_count,
+        )
 
 
 # region Model Variants

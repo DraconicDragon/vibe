@@ -1,0 +1,23 @@
+# todo: bad hardcoded but fine for now, just remember if theres ever a change
+ANIMETIMM_V4_SELECTED_REPOS: tuple[str, ...] = (
+    "animetimm/convnextv2_huge.dbv4-full",
+    "animetimm/caformer_b36.dbv4-full",
+    "animetimm/caformer_m36.dbv4-full",
+    "animetimm/caformer_s18.dbv4-full",
+    "animetimm/caformer_s36.dbv4-full",
+    "animetimm/convnext_base.dbv4-full",
+    "animetimm/eva02_large_patch14_448.dbv4-full",
+    "animetimm/mobilenetv3_large_100.dbv4-full",
+    "animetimm/mobilenetv3_large_150d.dbv4-full",
+    "animetimm/mobilenetv4_conv_aa_large.dbv4-full",
+    "animetimm/mobilenetv4_conv_small.dbv4-full",
+    "animetimm/mobilenetv4_conv_small_050.dbv4-full",
+    "animetimm/resnet101.dbv4-full",
+    "animetimm/resnet152.dbv4-full",
+    "animetimm/resnet18.dbv4-full",
+    "animetimm/resnet34.dbv4-full",
+    "animetimm/resnet50.dbv4-full",
+    "animetimm/swinv2_base_window8_256.dbv4-full",
+    "animetimm/swinv2_base_window8_256.dbv4a-full",
+    "animetimm/vit_base_patch16_224.dbv4-full",
+)
