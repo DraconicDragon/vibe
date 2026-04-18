@@ -7,7 +7,7 @@ and optional result processors. Calling .infer() is the one thing you do with it
 
 session = vibe.load("wd-eva02-v3")
 result  = session.infer(image)
-result  = session.infer(image, processors=[...])
+result  = session.infer(image, result_processors=[...])
 """
 
 from __future__ import annotations
@@ -101,8 +101,6 @@ class ModelSession:
             file_map=file_map,
             source=source,
             auto_download=auto_download,
-            model_id=plugin.model_id,
-            warning_keys=set(),
         )
         self._inference_lock = threading.RLock()
         self._cancel_event = threading.Event()
@@ -126,7 +124,7 @@ class ModelSession:
     def infer(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        processors: list[ResultProcessor] | None = None,
+        result_processors: list[ResultProcessor] | None = None,
         *,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
@@ -139,8 +137,8 @@ class ModelSession:
                 images: A single image/path, list of images/paths, or list of
                     (image_or_path, ref) tuples.
                     The plugin's preprocess() handles conversion.
-            processors: Optional ordered list of result processor instances.
-                        Processors run after model postprocess in the order given.
+            result_processors: Optional ordered list of result processor instances.
+                        Result processors run after model postprocess in the order given.
             batch_size: Batch chunk size used when true batching is selected.
             batch_method:
               - "auto": choose by backend/device (GPU-like -> true batching | CPU -> sequential).
@@ -169,7 +167,7 @@ class ModelSession:
         try:
             for chunk in self.infer_batches(
                 images,
-                processors=processors,
+                result_processors=result_processors,
                 batch_size=batch_size,
                 batch_method=batch_method,
             ):
@@ -199,7 +197,7 @@ class ModelSession:
     def infer_batches(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        processors: list[ResultProcessor] | None = None,
+        result_processors: list[ResultProcessor] | None = None,
         *,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
@@ -223,6 +221,8 @@ class ModelSession:
                 if not values:
                     logger.warning("No input images provided for model_id=%s", self.model_id)
                     return
+
+                self._notify_result_processors_infer_start(result_processors)
 
                 total_inputs = len(values)
                 path_inputs = sum(1 for value in values if isinstance(value, (str, Path)))
@@ -263,7 +263,7 @@ class ModelSession:
                         if isinstance(value, (str, Path)):
                             loaded_path_inputs += 1
                         self._check_cancelled()
-                        result = self._infer_single(image, processors=processors)
+                        result = self._infer_single(image, result_processors=result_processors)
                         logger.debug("Completed sequential item index=%s/%s", index + 1, total_inputs)
                         yield InferenceResult(
                             total_inputs=total_inputs,
@@ -282,7 +282,7 @@ class ModelSession:
                             self._infer_many_true_batch_chunks(
                                 chunk_images,
                                 len(chunk_images),
-                                processors=processors,
+                                result_processors=result_processors,
                                 fallback_to_sequential_on_stack_error=(batch_method == "auto"),
                             )
                         )
@@ -323,7 +323,7 @@ class ModelSession:
     async def infer_async(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        processors: list[ResultProcessor] | None = None,
+        result_processors: list[ResultProcessor] | None = None,
         *,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
@@ -346,7 +346,7 @@ class ModelSession:
             try:
                 for chunk in self.infer_batches(
                     images,
-                    processors=processors,
+                    result_processors=result_processors,
                     batch_size=batch_size,
                     batch_method=batch_method,
                 ):
@@ -580,7 +580,7 @@ class ModelSession:
     def _infer_single(
         self,
         image: Any,
-        processors: list[ResultProcessor] | None = None,
+        result_processors: list[ResultProcessor] | None = None,
     ) -> ModelResult:
         """Run inference for one image."""
         # Preprocess: image → tensor/array
@@ -603,7 +603,7 @@ class ModelSession:
         except Exception as exc:
             raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
 
-        return self._apply_processors(result, processors=processors)
+        return self._apply_processors(result, result_processors=result_processors)
 
     def _resolve_batch_method(
         self,
@@ -648,7 +648,7 @@ class ModelSession:
         self,
         images: list[Any],
         batch_size: int,
-        processors: list[ResultProcessor] | None = None,
+        result_processors: list[ResultProcessor] | None = None,
         fallback_to_sequential_on_stack_error: bool = False,
     ) -> Iterator[list[ModelResult]]:
         for start in range(0, len(images), batch_size):
@@ -675,7 +675,7 @@ class ModelSession:
                             result = self._plugin.postprocess(raw_output)
                         except Exception as exc:
                             raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
-                        chunk_results.append(self._apply_processors(result, processors=processors))
+                        chunk_results.append(self._apply_processors(result, result_processors=result_processors))
                     yield chunk_results
                     continue
                 raise
@@ -691,8 +691,20 @@ class ModelSession:
                     result = self._plugin.postprocess(sample_output)
                 except Exception as exc:
                     raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
-                chunk_results.append(self._apply_processors(result, processors=processors))
+                chunk_results.append(self._apply_processors(result, result_processors=result_processors))
             yield chunk_results
+
+    def _notify_result_processors_infer_start(self, result_processors: list[ResultProcessor] | None) -> None:
+        if not result_processors:
+            return
+        for result_processor in result_processors:
+            try:
+                result_processor.on_infer_start(context=self._processor_context)
+            except Exception as exc:
+                raise SessionError(
+                    f"Result processor '{result_processor.__class__.__name__}' failed during infer startup "
+                    f"for model '{self.model_id}': {exc}"
+                ) from exc
 
     def _stack_batch(self, chunk: list[Any]) -> Any:
         first = chunk[0]
@@ -766,28 +778,28 @@ class ModelSession:
     def _apply_processors(
         self,
         result: ModelResult,
-        processors: list[ResultProcessor] | None = None,
+        result_processors: list[ResultProcessor] | None = None,
     ) -> ModelResult:
-        if not processors:
+        if not result_processors:
             return result
 
         current = result
-        for processor in processors:
-            if not any(isinstance(processor, supported) for supported in self._plugin.supported_processors):
+        for result_processor in result_processors:
+            if not any(isinstance(result_processor, supported) for supported in self._plugin.supported_processors):
                 logger.warning(
                     "Processor '%s' is not declared as supported by model '%s'; attempting to apply anyway.",
-                    processor.__class__.__name__,
+                    result_processor.__class__.__name__,
                     self.model_id,
                 )
 
             try:
-                current = processor.process(
+                current = result_processor.process(
                     current,
                     context=self._processor_context,
                 )
             except Exception as exc:
                 raise SessionError(
-                    f"Result processor '{processor.__class__.__name__}' failed for model '{self.model_id}': {exc}"
+                    f"Result processor '{result_processor.__class__.__name__}' failed for model '{self.model_id}': {exc}"
                 ) from exc
         return current
 

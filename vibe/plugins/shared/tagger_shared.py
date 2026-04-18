@@ -18,6 +18,7 @@ class TagMetadata:
     raw_tag_names: list[str] = field(default_factory=list)
     category_indices: dict[int, list[int]] = field(default_factory=dict)
     per_tag_thresholds: list[float | None] = field(default_factory=list)
+    threshold_column_present: bool = False
 
     def indices_for(self, category: int) -> list[int]:
         """Return CSV row indices for a category, or an empty list when absent."""
@@ -39,6 +40,7 @@ def load_tag_metadata(
 
     with csv_path.open("r", newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
+        metadata.threshold_column_present = threshold_column in (reader.fieldnames or [])
         for idx, row in enumerate(reader):
             metadata.raw_tag_names.append(row.get("name", ""))
 
@@ -48,7 +50,7 @@ def load_tag_metadata(
                 category = int(DanbooruTagCategory.GENERAL)
             metadata.category_indices.setdefault(category, []).append(idx)
 
-            raw_threshold = row.get(threshold_column, "")
+            raw_threshold = row.get(threshold_column, "") if metadata.threshold_column_present else ""
             try:
                 parsed_threshold = float(raw_threshold) if raw_threshold != "" else None
             except ValueError:

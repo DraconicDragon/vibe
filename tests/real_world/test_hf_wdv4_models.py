@@ -81,7 +81,7 @@ def test_hf_real_world_wdv4_model_inference_smoke() -> None:
             unfiltered = session.infer(image).first()
 
             if RUN_REAL_WORLD_THRESHOLDS:
-                filtered = session.infer(image, processors=[TagLevelThresholds()]).first()
+                filtered = session.infer(image, result_processors=[TagLevelThresholds()]).first()
             else:
                 filtered = unfiltered
 

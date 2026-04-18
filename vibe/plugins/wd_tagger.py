@@ -44,7 +44,7 @@ class WDTaggerBasePlugin(ModelPlugin):
 
     output_type = OutputType.TAGS
     supported_backends = [Backend.ONNX, Backend.PYTORCH]
-    supported_processors = [CharacterIPMapping]
+    supported_processors = [CleanTags, CharacterIPMapping]
 
     required_files = [
         FileSpec(

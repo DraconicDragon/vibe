@@ -426,7 +426,7 @@ def test_result_pipeline_applies_character_mapping_from_csv(tmp_path: Path) -> N
     result = (
         session.infer(
             _test_images()[0],
-            processors=[CharacterIPMapping()],
+            result_processors=[CharacterIPMapping()],
         )
         .items[0]
         .result
@@ -447,7 +447,7 @@ def test_result_pipeline_applies_character_mapping_from_manual_json_path(tmp_pat
     result = (
         session.infer(
             _test_images()[0],
-            processors=[CharacterIPMapping(mapping_file=manual_mapping)],
+            result_processors=[CharacterIPMapping(mapping_file=manual_mapping)],
         )
         .items[0]
         .result
@@ -462,7 +462,7 @@ def test_result_pipeline_optional_cleaning_preserves_kaomojis(tmp_path: Path) ->
     result = (
         session.infer(
             _test_images()[0],
-            processors=[CleanTags()],
+            result_processors=[CleanTags()],
         )
         .items[0]
         .result
@@ -495,7 +495,7 @@ def test_result_pipeline_mapping_and_cleaning_can_run_together(tmp_path: Path) -
     result = (
         session.infer(
             _test_images()[0],
-            processors=[CharacterIPMapping(mapping_file=manual_mapping), CleanTags()],
+            result_processors=[CharacterIPMapping(mapping_file=manual_mapping), CleanTags()],
         )
         .items[0]
         .result
@@ -517,7 +517,7 @@ def test_unsupported_processor_logs_warning_but_still_applies(tmp_path: Path, ca
     session, _ = _build_session(tmp_path)
 
     with caplog.at_level("WARNING"):
-        result = session.infer(_test_images()[0], processors=[_NoOpProcessor()]).items[0].result
+        result = session.infer(_test_images()[0], result_processors=[_NoOpProcessor()]).items[0].result
 
     assert isinstance(result, TagResult)
     assert "not declared as supported" in caplog.text

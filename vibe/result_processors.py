@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from vibe.backends.char_ip_mapping import (
     apply_character_ip_mapping,
@@ -45,12 +44,14 @@ class ResultProcessorContext:
     file_map: FileMap
     source: str
     auto_download: bool
-    model_id: str
-    warning_keys: set[str]
 
 
 class ResultProcessor:
     """Base class for result processors."""
+
+    def on_infer_start(self, *, context: ResultProcessorContext) -> None:
+        """Hook called once per infer/infer_batches/infer_async call before processing outputs."""
+        del context
 
     def process(
         self,
@@ -143,11 +144,17 @@ class CleanTags(ResultProcessor):
 
 
 class TagLevelThresholds(ResultProcessor):
-    """Apply CSV `best_threshold` filtering to AnimeTimm tagger outputs."""
+    """Apply CSV `best_threshold` filtering when threshold metadata is available."""
 
     def __init__(self, *, threshold_column: str = "best_threshold") -> None:
         self._threshold_column = threshold_column
         self._threshold_cache: dict[str, dict[str, float]] = {}
+        self._threshold_stats_cache: dict[str, tuple[int, int, bool]] = {}
+        self._warned_this_call: set[str] = set()
+
+    def on_infer_start(self, *, context: ResultProcessorContext) -> None:
+        del context
+        self._warned_this_call.clear()
 
     def process(
         self,
@@ -158,41 +165,53 @@ class TagLevelThresholds(ResultProcessor):
         if not isinstance(result, TagResult):
             return result
 
-        if not context.model_id.startswith("wdv4-"):
-            self._warn_once(
-                context,
-                key=f"unsupported-model:{context.model_id}",
-                message=(
-                    "TagLevelThresholds was requested for model "
-                    f"'{context.model_id}', but tag-level-thresholds are currently supported "
-                    "for AnimeTimm WDV4 models only. Skipping filtering."
-                ),
-            )
-            return result
-
         csv_path = context.file_map.get("selected_tags.csv")
         if csv_path is None:
-            self._warn_once(
-                context,
-                key=f"missing-csv:{context.model_id}",
+            self._warn(
+                key=f"missing-csv:{context.source}",
                 message=(
-                    f"Model '{context.model_id}' has no selected_tags.csv in file_map; "
-                    "cannot apply tag-level-thresholds."
+                    "TagLevelThresholds could not find selected_tags.csv in model files; "
+                    "cannot apply tag-level thresholds."
                 ),
             )
             return result
 
-        threshold_map = self._threshold_map_for_csv(csv_path, context)
-        if not threshold_map:
-            self._warn_once(
-                context,
-                key=f"no-thresholds:{csv_path}",
+        threshold_map = self._threshold_map_for_csv(csv_path)
+        total_tags, with_threshold_count, threshold_column_present = self._threshold_stats_for_csv(csv_path)
+        missing_count = max(total_tags - with_threshold_count, 0)
+        missing_pct = (missing_count / total_tags * 100.0) if total_tags > 0 else 0.0
+
+        if not threshold_column_present:
+            self._warn(
+                key=f"threshold-column-missing:{csv_path}",
                 message=(
-                    f"No usable '{self._threshold_column}' values were found in {csv_path}; "
-                    "tag-level-threshold filtering is skipped."
+                    f"selected_tags.csv at '{csv_path}' has no '{self._threshold_column}' column; "
+                    f"0/{total_tags} tags have threshold data and {missing_count}/{total_tags} "
+                    f"tags ({missing_pct:.1f}%) are missing it. Tag-level-threshold filtering is skipped."
                 ),
             )
             return result
+
+        if not threshold_map:
+            self._warn(
+                key=f"threshold-values-missing:{csv_path}",
+                message=(
+                    f"selected_tags.csv at '{csv_path}' has a '{self._threshold_column}' column, "
+                    f"but 0/{total_tags} tags have usable threshold data and {missing_count}/{total_tags} "
+                    f"tags ({missing_pct:.1f}%) are missing it. Tag-level-threshold filtering is skipped."
+                ),
+            )
+            return result
+
+        if missing_count > 0:
+            self._warn(
+                key=f"threshold-values-partial:{csv_path}",
+                message=(
+                    f"selected_tags.csv at '{csv_path}' has partial '{self._threshold_column}' data: "
+                    f"{with_threshold_count}/{total_tags} tags have thresholds, while {missing_count}/{total_tags} "
+                    f"tags ({missing_pct:.1f}%) are missing it and will remain unfiltered."
+                ),
+            )
 
         for category, entries in result.categories().items():
             before = len(entries)
@@ -203,8 +222,7 @@ class TagLevelThresholds(ResultProcessor):
                     filtered.append(entry)
             entries[:] = filtered
             logger.debug(
-                "TagLevelThresholds applied model_id=%s category=%s kept=%d dropped=%d",
-                context.model_id,
+                "TagLevelThresholds applied category=%s kept=%d dropped=%d",
                 category,
                 len(filtered),
                 before - len(filtered),
@@ -215,7 +233,6 @@ class TagLevelThresholds(ResultProcessor):
     def _threshold_map_for_csv(
         self,
         csv_path: Path,
-        context: ResultProcessorContext,
     ) -> dict[str, float]:
         cache_key = str(csv_path)
         cached = self._threshold_cache.get(cache_key)
@@ -224,53 +241,40 @@ class TagLevelThresholds(ResultProcessor):
 
         metadata = load_tag_metadata(csv_path, threshold_column=self._threshold_column)
         threshold_map: dict[str, float] = {}
-        missing_count = 0
         for tag_name, threshold in zip(metadata.raw_tag_names, metadata.per_tag_thresholds, strict=False):
             if threshold is None:
-                missing_count += 1
                 continue
             threshold_map[tag_name] = threshold
 
-        self._threshold_cache[cache_key] = threshold_map
-
-        self._log_once(
-            context,
-            key=f"threshold-available:{cache_key}",
-            level=logging.INFO,
-            message=(
-                f"Tag-level-threshold metadata loaded for model '{context.model_id}': "
-                f"{len(threshold_map)} tags have '{self._threshold_column}' values."
-            ),
+        total_tags = len(metadata.raw_tag_names)
+        with_threshold_count = len(threshold_map)
+        self._threshold_stats_cache[cache_key] = (
+            total_tags,
+            with_threshold_count,
+            metadata.threshold_column_present,
         )
-
-        if missing_count > 0:
-            self._warn_once(
-                context,
-                key=f"threshold-missing:{cache_key}",
-                message=(
-                    f"Model '{context.model_id}' is missing '{self._threshold_column}' for "
-                    f"{missing_count} tag(s); those tags are left unfiltered."
-                ),
-            )
-
+        self._threshold_cache[cache_key] = threshold_map
         return threshold_map
 
-    def _warn_once(self, context: ResultProcessorContext, *, key: str, message: str) -> None:
-        self._log_once(context, key=key, level=logging.WARNING, message=message)
+    def _threshold_stats_for_csv(self, csv_path: Path) -> tuple[int, int, bool]:
+        cache_key = str(csv_path)
+        stats = self._threshold_stats_cache.get(cache_key)
+        if stats is not None:
+            return stats
 
-    def _log_once(
-        self,
-        context: ResultProcessorContext,
-        *,
-        key: str,
-        level: int,
-        message: str,
-    ) -> None:
+        # Populate both caches when stats are first requested.
+        self._threshold_map_for_csv(csv_path)
+        stats = self._threshold_stats_cache.get(cache_key)
+        if stats is not None:
+            return stats
+        return (0, 0, False)
+
+    def _warn(self, *, key: str, message: str) -> None:
         namespaced = f"tag-level-thresholds:{key}"
-        if namespaced in context.warning_keys:
+        if namespaced in self._warned_this_call:
             return
-        context.warning_keys.add(namespaced)
-        logger.log(level, message)
+        self._warned_this_call.add(namespaced)
+        logger.warning(message)
 
 
 def _clean_tag_text(tag: str) -> str:

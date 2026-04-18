@@ -44,13 +44,18 @@ def _write_selected_tags_csv(path: Path) -> None:
     )
 
 
-def _make_context(*, model_id: str, csv_path: Path) -> ResultProcessorContext:
+def _write_selected_tags_csv_without_threshold_column(path: Path) -> None:
+    path.write_text(
+        "tag_id,name,category\n1,1girl,0\n2,artist_name,1\n3,char_name,4\n4,safe,9\n",
+        encoding="utf-8",
+    )
+
+
+def _make_context(*, csv_path: Path) -> ResultProcessorContext:
     return ResultProcessorContext(
         file_map=FileMap({"selected_tags.csv": csv_path}),
         source="hf:animetimm/caformer_b36.dbv4-full",
         auto_download=False,
-        model_id=model_id,
-        warning_keys=set(),
     )
 
 
@@ -59,7 +64,7 @@ def test_tag_level_thresholds_filters_tags_by_best_threshold(tmp_path: Path) -> 
     _write_selected_tags_csv(csv_path)
 
     processor = TagLevelThresholds()
-    context = _make_context(model_id="wdv4-caformer-b36-dbv4-full", csv_path=csv_path)
+    context = _make_context(csv_path=csv_path)
 
     result = _SimpleTagResult(
         general=[TagEntry(tag="1girl", score=0.30), TagEntry(tag="missing_threshold", score=0.05)],
@@ -68,42 +73,52 @@ def test_tag_level_thresholds_filters_tags_by_best_threshold(tmp_path: Path) -> 
         rating=[TagEntry(tag="safe", score=0.90)],
     )
 
+    processor.on_infer_start(context=context)
     out = processor.process(result, context=context)
 
-    assert [entry.tag for entry in out.general] == ["missing_threshold"]
-    assert [entry.tag for entry in out.artist] == ["artist_name"]
-    assert out.character == []
-    assert [entry.tag for entry in out.rating] == ["safe"]
+    assert [entry.tag for entry in out.general] == ["missing_threshold"]  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.artist] == ["artist_name"]  # ty:ignore[unresolved-attribute]
+    assert out.character == []  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.rating] == ["safe"]  # ty:ignore[unresolved-attribute]
 
 
-def test_tag_level_thresholds_warns_once_for_missing_thresholds(tmp_path: Path, caplog) -> None:
+def test_tag_level_thresholds_warns_once_per_call_for_partial_thresholds(tmp_path: Path, caplog) -> None:
     csv_path = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv(csv_path)
 
     processor = TagLevelThresholds()
-    context = _make_context(model_id="wdv4-caformer-b36-dbv4-full", csv_path=csv_path)
+    context = _make_context(csv_path=csv_path)
     result = _SimpleTagResult(general=[TagEntry(tag="missing_threshold", score=0.99)])
 
     caplog.set_level(logging.WARNING)
 
+    processor.on_infer_start(context=context)
     processor.process(result, context=context)
+    processor.process(result, context=context)
+
+    processor.on_infer_start(context=context)
     processor.process(result, context=context)
 
     warning_messages = [record.message for record in caplog.records if record.levelno >= logging.WARNING]
-    missing_msgs = [msg for msg in warning_messages if "missing 'best_threshold'" in msg]
-    assert len(missing_msgs) == 1
+    partial_msgs = [msg for msg in warning_messages if "has partial 'best_threshold' data" in msg]
+    assert len(partial_msgs) == 2
+    assert "4/5 tags have thresholds" in partial_msgs[0]
+    assert "1/5 tags (20.0%)" in partial_msgs[0]
 
 
-def test_tag_level_thresholds_noop_for_non_wdv4_model(tmp_path: Path, caplog) -> None:
+def test_tag_level_thresholds_warns_when_threshold_column_is_missing(tmp_path: Path, caplog) -> None:
     csv_path = tmp_path / "selected_tags.csv"
-    _write_selected_tags_csv(csv_path)
+    _write_selected_tags_csv_without_threshold_column(csv_path)
 
     processor = TagLevelThresholds()
-    context = _make_context(model_id="wd-eva02-large-v3", csv_path=csv_path)
+    context = _make_context(csv_path=csv_path)
     result = _SimpleTagResult(general=[TagEntry(tag="1girl", score=0.10)])
 
     caplog.set_level(logging.WARNING)
+    processor.on_infer_start(context=context)
     out = processor.process(result, context=context)
 
-    assert [entry.tag for entry in out.general] == ["1girl"]
-    assert any("AnimeTimm WDV4 models only" in record.message for record in caplog.records)
+    assert [entry.tag for entry in out.general] == ["1girl"]  # ty:ignore[unresolved-attribute]
+    messages = [record.message for record in caplog.records if record.levelno >= logging.WARNING]
+    assert any("has no 'best_threshold' column" in message for message in messages)
+    assert any("0/4 tags have threshold data" in message for message in messages)
