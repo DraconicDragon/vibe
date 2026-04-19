@@ -85,6 +85,7 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
     INPUT_LAYOUT = "NCHW"
     NORMALIZE_MEAN = (0.485, 0.456, 0.406)
     NORMALIZE_STD = (0.229, 0.224, 0.225)
+    FALLBACK_PREPROCESS_PAD_SIZE = 512
     ONNX_FALLBACK_IMAGE_SIZE = IMAGE_SIZE
     ONNX_FALLBACK_NORMALIZE_MEAN = NORMALIZE_MEAN
     ONNX_FALLBACK_NORMALIZE_STD = NORMALIZE_STD
@@ -370,6 +371,15 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
 
         self._configure_pytorch_preprocess_from_config(config)
 
+        target_size = self._runtime_image_size if self._runtime_image_size is not None else self.IMAGE_SIZE
+        mean = self._runtime_normalize_mean if self._runtime_normalize_mean is not None else self.NORMALIZE_MEAN
+        std = self._runtime_normalize_std if self._runtime_normalize_std is not None else self.NORMALIZE_STD
+        self._runtime_preprocess_steps = self._build_default_preprocess_steps(
+            image_size=int(target_size),
+            mean=mean,
+            std=std,
+        )
+
     def _configure_pytorch_preprocess_from_config(self, config: dict[str, Any] | None) -> None:
         if self._backend != Backend.PYTORCH:
             return
@@ -425,6 +435,42 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
             return (float(raw[0]), float(raw[1]), float(raw[2]))
         except (TypeError, ValueError):
             return None
+
+    def _build_default_preprocess_steps(
+        self,
+        *,
+        image_size: int,
+        mean: tuple[float, float, float],
+        std: tuple[float, float, float],
+    ) -> list[dict[str, Any]]:
+        pad_size = max(int(self.FALLBACK_PREPROCESS_PAD_SIZE), int(image_size))
+        return [
+            {
+                "type": "pad_to_size",
+                "size": [pad_size, pad_size],
+                "interpolation": "bilinear",
+                "background_color": "white",
+            },
+            {
+                "type": "resize",
+                "size": int(image_size),
+                "interpolation": "bicubic",
+                "antialias": True,
+                "max_size": None,
+            },
+            {
+                "type": "center_crop",
+                "size": [int(image_size), int(image_size)],
+            },
+            {
+                "type": "maybe_to_tensor",
+            },
+            {
+                "type": "normalize",
+                "mean": [float(mean[0]), float(mean[1]), float(mean[2])],
+                "std": [float(std[0]), float(std[1]), float(std[2])],
+            },
+        ]
 
     # endregion Config and Preprocess Resolution
 

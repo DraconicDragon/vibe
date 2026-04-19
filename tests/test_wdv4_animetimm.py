@@ -169,6 +169,7 @@ def test_pytorch_preprocess_uses_config_image_size_when_available(tmp_path: Path
 
     assert arr.shape == (1, 3, 6, 6)
     assert plugin._runtime_image_size == 6
+    assert plugin._runtime_preprocess_steps is not None
 
 
 def test_pytorch_preprocess_falls_back_when_config_missing(tmp_path: Path) -> None:
@@ -185,6 +186,7 @@ def test_pytorch_preprocess_falls_back_when_config_missing(tmp_path: Path) -> No
 
     assert arr.shape == (1, 3, 5, 5)
     assert plugin._runtime_image_size is None
+    assert plugin._runtime_preprocess_steps is not None
 
 
 def test_pytorch_preprocess_uses_preprocess_json_over_config(tmp_path: Path) -> None:
