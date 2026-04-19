@@ -146,7 +146,23 @@ class PyTorchBackend:
                 model_input = tensor.to(device=self._device, dtype=self._compute_dtype)
                 output = self._model(model_input)
             except Exception:
-                if self._compute_dtype != torch.float32:
+                if self._compute_dtype == torch.float32 and self._weight_dtype not in {None, torch.float32}:
+                    logger.warning(
+                        "FP32 compute with weight_dtype=%s on device=%s needed a temporary fp32 weight promotion for this inference. "
+                        "This is expected when using fp16/bf16 weights with fp32 compute; weights are restored to %s after the forward pass.",
+                        self._weight_dtype,
+                        self._device,
+                        self._weight_dtype,
+                    )
+                    original_weight_dtype = self._weight_dtype
+                    self._model.to(device=self._device, dtype=torch.float32)
+                    try:
+                        model_input = tensor.to(device=self._device, dtype=torch.float32)
+                        output = self._model(model_input)
+                    finally:
+                        # Keep resident weights in the requested precision between inferences.
+                        self._model.to(device=self._device, dtype=original_weight_dtype)
+                elif self._compute_dtype != torch.float32:
                     logger.warning(
                         "PyTorch inference failed with compute_dtype=%s on device=%s; retrying with float32 fallback.",
                         self._compute_dtype,
@@ -205,7 +221,7 @@ class PyTorchBackend:
         return self._device
 
     def supports_true_batching(self) -> bool:
-        """True batching is generally not useful for CPU device type."""
+        """Return whether the current device type should use true batching."""
         return self._device != "cpu"
 
     def _apply_precision_plan(self, torch_module: Any) -> None:
@@ -255,10 +271,12 @@ class PyTorchBackend:
         self._model.to(device=self._device, dtype=target_dtype)
         self._resolved_precision = resolved
         self._weight_dtype = target_dtype
-        self._compute_dtype = target_dtype
+        self._compute_dtype = torch_module.float32
         logger.info(
-            "PyTorch precision configured requested=%s resolved=%s device=%s",
+            "PyTorch precision configured requested=%s resolved=%s device=%s weight_dtype=%s compute_dtype=%s",
             self._requested_precision,
             self._resolved_precision,
             self._device,
+            self._weight_dtype,
+            self._compute_dtype,
         )
