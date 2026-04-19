@@ -24,3 +24,13 @@ def test_describe_all_returns_typed_info_list() -> None:
 
     assert infos
     assert all(isinstance(info, ModelPluginInfo) for info in infos)
+
+
+def test_describe_exposes_image_spec_metadata() -> None:
+    wd_info = vibe.describe("wd-eva02-large-v3")
+    assert wd_info.image_size == 448
+    assert wd_info.input_layout == "NHWC"
+
+    animetimm_info = vibe.describe("wdv4-convnextv2-huge-dbv4-full")
+    assert animetimm_info.image_size == 512
+    assert animetimm_info.input_layout == "NCHW"

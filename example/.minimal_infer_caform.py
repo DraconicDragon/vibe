@@ -5,7 +5,12 @@ import vibe
 MODEL_SOURCE = "/mnt/T7/Projects/GitHub/vibe/models/caformer_b36.dbv4-full"
 
 # Using 'with' is optional but calls session.close() automatically to free resources when done.
-with vibe.load("wdv4-caformer-b36-dbv4-full", source=MODEL_SOURCE, backend=vibe.Backend.PYTORCH) as session:
+with vibe.load(
+    "wdv4-caformer-b36-dbv4-full",
+    source=MODEL_SOURCE,
+    backend=vibe.Backend.PYTORCH,
+    auto_download=False,
+) as session:
     result = session.infer(
         Image.open("example/example.jpg"),
         result_processors=[

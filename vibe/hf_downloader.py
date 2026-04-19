@@ -62,10 +62,32 @@ def download_or_cached(
 
     Raises HFDownloadError for required files that cannot be resolved.
     """
+    resolved, _reason = download_or_cached_with_reason(
+        repo_id=repo_id,
+        filename=filename,
+        revision=revision,
+        cache_dir=cache_dir,
+        allow_download=allow_download,
+        required=required,
+    )
+    return resolved
+
+
+def download_or_cached_with_reason(
+    repo_id: str,
+    filename: str,
+    *,
+    revision: str | None = None,
+    cache_dir: str | None = None,
+    allow_download: bool | None = None,
+    required: bool = True,
+) -> tuple[Path | None, str | None]:
+    """Resolve file from HF with optional reason string for unresolved optional files."""
     try:
         from huggingface_hub import hf_hub_download, try_to_load_from_cache
         from huggingface_hub.errors import (
             EntryNotFoundError,
+            HfHubHTTPError,
             LocalEntryNotFoundError,
             RepositoryNotFoundError,
         )
@@ -82,7 +104,7 @@ def download_or_cached(
     )
     if cached and Path(cached).is_file():
         logger.debug("HF cache hit repo='%s' file='%s' -> %s", repo_id, filename, cached)
-        return Path(cached)
+        return Path(cached), None
 
     auto_download_enabled = is_auto_download_enabled(allow_download)
     logger.debug(
@@ -94,9 +116,10 @@ def download_or_cached(
     )
 
     if not auto_download_enabled:
+        reason = f"auto-download disabled and '{filename}' is not present in local cache"
         if required:
             raise HFDownloadError(f"Auto-download disabled and '{filename}' is not in cache for '{repo_id}'.")
-        return None
+        return None, reason
 
     try:
         logger.debug("Downloading HF file repo='%s' file='%s'", repo_id, filename)
@@ -107,17 +130,33 @@ def download_or_cached(
             cache_dir=cache_dir,
         )
         logger.debug("Downloaded HF file repo='%s' file='%s'", repo_id, filename)
-        return Path(resolved)
+        return Path(resolved), None
     except EntryNotFoundError:
+        reason = f"'{filename}' does not exist in repo '{repo_id}'"
         if required:
             raise HFDownloadError(f"Required file '{filename}' was not found in HF repo '{repo_id}'.") from None
-        return None
+        return None, reason
     except LocalEntryNotFoundError:
+        reason = f"'{filename}' is unavailable in local cache for repo '{repo_id}'"
         if required:
             raise HFDownloadError(f"File '{filename}' not available in local cache for '{repo_id}'.") from None
-        return None
+        return None, reason
     except RepositoryNotFoundError:
+        reason = f"repo '{repo_id}' was not found"
+        if not required:
+            return None, reason
         raise HFDownloadError(f"HuggingFace repo '{repo_id}' was not found. Check repo ID and connectivity.") from None
+    except HfHubHTTPError as exc:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+        reason = f"HF request failed for '{filename}' in '{repo_id}'"
+        if status_code is not None:
+            reason = f"{reason} (HTTP {status_code})"
+        if status_code in {401, 403}:
+            reason = f"{reason}; unauthorized/forbidden (missing or invalid HF token, or repo access not granted)"
+        if not required:
+            return None, reason
+        raise HFDownloadError(reason) from None
 
 
 # endregion Resolve

@@ -211,6 +211,100 @@ def test_source_string_auto_tries_hf_after_local_failure(monkeypatch: pytest.Mon
     assert "HF attempt failed" in message
 
 
+def test_source_string_auto_local_dir_backfills_missing_required_from_fallback_hf(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    local_dir = tmp_path / "local_model"
+    local_dir.mkdir()
+    tags = local_dir / "selected_tags.csv"
+    tags.write_text("name,category\n", encoding="utf-8")
+
+    resolved_model = tmp_path / "cached_model.safetensors"
+    resolved_model.write_text("weights", encoding="utf-8")
+
+    specs = [
+        FileSpec("model.safetensors", role=FileRole.WEIGHTS, required=True, backends=[Backend.PYTORCH]),
+        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST),
+    ]
+
+    def _fake_download_with_reason(
+        repo_id: str,
+        filename: str,
+        *,
+        revision: str | None = None,
+        cache_dir: str | None = None,
+        allow_download: bool | None = None,
+        required: bool = True,
+    ) -> tuple[Path | None, str | None]:
+        del revision, cache_dir, allow_download, required
+        assert repo_id == "animetimm/caformer_b36.dbv4-full"
+        if filename == "model.safetensors":
+            return resolved_model, None
+        raise AssertionError(f"Unexpected filename: {filename}")
+
+    monkeypatch.setattr("vibe.loader.download_or_cached_with_reason", _fake_download_with_reason)
+
+    file_map = resolve_from_source_string(
+        str(local_dir),
+        specs,
+        Backend.PYTORCH,
+        fallback_hf_repo_id="animetimm/caformer_b36.dbv4-full",
+        allow_download=True,
+    )
+
+    assert file_map["selected_tags.csv"] == tags
+    assert file_map["model.safetensors"] == resolved_model
+
+
+def test_source_string_auto_local_dir_optional_reason_includes_hf_fallback_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    local_dir = tmp_path / "local_model"
+    local_dir.mkdir()
+    tags = local_dir / "selected_tags.csv"
+    tags.write_text("name,category\n", encoding="utf-8")
+
+    specs = [
+        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST),
+        FileSpec("config.json", role=FileRole.CONFIG, required=False, backends=[Backend.PYTORCH]),
+    ]
+
+    def _fake_download_with_reason(
+        repo_id: str,
+        filename: str,
+        *,
+        revision: str | None = None,
+        cache_dir: str | None = None,
+        allow_download: bool | None = None,
+        required: bool = True,
+    ) -> tuple[Path | None, str | None]:
+        del revision, cache_dir, allow_download, required
+        assert repo_id == "animetimm/caformer_b36.dbv4-full"
+        assert filename == "config.json"
+        return (
+            None,
+            "HF request failed for 'config.json' in 'animetimm/caformer_b36.dbv4-full' (HTTP 401); unauthorized/forbidden",
+        )
+
+    monkeypatch.setattr("vibe.loader.download_or_cached_with_reason", _fake_download_with_reason)
+
+    file_map = resolve_from_source_string(
+        str(local_dir),
+        specs,
+        Backend.PYTORCH,
+        fallback_hf_repo_id="animetimm/caformer_b36.dbv4-full",
+        allow_download=True,
+    )
+
+    reason = file_map.optional_missing_reasons().get("config.json")
+    assert reason is not None
+    assert "not found in local folder" in reason
+    assert "HF fallback 'animetimm/caformer_b36.dbv4-full'" in reason
+    assert "HTTP 401" in reason
+
+
 def test_resolve_local_folder_supports_file_name_map(tmp_path: Path) -> None:
     model = tmp_path / "wdeva02.onnx"
     tags = tmp_path / "my_tags.csv"

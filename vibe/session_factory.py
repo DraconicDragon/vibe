@@ -112,6 +112,7 @@ def build_session(
             cache_dir=hf_cache_dir,
             allow_download=effective_auto_download,
             file_name_map=file_name_map,
+            fallback_hf_repo_id=plugin_cls.default_hf_repo,
         )
     except Exception as exc:
         raise SessionError(str(exc)) from exc
@@ -141,6 +142,12 @@ def build_session(
         plugin = plugin_cls()
         plugin.configure(
             auto_download=effective_auto_download,
+            backend=backend,
+            backend_instance=rt,
+            device=normalized_device,
+            precision=normalized_precision,
+            source=source,
+            optional_missing_files=file_map.optional_missing_reasons(),
         )
         plugin.load_ancillary(file_map.as_path_dict())
         logger.debug("Session ready model_id=%s", plugin_cls.model_id)

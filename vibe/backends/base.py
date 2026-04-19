@@ -83,6 +83,8 @@ class ModelPluginInfo:
     supported_backends: list[Backend]
     supported_processors: list[str]
     required_files: list[FileSpec]
+    image_size: int | None = None
+    input_layout: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -232,6 +234,8 @@ class ModelPlugin(abc.ABC):
             supported_backends=list(cls.supported_backends),
             supported_processors=[processor.__name__ for processor in cls.supported_processors],
             required_files=list(cls.required_files),
+            image_size=getattr(cls, "IMAGE_SIZE", None),
+            input_layout=getattr(cls, "INPUT_LAYOUT", None),
         )
 
     @classmethod

@@ -7,7 +7,13 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
-from vibe.hf_downloader import HFDownloadError, download_or_cached
+from vibe.hf_downloader import HFDownloadError, download_or_cached_with_reason
+
+
+def download_or_cached(*args, **kwargs):
+    """Compatibility shim for tests/extensions patching vibe.loader.download_or_cached."""
+    return download_or_cached_with_reason(*args, **kwargs)
+
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +32,14 @@ class FileMap:
     Access paths by filename:  file_map["model.onnx"]  → Path(...)
     """
 
-    def __init__(self, paths: dict[str, Path]) -> None:
+    def __init__(
+        self,
+        paths: dict[str, Path],
+        *,
+        optional_missing_reasons: Mapping[str, str] | None = None,
+    ) -> None:
         self._paths = paths
+        self._optional_missing_reasons = dict(optional_missing_reasons or {})
 
     def __getitem__(self, name: str) -> Path:
         if name not in self._paths:
@@ -49,6 +61,10 @@ class FileMap:
     def as_path_dict(self) -> dict[str, Path]:
         """Return a copy of resolved paths keyed by filename."""
         return dict(self._paths)
+
+    def optional_missing_reasons(self) -> dict[str, str]:
+        """Return optional file resolution reasons keyed by plugin-declared filename."""
+        return dict(self._optional_missing_reasons)
 
     def values(self) -> list[Path]:
         return list(self._paths.values())
@@ -85,6 +101,7 @@ def resolve_from_hf_repo(
     """
     normalized_file_name_map = _normalize_file_name_map(file_name_map, file_specs)
     paths: dict[str, Path] = {}
+    optional_missing: dict[str, str] = {}
     needed = [s for s in file_specs if s.needed_for(backend)]
     logger.debug(
         "Resolving model files from HF repo '%s' backend=%s files=%d",
@@ -103,7 +120,7 @@ def resolve_from_hf_repo(
                 mapped_name,
                 spec.required,
             )
-            local = download_or_cached(
+            download_result = download_or_cached(
                 repo_id=repo_id,
                 filename=mapped_name,
                 revision=revision,
@@ -111,9 +128,18 @@ def resolve_from_hf_repo(
                 allow_download=allow_download,
                 required=spec.required,
             )
+            local: Path | None
+            optional_reason: str | None
+            if isinstance(download_result, tuple):
+                local, optional_reason = download_result
+            else:
+                local = download_result
+                optional_reason = None
             if local is not None:
                 paths[spec.name] = Path(local)
                 logger.debug("Resolved HF file spec='%s' mapped='%s' -> %s", spec.name, mapped_name, local)
+            elif not spec.required and optional_reason:
+                optional_missing[spec.name] = optional_reason
         except HFDownloadError as exc:
             raise LoaderError(str(exc)) from None
         except Exception as exc:
@@ -122,7 +148,7 @@ def resolve_from_hf_repo(
             raise LoaderError(str(exc)) from None
 
     logger.debug("Resolved %d file(s) from HF repo '%s'", len(paths), repo_id)
-    return FileMap(paths)
+    return FileMap(paths, optional_missing_reasons=optional_missing)
 
 
 def resolve_from_local_folder(
@@ -148,6 +174,7 @@ def resolve_from_local_folder(
 
     normalized_file_name_map = _normalize_file_name_map(file_name_map, file_specs)
     paths: dict[str, Path] = {}
+    optional_missing: dict[str, str] = {}
     needed = [s for s in file_specs if s.needed_for(backend)]
     logger.debug(
         "Resolving model files from local folder '%s' backend=%s files=%d",
@@ -178,10 +205,11 @@ def resolve_from_local_folder(
                 f"Files present: {present}\n"
                 f"Rename your file to match exactly, or check the plugin docs."
             )
-        # else: optional, skip silently
+        else:
+            optional_missing[spec.name] = f"'{mapped_name}' not found in local folder '{folder}'"
 
     logger.debug("Resolved %d file(s) from local folder '%s'", len(paths), folder)
-    return FileMap(paths)
+    return FileMap(paths, optional_missing_reasons=optional_missing)
 
 
 def resolve_from_source_string(
@@ -193,6 +221,7 @@ def resolve_from_source_string(
     cache_dir: str | None = None,
     allow_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
+    fallback_hf_repo_id: str | None = None,
 ) -> FileMap:
     """
     Resolve files from a user-facing source string.
@@ -232,6 +261,7 @@ def resolve_from_source_string(
         cache_dir=cache_dir,
         allow_download=allow_download,
         file_name_map=file_name_map,
+        fallback_hf_repo_id=fallback_hf_repo_id,
     )
 
 
@@ -296,6 +326,7 @@ def _resolve_auto_source(
     cache_dir: str | None,
     allow_download: bool | None,
     file_name_map: Mapping[str, str] | None,
+    fallback_hf_repo_id: str | None,
 ) -> FileMap:
     local_candidate = Path(source).expanduser()
     local_error: str | None = None
@@ -303,7 +334,16 @@ def _resolve_auto_source(
     if local_candidate.exists():
         if local_candidate.is_dir():
             try:
-                return resolve_from_local_folder(local_candidate, file_specs, backend, file_name_map=file_name_map)
+                return _resolve_local_then_hf_missing(
+                    local_candidate,
+                    file_specs,
+                    backend,
+                    revision=revision,
+                    cache_dir=cache_dir,
+                    allow_download=allow_download,
+                    file_name_map=file_name_map,
+                    fallback_hf_repo_id=fallback_hf_repo_id,
+                )
             except LoaderError as exc:
                 local_error = str(exc)
         else:
@@ -332,6 +372,89 @@ def _resolve_auto_source(
     if hf_error is not None:
         parts.append(f"HF attempt failed: {hf_error}")
     raise LoaderError(" ".join(parts))
+
+
+def _resolve_local_then_hf_missing(
+    folder: Path,
+    file_specs: list[FileSpec],
+    backend: Backend,
+    *,
+    revision: str | None,
+    cache_dir: str | None,
+    allow_download: bool | None,
+    file_name_map: Mapping[str, str] | None,
+    fallback_hf_repo_id: str | None,
+) -> FileMap:
+    normalized_file_name_map = _normalize_file_name_map(file_name_map, file_specs)
+    needed = [s for s in file_specs if s.needed_for(backend)]
+
+    paths: dict[str, Path] = {}
+    optional_missing: dict[str, str] = {}
+    missing_specs: list[FileSpec] = []
+
+    for spec in needed:
+        mapped_name = normalized_file_name_map.get(spec.name, spec.name)
+        candidate = folder / mapped_name
+        if candidate.is_file():
+            paths[spec.name] = candidate
+            continue
+
+        if spec.required:
+            missing_specs.append(spec)
+        else:
+            optional_missing[spec.name] = f"'{mapped_name}' not found in local folder '{folder}'"
+            missing_specs.append(spec)
+
+    if not missing_specs:
+        return FileMap(paths, optional_missing_reasons=optional_missing)
+
+    if not fallback_hf_repo_id:
+        required_mapped = [
+            normalized_file_name_map.get(spec.name, spec.name) for spec in missing_specs if spec.required
+        ]
+        if required_mapped:
+            present = [f.name for f in folder.iterdir() if f.is_file()]
+            raise LoaderError(
+                f"Missing required file(s) in local folder '{folder}': {required_mapped}. "
+                f"No fallback HF repo configured. Files present: {present}"
+            )
+        return FileMap(paths, optional_missing_reasons=optional_missing)
+
+    for spec in missing_specs:
+        mapped_name = normalized_file_name_map.get(spec.name, spec.name)
+        try:
+            local, reason = download_or_cached_with_reason(
+                repo_id=fallback_hf_repo_id,
+                filename=mapped_name,
+                revision=revision,
+                cache_dir=cache_dir,
+                allow_download=allow_download,
+                required=spec.required,
+            )
+            if local is not None:
+                paths[spec.name] = Path(local)
+                optional_missing.pop(spec.name, None)
+                continue
+
+            if not spec.required:
+                local_reason = optional_missing.get(spec.name, "local file missing")
+                hf_reason = reason or "HF fallback did not provide a reason"
+                optional_missing[spec.name] = (
+                    f"{local_reason}; HF fallback '{fallback_hf_repo_id}' could not resolve '{mapped_name}': {hf_reason}"
+                )
+        except HFDownloadError as exc:
+            if spec.required:
+                raise LoaderError(
+                    f"Required file '{mapped_name}' not found in local folder '{folder}', "
+                    f"and HF fallback '{fallback_hf_repo_id}' failed: {exc}"
+                ) from None
+
+            local_reason = optional_missing.get(spec.name, "local file missing")
+            optional_missing[spec.name] = (
+                f"{local_reason}; HF fallback '{fallback_hf_repo_id}' failed for '{mapped_name}': {exc}"
+            )
+
+    return FileMap(paths, optional_missing_reasons=optional_missing)
 
 
 def _looks_like_hf_repo_id(value: str) -> bool:

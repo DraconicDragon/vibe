@@ -127,6 +127,11 @@ class PyTorchBackend:
         except ImportError as exc:
             raise RuntimeError("PyTorch is not installed.") from exc
 
+        if isinstance(tensor, np.ndarray):
+            tensor = torch.from_numpy(tensor)
+        elif not isinstance(tensor, torch.Tensor):
+            tensor = torch.as_tensor(tensor)
+
         if not isinstance(self._model, nn.Module):
             raise RuntimeError(
                 "Model is a state dict, not an nn.Module. "

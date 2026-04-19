@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from importlib.util import find_spec
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -33,6 +34,10 @@ def _backend_available(backend: str) -> bool:
     if backend == "pytorch":
         return find_spec("torch") is not None
     return False
+
+
+def _pytorch_timm_available() -> bool:
+    return find_spec("torch") is not None and find_spec("timm") is not None
 
 
 def _selected_repos() -> list[str]:
@@ -98,3 +103,48 @@ def test_hf_real_world_wdv4_model_inference_smoke() -> None:
             assert filtered_count <= unfiltered_count, (
                 f"Tag-level-thresholds increased output count for model '{repo_id}', which should not happen."
             )
+
+
+@pytest.mark.skipif(
+    not RUN_REAL_WORLD_HF,
+    reason=("Set VIBE_REAL_WORLD_WDV4_HF=1 to run HF real-world config/fallback parity tests."),
+)
+def test_hf_real_world_wdv4_config_vs_fallback_parity() -> None:
+    if not _pytorch_timm_available():
+        pytest.skip("PyTorch + timm is required for config/fallback parity test.")
+
+    repo_id = os.getenv("VIBE_REAL_WORLD_WDV4_PARITY_REPO", "animetimm/caformer_b36.dbv4-full").strip()
+    model_id = _repo_to_model_id(repo_id)
+    image = Image.new("RGB", (896, 640), (120, 170, 220))
+
+    with vibe.load(
+        model_id,
+        source=f"hf:{repo_id}",
+        backend="pytorch",
+        auto_download=True,
+    ) as config_session:
+        config_result = config_session.infer(image).first()
+
+    with vibe.load(
+        model_id,
+        source=f"hf:{repo_id}",
+        backend="pytorch",
+        auto_download=True,
+        file_name_map={"config.json": "_forced_missing_config_for_fallback_.json"},
+    ) as fallback_session:
+        fallback_result = fallback_session.infer(image).first()
+
+    config_scores = config_result.as_score_dict()
+    fallback_scores = fallback_result.as_score_dict()
+
+    common_tags = [tag for tag in config_scores if tag in fallback_scores]
+    assert common_tags, "No overlapping tags between config and fallback outputs."
+
+    diffs = np.array([abs(config_scores[tag] - fallback_scores[tag]) for tag in common_tags], dtype=np.float32)
+    max_diff = float(np.max(diffs))
+    mean_diff = float(np.mean(diffs))
+
+    assert mean_diff <= 0.002, (
+        f"Average score drift between config/fallback paths is too large: mean_diff={mean_diff:.6f}"
+    )
+    assert max_diff <= 0.02, f"Max score drift between config/fallback paths is too large: max_diff={max_diff:.6f}"

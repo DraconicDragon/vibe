@@ -25,6 +25,25 @@ def _write_selected_tags_csv(path: Path) -> None:
     )
 
 
+def _write_config_json(path: Path, *, image_size: int = 512) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "{",
+                '  "architecture": "caformer_b36",',
+                '  "model_args": {"drop_path_rate": 0.4, "drop_rate": 0.2, "act_layer": "gelu_tanh"},',
+                '  "pretrained_cfg": {',
+                f'    "test_input_size": [3, {image_size}, {image_size}],',
+                '    "mean": [0.485, 0.456, 0.406],',
+                '    "std": [0.229, 0.224, 0.225]',
+                "  }",
+                "}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def _repo_to_model_id(repo_id: str) -> str:
     suffix = repo_id.split("/", 1)[-1]
     return f"wdv4-{suffix.replace('_', '-').replace('.', '-')}"
@@ -96,3 +115,36 @@ def test_postprocess_returns_raw_artist_and_category_entries(tmp_path: Path) -> 
     assert [entry.tag for entry in result.artist] == ["artist_name"]
     assert [entry.tag for entry in result.character] == ["char_name"]
     assert [entry.tag for entry in result.rating] == ["safe"]
+
+
+def test_pytorch_preprocess_uses_config_image_size_when_available(tmp_path: Path) -> None:
+    csv_path = tmp_path / "selected_tags.csv"
+    config_path = tmp_path / "config.json"
+    _write_selected_tags_csv(csv_path)
+    _write_config_json(config_path, image_size=6)
+
+    plugin = WDV4CaformerB36FullPlugin()
+    plugin.configure(backend=vibe.Backend.PYTORCH)
+    plugin.load_ancillary({"selected_tags.csv": csv_path, "config.json": config_path})
+
+    image = Image.new("RGB", (3, 2), (255, 0, 0))
+    arr = plugin.preprocess(image)
+
+    assert arr.shape == (1, 3, 6, 6)
+    assert plugin._runtime_image_size == 6
+
+
+def test_pytorch_preprocess_falls_back_when_config_missing(tmp_path: Path) -> None:
+    csv_path = tmp_path / "selected_tags.csv"
+    _write_selected_tags_csv(csv_path)
+
+    plugin = WDV4CaformerB36FullPlugin()
+    plugin.configure(backend=vibe.Backend.PYTORCH)
+    plugin.IMAGE_SIZE = 5
+    plugin.load_ancillary({"selected_tags.csv": csv_path})
+
+    image = Image.new("RGB", (3, 2), (255, 0, 0))
+    arr = plugin.preprocess(image)
+
+    assert arr.shape == (1, 3, 5, 5)
+    assert plugin._runtime_image_size is None
