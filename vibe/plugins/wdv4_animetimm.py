@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
 from vibe.plugins.shared.tagger_shared import (
@@ -68,6 +69,12 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
             backends=[Backend.PYTORCH],
         ),
         FileSpec(
+            name="preprocess.json",
+            role=FileRole.CONFIG,
+            required=False,
+            backends=[Backend.PYTORCH],
+        ),
+        FileSpec(
             name="selected_tags.csv",
             role=FileRole.TAG_LIST,
             backends=[],
@@ -78,6 +85,9 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
     INPUT_LAYOUT = "NCHW"
     NORMALIZE_MEAN = (0.485, 0.456, 0.406)
     NORMALIZE_STD = (0.229, 0.224, 0.225)
+    ONNX_FALLBACK_IMAGE_SIZE = IMAGE_SIZE
+    ONNX_FALLBACK_NORMALIZE_MEAN = NORMALIZE_MEAN
+    ONNX_FALLBACK_NORMALIZE_STD = NORMALIZE_STD
     FALLBACK_TIMM_MODEL_ARGS: dict[str, Any] = {}
 
     _raw_tag_names: list[str]
@@ -90,9 +100,12 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
     _runtime_image_size: int | None = None
     _runtime_normalize_mean: tuple[float, float, float] | None = None
     _runtime_normalize_std: tuple[float, float, float] | None = None
+    _runtime_preprocess_steps: list[dict[str, Any]] | None = None
     _source: str = ""
     _optional_missing_files: dict[str, str] = {}
     _config_issue_reason: str | None = None
+
+    # region Session Lifecycle
 
     def configure(self, **kwargs: Any) -> None:
         self._backend = kwargs.get("backend")
@@ -114,11 +127,12 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
         self._artist_indices = metadata.indices_for(int(DanbooruTagCategory.ARTIST))
 
         config = self._read_config_json(file_map.get("config.json"))
+        preprocess_steps = self._read_preprocess_json(file_map.get("preprocess.json"))
         self._config_issue_reason = self._resolve_config_issue_reason(file_map)
         self._log_config_fallback_once(config)
-        self._configure_pytorch_preprocess_from_config(config)
+        self._configure_pytorch_preprocess(config=config, preprocess_steps=preprocess_steps)
 
-        self._maybe_prepare_pytorch_model(file_map, config=config)
+        self._maybe_prepare_pytorch_model(config=config)
 
         logger.info(
             # todo: update log message to be more model specific maybe
@@ -130,7 +144,11 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
             len(self._rating_indices),
         )
 
-    def _maybe_prepare_pytorch_model(self, file_map: dict[str, Path], *, config: dict[str, Any] | None) -> None:
+    # endregion Session Lifecycle
+
+    # region PyTorch Bootstrap
+
+    def _maybe_prepare_pytorch_model(self, *, config: dict[str, Any] | None) -> None:
         if self._backend != Backend.PYTORCH:
             return
 
@@ -230,13 +248,16 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
         return None
 
     def _resolve_timm_model_args(self, config: dict[str, Any] | None) -> dict[str, Any]:
-        if config is not None:
-            raw_args = config.get("model_args")
-            if isinstance(raw_args, dict):
-                return dict(raw_args)
-            logger.debug("config.json missing usable model_args for model_id=%s", self.model_id)
-
+        if config is not None and isinstance(config.get("model_args"), dict):
+            logger.debug(
+                "Ignoring config.json model_args for model_id=%s to preserve stable PyTorch reconstruction behavior.",
+                self.model_id,
+            )
         return dict(self.FALLBACK_TIMM_MODEL_ARGS)
+
+    # endregion PyTorch Bootstrap
+
+    # region Config and Preprocess Resolution
 
     def _read_config_json(self, config_path: Path | None) -> dict[str, Any] | None:
         if config_path is None or not config_path.is_file():
@@ -251,6 +272,50 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
         except Exception as exc:
             self._config_issue_reason = f"failed to parse config.json at '{config_path}': {exc}"
         return None
+
+    def _read_preprocess_json(self, preprocess_path: Path | None) -> list[dict[str, Any]] | None:
+        if preprocess_path is None or not preprocess_path.is_file():
+            return None
+
+        try:
+            with preprocess_path.open("r", encoding="utf-8") as handle:
+                parsed = json.load(handle)
+            if not isinstance(parsed, dict):
+                logger.warning(
+                    "preprocess.json at '%s' is not a JSON object; falling back to config/hardcoded preprocess.",
+                    preprocess_path,
+                )
+                return None
+
+            raw_steps = parsed.get("test")
+            if not isinstance(raw_steps, list):
+                logger.warning(
+                    "preprocess.json at '%s' missing 'test' list; falling back to config/hardcoded preprocess.",
+                    preprocess_path,
+                )
+                return None
+
+            steps: list[dict[str, Any]] = []
+            for item in raw_steps:
+                if isinstance(item, dict):
+                    steps.append(dict(item))
+
+            if not steps:
+                logger.warning(
+                    "preprocess.json at '%s' has no usable test steps; falling back to config/hardcoded preprocess.",
+                    preprocess_path,
+                )
+                return None
+
+            logger.info("Using preprocess.json test pipeline for model_id=%s", self.model_id)
+            return steps
+        except Exception as exc:
+            logger.warning(
+                "Failed to parse preprocess.json at '%s': %s. Falling back to config/hardcoded preprocess.",
+                preprocess_path,
+                exc,
+            )
+            return None
 
     def _resolve_config_issue_reason(self, file_map: dict[str, Path]) -> str:
         if self._config_issue_reason:
@@ -285,11 +350,27 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
             self._config_issue_reason or "unknown reason",
         )
 
-    def _configure_pytorch_preprocess_from_config(self, config: dict[str, Any] | None) -> None:
+    def _configure_pytorch_preprocess(
+        self,
+        *,
+        config: dict[str, Any] | None,
+        preprocess_steps: list[dict[str, Any]] | None,
+    ) -> None:
         self._runtime_image_size = None
         self._runtime_normalize_mean = None
         self._runtime_normalize_std = None
+        self._runtime_preprocess_steps = None
 
+        if self._backend != Backend.PYTORCH:
+            return
+
+        if preprocess_steps:
+            self._runtime_preprocess_steps = preprocess_steps
+            return
+
+        self._configure_pytorch_preprocess_from_config(config)
+
+    def _configure_pytorch_preprocess_from_config(self, config: dict[str, Any] | None) -> None:
         if self._backend != Backend.PYTORCH:
             return
 
@@ -345,11 +426,23 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
         except (TypeError, ValueError):
             return None
 
+    # endregion Config and Preprocess Resolution
+
+    # region Preprocess & Out Mapping
+
     def preprocess(self, image: Any) -> np.ndarray:
         """Convert image to float32 NCHW tensor using timm-like normalization."""
+        if self._backend == Backend.PYTORCH and self._runtime_preprocess_steps:
+            return self._preprocess_with_steps(image, self._runtime_preprocess_steps)
+
         image_size = self.IMAGE_SIZE
         normalize_mean = self.NORMALIZE_MEAN
         normalize_std = self.NORMALIZE_STD
+
+        if self._backend == Backend.ONNX:
+            image_size = self.ONNX_FALLBACK_IMAGE_SIZE
+            normalize_mean = self.ONNX_FALLBACK_NORMALIZE_MEAN
+            normalize_std = self.ONNX_FALLBACK_NORMALIZE_STD
 
         if self._backend == Backend.PYTORCH:
             if self._runtime_image_size is not None:
@@ -367,6 +460,153 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
             mean=normalize_mean,
             std=normalize_std,
         )
+
+    def _preprocess_with_steps(self, image: Any, steps: list[dict[str, Any]]) -> np.ndarray:
+        if not isinstance(image, Image.Image):
+            image = Image.fromarray(np.asarray(image))
+        image = self._to_rgb_with_background(image)
+
+        normalize_mean: tuple[float, float, float] | None = None
+        normalize_std: tuple[float, float, float] | None = None
+
+        for step in steps:
+            step_type = str(step.get("type", "")).strip().lower()
+            if step_type == "pad_to_size":
+                size = step.get("size")
+                if isinstance(size, (list, tuple)) and len(size) == 2:
+                    image = self._pad_to_size(
+                        image,
+                        target_h=int(size[0]),
+                        target_w=int(size[1]),
+                        interpolation=str(step.get("interpolation", "bilinear")),
+                        background_color=step.get("background_color", "white"),
+                    )
+            elif step_type == "resize":
+                size = step.get("size")
+                image = self._resize_like_torchvision(
+                    image,
+                    size=size,
+                    interpolation=str(step.get("interpolation", "bilinear")),
+                )
+            elif step_type == "center_crop":
+                image = self._center_crop(image, size=step.get("size"))
+            elif step_type == "normalize":
+                normalize_mean = self._extract_triplet(step, "mean")
+                normalize_std = self._extract_triplet(step, "std")
+            elif step_type == "maybe_to_tensor":
+                # Tensor conversion happens at the end in one place.
+                continue
+
+        arr = np.asarray(image, dtype=np.float32) / 255.0
+        if normalize_mean is not None and normalize_std is not None:
+            mean_arr = np.asarray(normalize_mean, dtype=np.float32).reshape(1, 1, 3)
+            std_arr = np.asarray(normalize_std, dtype=np.float32).reshape(1, 1, 3)
+            arr = (arr - mean_arr) / std_arr
+
+        arr = np.transpose(arr, (2, 0, 1))
+        return np.expand_dims(arr, axis=0).astype(np.float32, copy=False)
+
+    def _to_rgb_with_background(self, image: Image.Image) -> Image.Image:
+        if image.mode == "RGBA":
+            background = Image.new("RGB", image.size, (255, 255, 255))
+            background.paste(image, mask=image.split()[3])
+            return background
+
+        if image.mode == "P" and "transparency" in image.info:
+            rgba = image.convert("RGBA")
+            background = Image.new("RGB", rgba.size, (255, 255, 255))
+            background.paste(rgba, mask=rgba.split()[3])
+            return background
+
+        return image.convert("RGB")
+
+    def _pad_to_size(
+        self,
+        image: Image.Image,
+        *,
+        target_h: int,
+        target_w: int,
+        interpolation: str,
+        background_color: Any,
+    ) -> Image.Image:
+        source_w, source_h = image.size
+        if source_w <= 0 or source_h <= 0 or target_w <= 0 or target_h <= 0:
+            return image
+
+        ratio = min(target_w / source_w, target_h / source_h)
+        resized_w = max(1, int(round(source_w * ratio)))
+        resized_h = max(1, int(round(source_h * ratio)))
+
+        resized = image.resize((resized_w, resized_h), self._pil_interpolation(interpolation))
+        color = self._resolve_background_color(background_color)
+        result = Image.new("RGB", (target_w, target_h), color)
+
+        left = (target_w - resized_w) // 2
+        top = (target_h - resized_h) // 2
+        result.paste(resized, (left, top))
+        return result
+
+    def _resize_like_torchvision(self, image: Image.Image, *, size: Any, interpolation: str) -> Image.Image:
+        resample = self._pil_interpolation(interpolation)
+        source_w, source_h = image.size
+
+        if isinstance(size, int):
+            if source_w <= 0 or source_h <= 0:
+                return image
+            if source_w < source_h:
+                new_w = size
+                new_h = int(round((source_h / source_w) * size))
+            else:
+                new_h = size
+                new_w = int(round((source_w / source_h) * size))
+            return image.resize((max(1, new_w), max(1, new_h)), resample)
+
+        if isinstance(size, (list, tuple)) and len(size) == 2:
+            new_h, new_w = int(size[0]), int(size[1])
+            return image.resize((max(1, new_w), max(1, new_h)), resample)
+
+        return image
+
+    def _center_crop(self, image: Image.Image, *, size: Any) -> Image.Image:
+        if isinstance(size, int):
+            crop_h = size
+            crop_w = size
+        elif isinstance(size, (list, tuple)) and len(size) == 2:
+            crop_h = int(size[0])
+            crop_w = int(size[1])
+        else:
+            return image
+
+        source_w, source_h = image.size
+        crop_w = min(max(1, crop_w), source_w)
+        crop_h = min(max(1, crop_h), source_h)
+
+        left = max(0, (source_w - crop_w) // 2)
+        top = max(0, (source_h - crop_h) // 2)
+        right = left + crop_w
+        bottom = top + crop_h
+        return image.crop((left, top, right, bottom))
+
+    def _pil_interpolation(self, name: str) -> int:
+        normalized = str(name).strip().lower()
+        if normalized == "nearest":
+            return Image.Resampling.NEAREST
+        if normalized == "bicubic":
+            return Image.Resampling.BICUBIC
+        if normalized == "lanczos":
+            return Image.Resampling.LANCZOS
+        return Image.Resampling.BILINEAR
+
+    def _resolve_background_color(self, value: Any) -> tuple[int, int, int]:
+        if isinstance(value, str):
+            if value.strip().lower() == "black":
+                return (0, 0, 0)
+            return (255, 255, 255)
+
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            return (int(value[0]), int(value[1]), int(value[2]))
+
+        return (255, 255, 255)
 
     def postprocess(self, raw_output: Any) -> AnimeTimmV4TagResult:
         """Return full scored output grouped by AnimeTimm categories."""
@@ -404,6 +644,8 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
             scores=scores,
             usable_count=usable_count,
         )
+
+    # endregion Preprocess & Out Mapping
 
 
 # region Model Variants

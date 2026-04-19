@@ -44,6 +44,43 @@ def _write_config_json(path: Path, *, image_size: int = 512) -> None:
     )
 
 
+def _write_preprocess_json(path: Path, *, pad_size: int = 512, final_size: int = 384) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "{",
+                '  "test": [',
+                "    {",
+                '      "background_color": "white",',
+                '      "interpolation": "bilinear",',
+                f'      "size": [{pad_size}, {pad_size}],',
+                '      "type": "pad_to_size"',
+                "    },",
+                "    {",
+                '      "interpolation": "bicubic",',
+                f'      "size": {final_size},',
+                '      "type": "resize"',
+                "    },",
+                "    {",
+                f'      "size": [{final_size}, {final_size}],',
+                '      "type": "center_crop"',
+                "    },",
+                "    {",
+                '      "type": "maybe_to_tensor"',
+                "    },",
+                "    {",
+                '      "mean": [0.485, 0.456, 0.406],',
+                '      "std": [0.229, 0.224, 0.225],',
+                '      "type": "normalize"',
+                "    }",
+                "  ]",
+                "}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def _repo_to_model_id(repo_id: str) -> str:
     suffix = repo_id.split("/", 1)[-1]
     return f"wdv4-{suffix.replace('_', '-').replace('.', '-')}"
@@ -148,3 +185,28 @@ def test_pytorch_preprocess_falls_back_when_config_missing(tmp_path: Path) -> No
 
     assert arr.shape == (1, 3, 5, 5)
     assert plugin._runtime_image_size is None
+
+
+def test_pytorch_preprocess_uses_preprocess_json_over_config(tmp_path: Path) -> None:
+    csv_path = tmp_path / "selected_tags.csv"
+    config_path = tmp_path / "config.json"
+    preprocess_path = tmp_path / "preprocess.json"
+    _write_selected_tags_csv(csv_path)
+    _write_config_json(config_path, image_size=6)
+    _write_preprocess_json(preprocess_path, pad_size=8, final_size=4)
+
+    plugin = WDV4CaformerB36FullPlugin()
+    plugin.configure(backend=vibe.Backend.PYTORCH)
+    plugin.load_ancillary(
+        {
+            "selected_tags.csv": csv_path,
+            "config.json": config_path,
+            "preprocess.json": preprocess_path,
+        }
+    )
+
+    image = Image.new("RGB", (6, 2), (255, 0, 0))
+    arr = plugin.preprocess(image)
+
+    assert arr.shape == (1, 3, 4, 4)
+    assert plugin._runtime_preprocess_steps is not None
