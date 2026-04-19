@@ -79,11 +79,11 @@ __license__ = "MIT"
 
 # region Global Registry
 
-registry: ModelRegistry = ModelRegistry()
+model_registry: ModelRegistry = ModelRegistry()
 
 # Wire up auto-registration: whenever a ModelPlugin subclass is defined
 # (i.e. when a plugin module is imported), it registers itself.
-_auto_register = _make_auto_register_hook(registry)
+_auto_register = _make_auto_register_hook(model_registry)
 _original_init_subclass = ModelPlugin.__init_subclass__.__func__
 
 
@@ -95,7 +95,7 @@ def _patched_init_subclass(cls, **kwargs):
 ModelPlugin.__init_subclass__ = classmethod(_patched_init_subclass)  # type: ignore[assignment]
 
 # Discover and register all built-in plugins
-registry.discover_all()
+model_registry.discover_all()
 
 # endregion Global Registry
 
@@ -162,7 +162,7 @@ def load(
         RegistryError:  If the model name is not recognised.
         SessionError:   If loading fails (missing files, bad backend, etc.).
     """
-    plugin_cls = registry.get(model)
+    plugin_cls = model_registry.get(model)
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
     normalized_precision = normalize_precision_string(precision)
 
@@ -243,7 +243,7 @@ def load_custom(
             plugin="WDEva02Plugin",
         )
     """
-    plugin_cls = registry.get_by_class_name(plugin)
+    plugin_cls = model_registry.get_by_class_name(plugin)
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
     normalized_precision = normalize_precision_string(precision)
     resolved_source = _resolve_source(
@@ -279,22 +279,22 @@ def load_custom(
 
 def list_models() -> list[str]:
     """Return a sorted list of all registered model IDs."""
-    return registry.list_model_ids()
+    return model_registry.list_model_ids()
 
 
 def list_plugin_classes() -> list[str]:
     """Return the class names of all registered plugins (for load_custom)."""
-    return registry.list_plugin_classes()
+    return model_registry.list_plugin_classes()
 
 
 def describe(model: str) -> ModelPluginInfo:
     """Return typed model metadata for a model ID or alias."""
-    return registry.get(model).describe()
+    return model_registry.get(model).describe()
 
 
 def describe_all() -> list[ModelPluginInfo]:
     """Return typed metadata objects for all registered models."""
-    return registry.list_all()
+    return model_registry.list_all()
 
 
 # endregion API
@@ -357,7 +357,7 @@ __all__ = [
     "CharacterIPMapping",
     "TagLevelThresholds",
     # Registry
-    "registry",
+    "model_registry",
     "RegistryError",
     "SessionError",
     # API
