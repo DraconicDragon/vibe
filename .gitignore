@@ -8,6 +8,7 @@ old/
 .pytest_cache/
 thing_scripts/
 example/images/
+example/_*
 
 # temp
 pyproject.toml
