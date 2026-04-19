@@ -100,10 +100,20 @@ def test_registry_contains_all_selected_wdv4_models(repo_id: str) -> None:
 
 def test_load_ancillary_parses_animetimm_categories_and_thresholds(tmp_path: Path) -> None:
     csv_path = tmp_path / "selected_tags.csv"
+    config_path = tmp_path / "config.json"
+    preprocess_path = tmp_path / "preprocess.json"
     _write_selected_tags_csv(csv_path)
+    _write_config_json(config_path, image_size=384)
+    _write_preprocess_json(preprocess_path, pad_size=512, final_size=384)
 
     plugin = WDV4CaformerB36FullPlugin()
-    plugin.load_ancillary({"selected_tags.csv": csv_path})
+    plugin.load_ancillary(
+        {
+            "selected_tags.csv": csv_path,
+            "config.json": config_path,
+            "preprocess.json": preprocess_path,
+        }
+    )
 
     assert plugin._raw_tag_names == ["1girl", "artist_name", "char_name", "safe"]
     assert plugin._general_indices == [0]
@@ -114,11 +124,20 @@ def test_load_ancillary_parses_animetimm_categories_and_thresholds(tmp_path: Pat
 
 def test_preprocess_outputs_nchw_rgb_normalized_float32(tmp_path: Path) -> None:
     csv_path = tmp_path / "selected_tags.csv"
+    config_path = tmp_path / "config.json"
+    preprocess_path = tmp_path / "preprocess.json"
     _write_selected_tags_csv(csv_path)
+    _write_config_json(config_path, image_size=4)
+    _write_preprocess_json(preprocess_path, pad_size=4, final_size=4)
 
     plugin = WDV4CaformerB36FullPlugin()
-    plugin.load_ancillary({"selected_tags.csv": csv_path})
-    plugin.IMAGE_SIZE = 4
+    plugin.load_ancillary(
+        {
+            "selected_tags.csv": csv_path,
+            "config.json": config_path,
+            "preprocess.json": preprocess_path,
+        }
+    )
 
     image = Image.new("RGB", (2, 2), (255, 0, 0))
     arr = plugin.preprocess(image)
@@ -136,10 +155,20 @@ def test_preprocess_outputs_nchw_rgb_normalized_float32(tmp_path: Path) -> None:
 
 def test_postprocess_returns_raw_artist_and_category_entries(tmp_path: Path) -> None:
     csv_path = tmp_path / "selected_tags.csv"
+    config_path = tmp_path / "config.json"
+    preprocess_path = tmp_path / "preprocess.json"
     _write_selected_tags_csv(csv_path)
+    _write_config_json(config_path, image_size=384)
+    _write_preprocess_json(preprocess_path, pad_size=512, final_size=384)
 
     plugin = WDV4CaformerB36FullPlugin()
-    plugin.load_ancillary({"selected_tags.csv": csv_path})
+    plugin.load_ancillary(
+        {
+            "selected_tags.csv": csv_path,
+            "config.json": config_path,
+            "preprocess.json": preprocess_path,
+        }
+    )
 
     # Already probabilities in [0, 1].
     # 1girl=0.50, artist=0.56, character=0.70, safe=0.80
@@ -157,36 +186,35 @@ def test_postprocess_returns_raw_artist_and_category_entries(tmp_path: Path) -> 
 def test_pytorch_preprocess_uses_config_image_size_when_available(tmp_path: Path) -> None:
     csv_path = tmp_path / "selected_tags.csv"
     config_path = tmp_path / "config.json"
+    preprocess_path = tmp_path / "preprocess.json"
     _write_selected_tags_csv(csv_path)
     _write_config_json(config_path, image_size=6)
+    _write_preprocess_json(preprocess_path, pad_size=6, final_size=6)
 
     plugin = WDV4CaformerB36FullPlugin()
     plugin.configure(backend=vibe.Backend.PYTORCH)
-    plugin.load_ancillary({"selected_tags.csv": csv_path, "config.json": config_path})
+    plugin.load_ancillary(
+        {
+            "selected_tags.csv": csv_path,
+            "config.json": config_path,
+            "preprocess.json": preprocess_path,
+        }
+    )
 
     image = Image.new("RGB", (3, 2), (255, 0, 0))
     arr = plugin.preprocess(image)
 
     assert arr.shape == (1, 3, 6, 6)
-    assert plugin._runtime_image_size == 6
     assert plugin._runtime_preprocess_steps is not None
 
 
-def test_pytorch_preprocess_falls_back_when_config_missing(tmp_path: Path) -> None:
+def test_load_ancillary_requires_config_and_preprocess(tmp_path: Path) -> None:
     csv_path = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv(csv_path)
 
     plugin = WDV4CaformerB36FullPlugin()
-    plugin.configure(backend=vibe.Backend.PYTORCH)
-    plugin.IMAGE_SIZE = 5
-    plugin.load_ancillary({"selected_tags.csv": csv_path})
-
-    image = Image.new("RGB", (3, 2), (255, 0, 0))
-    arr = plugin.preprocess(image)
-
-    assert arr.shape == (1, 3, 5, 5)
-    assert plugin._runtime_image_size is None
-    assert plugin._runtime_preprocess_steps is not None
+    with pytest.raises(KeyError):
+        plugin.load_ancillary({"selected_tags.csv": csv_path})
 
 
 def test_pytorch_preprocess_uses_preprocess_json_over_config(tmp_path: Path) -> None:
@@ -212,3 +240,23 @@ def test_pytorch_preprocess_uses_preprocess_json_over_config(tmp_path: Path) -> 
 
     assert arr.shape == (1, 3, 4, 4)
     assert plugin._runtime_preprocess_steps is not None
+
+
+def test_preprocess_json_invalid_raises_runtime_error(tmp_path: Path) -> None:
+    csv_path = tmp_path / "selected_tags.csv"
+    config_path = tmp_path / "config.json"
+    preprocess_path = tmp_path / "preprocess.json"
+    _write_selected_tags_csv(csv_path)
+    _write_config_json(config_path, image_size=6)
+    preprocess_path.write_text("{}", encoding="utf-8")
+
+    plugin = WDV4CaformerB36FullPlugin()
+    plugin.configure(backend=vibe.Backend.PYTORCH)
+    with pytest.raises(RuntimeError):
+        plugin.load_ancillary(
+            {
+                "selected_tags.csv": csv_path,
+                "config.json": config_path,
+                "preprocess.json": preprocess_path,
+            }
+        )

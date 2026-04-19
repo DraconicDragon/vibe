@@ -14,7 +14,6 @@ from vibe.plugins.shared.tagger_shared import (
     build_entries_for_indices,
     load_tag_metadata,
     normalize_output_scores,
-    preprocess_tagger_image,
 )
 from vibe.result_processors import CharacterIPMapping, CleanTags, TagLevelThresholds
 from vibe.results import OutputType, TagEntry, TagResult
@@ -59,20 +58,17 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
         FileSpec(
             name="model.safetensors",
             role=FileRole.WEIGHTS,
-            required=False,
             backends=[Backend.PYTORCH],
         ),
         FileSpec(
             name="config.json",
             role=FileRole.CONFIG,
-            required=False,
-            backends=[Backend.PYTORCH],
+            backends=[],
         ),
         FileSpec(
             name="preprocess.json",
             role=FileRole.CONFIG,
-            required=False,
-            backends=[Backend.PYTORCH],
+            backends=[],
         ),
         FileSpec(
             name="selected_tags.csv",
@@ -82,13 +78,6 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
     ]
 
     IMAGE_SIZE = 448
-    INPUT_LAYOUT = "NCHW"
-    NORMALIZE_MEAN = (0.485, 0.456, 0.406)
-    NORMALIZE_STD = (0.229, 0.224, 0.225)
-    FALLBACK_PREPROCESS_PAD_SIZE = 512
-    ONNX_FALLBACK_IMAGE_SIZE = IMAGE_SIZE
-    ONNX_FALLBACK_NORMALIZE_MEAN = NORMALIZE_MEAN
-    ONNX_FALLBACK_NORMALIZE_STD = NORMALIZE_STD
     FALLBACK_TIMM_MODEL_ARGS: dict[str, Any] = {}
 
     _raw_tag_names: list[str]
@@ -98,22 +87,13 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
     _artist_indices: list[int]
     _backend: Backend | None = None
     _backend_instance: Any | None = None
-    _runtime_image_size: int | None = None
-    _runtime_normalize_mean: tuple[float, float, float] | None = None
-    _runtime_normalize_std: tuple[float, float, float] | None = None
-    _runtime_preprocess_steps: list[dict[str, Any]] | None = None
-    _source: str = ""
-    _optional_missing_files: dict[str, str] = {}
-    _config_issue_reason: str | None = None
+    _runtime_preprocess_steps: list[dict[str, Any]]
 
     # region Session Lifecycle
 
     def configure(self, **kwargs: Any) -> None:
         self._backend = kwargs.get("backend")
         self._backend_instance = kwargs.get("backend_instance")
-        self._source = str(kwargs.get("source", ""))
-        optional_missing = kwargs.get("optional_missing_files")
-        self._optional_missing_files = dict(optional_missing) if isinstance(optional_missing, dict) else {}
 
     def load_ancillary(self, file_map: dict[str, Path]) -> None:
         csv_path = file_map["selected_tags.csv"]
@@ -127,11 +107,8 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
         self._character_indices = metadata.indices_for(int(DanbooruTagCategory.CHARACTER))
         self._artist_indices = metadata.indices_for(int(DanbooruTagCategory.ARTIST))
 
-        config = self._read_config_json(file_map.get("config.json"))
-        preprocess_steps = self._read_preprocess_json(file_map.get("preprocess.json"))
-        self._config_issue_reason = self._resolve_config_issue_reason(file_map)
-        self._log_config_fallback_once(config)
-        self._configure_pytorch_preprocess(config=config, preprocess_steps=preprocess_steps)
+        config = self._read_config_json(file_map["config.json"])
+        self._runtime_preprocess_steps = self._read_preprocess_json(file_map["preprocess.json"])
 
         self._maybe_prepare_pytorch_model(config=config)
 
@@ -260,41 +237,26 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
 
     # region Config and Preprocess Resolution
 
-    def _read_config_json(self, config_path: Path | None) -> dict[str, Any] | None:
-        if config_path is None or not config_path.is_file():
-            return None
-
+    def _read_config_json(self, config_path: Path) -> dict[str, Any]:
         try:
             with config_path.open("r", encoding="utf-8") as handle:
                 parsed = json.load(handle)
             if isinstance(parsed, dict):
                 return parsed
-            self._config_issue_reason = f"config.json at '{config_path}' is not a JSON object"
+            raise RuntimeError(f"config.json at '{config_path}' is not a JSON object")
         except Exception as exc:
-            self._config_issue_reason = f"failed to parse config.json at '{config_path}': {exc}"
-        return None
+            raise RuntimeError(f"failed to parse config.json at '{config_path}': {exc}") from exc
 
-    def _read_preprocess_json(self, preprocess_path: Path | None) -> list[dict[str, Any]] | None:
-        if preprocess_path is None or not preprocess_path.is_file():
-            return None
-
+    def _read_preprocess_json(self, preprocess_path: Path) -> list[dict[str, Any]]:
         try:
             with preprocess_path.open("r", encoding="utf-8") as handle:
                 parsed = json.load(handle)
             if not isinstance(parsed, dict):
-                logger.warning(
-                    "preprocess.json at '%s' is not a JSON object; falling back to config/hardcoded preprocess.",
-                    preprocess_path,
-                )
-                return None
+                raise RuntimeError(f"preprocess.json at '{preprocess_path}' is not a JSON object")
 
             raw_steps = parsed.get("test")
             if not isinstance(raw_steps, list):
-                logger.warning(
-                    "preprocess.json at '%s' missing 'test' list; falling back to config/hardcoded preprocess.",
-                    preprocess_path,
-                )
-                return None
+                raise RuntimeError(f"preprocess.json at '{preprocess_path}' missing required 'test' list")
 
             steps: list[dict[str, Any]] = []
             for item in raw_steps:
@@ -302,130 +264,12 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
                     steps.append(dict(item))
 
             if not steps:
-                logger.warning(
-                    "preprocess.json at '%s' has no usable test steps; falling back to config/hardcoded preprocess.",
-                    preprocess_path,
-                )
-                return None
+                raise RuntimeError(f"preprocess.json at '{preprocess_path}' has no usable test steps")
 
-            logger.info("Using preprocess.json test pipeline for model_id=%s", self.model_id)
+            logger.info("Using preprocess.json inference pipeline (test) for model_id=%s", self.model_id)
             return steps
         except Exception as exc:
-            logger.warning(
-                "Failed to parse preprocess.json at '%s': %s. Falling back to config/hardcoded preprocess.",
-                preprocess_path,
-                exc,
-            )
-            return None
-
-    def _resolve_config_issue_reason(self, file_map: dict[str, Path]) -> str:
-        if self._config_issue_reason:
-            return self._config_issue_reason
-
-        config_path = file_map.get("config.json")
-        if config_path is not None and not config_path.is_file():
-            return f"resolved config path does not exist: {config_path}"
-
-        mapped_reason = self._optional_missing_files.get("config.json")
-        if mapped_reason:
-            return mapped_reason
-
-        if self._source.startswith("hf:"):
-            return (
-                "config.json unavailable from HF resolution (check repo access, cache, auto-download, and auth token)"
-            )
-
-        if self._source.startswith("local:") or Path(self._source).exists():
-            return "config.json missing from local model folder"
-
-        return "config.json could not be resolved"
-
-    def _log_config_fallback_once(self, config: dict[str, Any] | None) -> None:
-        if self._backend != Backend.PYTORCH:
-            return
-        if config is not None:
-            return
-        logger.warning(
-            "PyTorch config unavailable for model_id=%s (%s); using fallback preprocessing/model settings.",
-            self.model_id,
-            self._config_issue_reason or "unknown reason",
-        )
-
-    def _configure_pytorch_preprocess(
-        self,
-        *,
-        config: dict[str, Any] | None,
-        preprocess_steps: list[dict[str, Any]] | None,
-    ) -> None:
-        self._runtime_image_size = None
-        self._runtime_normalize_mean = None
-        self._runtime_normalize_std = None
-        self._runtime_preprocess_steps = None
-
-        if self._backend != Backend.PYTORCH:
-            return
-
-        if preprocess_steps:
-            self._runtime_preprocess_steps = preprocess_steps
-            return
-
-        self._configure_pytorch_preprocess_from_config(config)
-
-        target_size = self._runtime_image_size if self._runtime_image_size is not None else self.IMAGE_SIZE
-        mean = self._runtime_normalize_mean if self._runtime_normalize_mean is not None else self.NORMALIZE_MEAN
-        std = self._runtime_normalize_std if self._runtime_normalize_std is not None else self.NORMALIZE_STD
-        self._runtime_preprocess_steps = self._build_default_preprocess_steps(
-            image_size=int(target_size),
-            mean=mean,
-            std=std,
-        )
-
-    def _configure_pytorch_preprocess_from_config(self, config: dict[str, Any] | None) -> None:
-        if self._backend != Backend.PYTORCH:
-            return
-
-        if config is None:
-            logger.debug("Using hardcoded preprocess defaults for model_id=%s", self.model_id)
-            return
-
-        pretrained_cfg = config.get("pretrained_cfg")
-        if not isinstance(pretrained_cfg, dict):
-            logger.warning(
-                "config.json missing 'pretrained_cfg' for model_id=%s; using preprocess defaults.", self.model_id
-            )
-            return
-
-        self._runtime_image_size = self._extract_image_size(pretrained_cfg)
-        if self._runtime_image_size is None:
-            logger.warning(
-                "config.json missing usable input size for model_id=%s; using IMAGE_SIZE=%s.",
-                self.model_id,
-                self.IMAGE_SIZE,
-            )
-
-        self._runtime_normalize_mean = self._extract_triplet(pretrained_cfg, "mean")
-        self._runtime_normalize_std = self._extract_triplet(pretrained_cfg, "std")
-
-        if self._runtime_normalize_mean is None or self._runtime_normalize_std is None:
-            logger.warning(
-                "config.json missing usable mean/std for model_id=%s; using normalize defaults.", self.model_id
-            )
-            self._runtime_normalize_mean = None
-            self._runtime_normalize_std = None
-
-    def _extract_image_size(self, pretrained_cfg: dict[str, Any]) -> int | None:
-        for key in ("test_input_size", "input_size"):
-            raw = pretrained_cfg.get(key)
-            if not isinstance(raw, (list, tuple)) or len(raw) != 3:
-                continue
-            try:
-                height = int(raw[1])
-                width = int(raw[2])
-            except (TypeError, ValueError):
-                continue
-            if height > 0 and width > 0 and height == width:
-                return height
-        return None
+            raise RuntimeError(f"failed to parse preprocess.json at '{preprocess_path}': {exc}") from exc
 
     def _extract_triplet(self, source: dict[str, Any], key: str) -> tuple[float, float, float] | None:
         raw = source.get(key)
@@ -436,76 +280,13 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
         except (TypeError, ValueError):
             return None
 
-    def _build_default_preprocess_steps(
-        self,
-        *,
-        image_size: int,
-        mean: tuple[float, float, float],
-        std: tuple[float, float, float],
-    ) -> list[dict[str, Any]]:
-        pad_size = max(int(self.FALLBACK_PREPROCESS_PAD_SIZE), int(image_size))
-        return [
-            {
-                "type": "pad_to_size",
-                "size": [pad_size, pad_size],
-                "interpolation": "bilinear",
-                "background_color": "white",
-            },
-            {
-                "type": "resize",
-                "size": int(image_size),
-                "interpolation": "bicubic",
-                "antialias": True,
-                "max_size": None,
-            },
-            {
-                "type": "center_crop",
-                "size": [int(image_size), int(image_size)],
-            },
-            {
-                "type": "maybe_to_tensor",
-            },
-            {
-                "type": "normalize",
-                "mean": [float(mean[0]), float(mean[1]), float(mean[2])],
-                "std": [float(std[0]), float(std[1]), float(std[2])],
-            },
-        ]
-
     # endregion Config and Preprocess Resolution
 
     # region Preprocess & Out Mapping
 
     def preprocess(self, image: Any) -> np.ndarray:
         """Convert image to float32 NCHW tensor using timm-like normalization."""
-        if self._backend == Backend.PYTORCH and self._runtime_preprocess_steps:
-            return self._preprocess_with_steps(image, self._runtime_preprocess_steps)
-
-        image_size = self.IMAGE_SIZE
-        normalize_mean = self.NORMALIZE_MEAN
-        normalize_std = self.NORMALIZE_STD
-
-        if self._backend == Backend.ONNX:
-            image_size = self.ONNX_FALLBACK_IMAGE_SIZE
-            normalize_mean = self.ONNX_FALLBACK_NORMALIZE_MEAN
-            normalize_std = self.ONNX_FALLBACK_NORMALIZE_STD
-
-        if self._backend == Backend.PYTORCH:
-            if self._runtime_image_size is not None:
-                image_size = self._runtime_image_size
-            if self._runtime_normalize_mean is not None and self._runtime_normalize_std is not None:
-                normalize_mean = self._runtime_normalize_mean
-                normalize_std = self._runtime_normalize_std
-
-        return preprocess_tagger_image(
-            image,
-            image_size=image_size,
-            input_layout=self.INPUT_LAYOUT,
-            rgb_to_bgr=False,
-            normalize_to_unit=True,
-            mean=normalize_mean,
-            std=normalize_std,
-        )
+        return self._preprocess_with_steps(image, self._runtime_preprocess_steps)
 
     def _preprocess_with_steps(self, image: Any, steps: list[dict[str, Any]]) -> np.ndarray:
         if not isinstance(image, Image.Image):
