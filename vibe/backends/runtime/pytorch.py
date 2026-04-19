@@ -167,7 +167,11 @@ class PyTorchBackend:
 
         if isinstance(output, torch.Tensor):
             logger.debug("PyTorch run output_shape=%s output_dtype=%s", output.shape, output.dtype)
-            return output.cpu().numpy()
+            output_cpu = output.detach().cpu()
+            if output_cpu.dtype == torch.bfloat16:
+                # NumPy does not support bfloat16 tensors from PyTorch directly.
+                output_cpu = output_cpu.to(dtype=torch.float32)
+            return output_cpu.numpy()
         # Some models return tuples/lists
         if isinstance(output, (tuple, list)):
             logger.debug(
@@ -175,7 +179,13 @@ class PyTorchBackend:
                 getattr(output[0], "shape", None),
                 getattr(output[0], "dtype", None),
             )
-            return output[0].cpu().numpy()
+            first = output[0]
+            if isinstance(first, torch.Tensor):
+                first_cpu = first.detach().cpu()
+                if first_cpu.dtype == torch.bfloat16:
+                    first_cpu = first_cpu.to(dtype=torch.float32)
+                return first_cpu.numpy()
+            return np.array(first)
         return np.array(output)
 
     def close(self) -> None:
