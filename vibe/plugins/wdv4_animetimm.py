@@ -441,7 +441,7 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
 
         usable_count = min(len(scores), len(self._raw_tag_names))
         if usable_count != len(self._raw_tag_names):
-            logger.warning(
+            logger.error(
                 "Score length mismatch: got %d scores for %d tags.",
                 len(scores),
                 len(self._raw_tag_names),
