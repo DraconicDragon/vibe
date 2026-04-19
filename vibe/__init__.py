@@ -32,6 +32,8 @@ Quick start
 from __future__ import annotations
 
 import logging
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 from typing import Mapping
 
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin, ModelPluginInfo
@@ -65,6 +67,15 @@ from vibe.session import ModelSession, SessionError
 from vibe.session_factory import build_session
 
 logger = logging.getLogger(__name__)
+
+try:
+    __version__ = _package_version("vibe")
+except PackageNotFoundError:
+    logger.warning("Package version not found. Are you running from source without installing? Defaulting to None.")
+    __version__ = None
+
+__author__ = "Drac"
+__license__ = "MIT"
 
 # region Global Registry
 
@@ -350,6 +361,9 @@ __all__ = [
     "RegistryError",
     "SessionError",
     # API
+    "__version__",
+    "__author__",
+    "__license__",
     "load",
     "load_custom",
     "list_models",
