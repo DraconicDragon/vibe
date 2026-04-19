@@ -123,6 +123,7 @@ def download_or_cached_with_reason(
 
     try:
         logger.debug("Downloading HF file repo='%s' file='%s'", repo_id, filename)
+        logger.info("Downloading '%s' from HuggingFace repo '%s'", filename, repo_id)
         resolved = hf_hub_download(
             repo_id=repo_id,
             filename=filename,

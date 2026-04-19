@@ -346,7 +346,7 @@ def _resolve_auto_source(
                     fallback_hf_repo_id=fallback_hf_repo_id,
                 )
             except LoaderError as exc:
-                local_error = str(exc)
+                raise LoaderError(f"Could not resolve source '{source}': {exc}") from None
         else:
             local_error = f"Local path exists but is not a directory: {local_candidate}"
 
@@ -364,10 +364,7 @@ def _resolve_auto_source(
     except LoaderError as exc:
         hf_error = str(exc)
 
-    parts = [
-        f"Could not resolve source '{source}'.",
-        "Auto mode tries local folder first (when it exists), then HuggingFace repo/cache/download.",
-    ]
+    parts = [f"Could not resolve source '{source}'."]
     if local_error is not None:
         parts.append(f"Local attempt failed: {local_error}")
     if hf_error is not None:
@@ -409,17 +406,40 @@ def _resolve_local_then_hf_missing(
     if not missing_specs:
         return FileMap(paths, optional_missing_reasons=optional_missing)
 
+    missing_required = [spec for spec in missing_specs if spec.required]
+    missing_optional = [spec for spec in missing_specs if not spec.required]
+
+    if missing_required:
+        required_names = [normalized_file_name_map.get(spec.name, spec.name) for spec in missing_required]
+        logger.debug("Missing required local files in '%s': %s", folder, required_names)
+    if missing_optional:
+        optional_names = [normalized_file_name_map.get(spec.name, spec.name) for spec in missing_optional]
+        logger.debug("Missing optional local files in '%s': %s", folder, optional_names)
+
     if not fallback_hf_repo_id:
         required_mapped = [
             normalized_file_name_map.get(spec.name, spec.name) for spec in missing_specs if spec.required
         ]
         if required_mapped:
-            present = [f.name for f in folder.iterdir() if f.is_file()]
             raise LoaderError(
-                f"Missing required file(s) in local folder '{folder}': {required_mapped}. "
-                f"No fallback HF repo configured. Files present: {present}"
+                f"Required file(s) {required_mapped} were not found in local folder '{folder}', "
+                "and no fallback HuggingFace repo is configured."
             )
         return FileMap(paths, optional_missing_reasons=optional_missing)
+
+    missing_names = [normalized_file_name_map.get(spec.name, spec.name) for spec in missing_specs]
+    if allow_download:
+        logger.info(
+            "Missing local file(s) %s. Attempting HuggingFace fallback repo '%s'.",
+            missing_names,
+            fallback_hf_repo_id,
+        )
+    else:
+        logger.debug(
+            "Missing local file(s) %s. Checking HuggingFace cache only for fallback repo '%s' (auto-download disabled).",
+            missing_names,
+            fallback_hf_repo_id,
+        )
 
     for spec in missing_specs:
         mapped_name = normalized_file_name_map.get(spec.name, spec.name)
@@ -452,8 +472,8 @@ def _resolve_local_then_hf_missing(
         except HFDownloadError as exc:
             if spec.required:
                 raise LoaderError(
-                    f"Required file '{mapped_name}' not found in local folder '{folder}', "
-                    f"and HF fallback '{fallback_hf_repo_id}' failed: {exc}"
+                    f"Required file '{mapped_name}' was not found in local folder '{folder}', "
+                    f"and could not be resolved from HuggingFace fallback '{fallback_hf_repo_id}': {exc}"
                 ) from None
 
             local_reason = optional_missing.get(spec.name, "local file missing")

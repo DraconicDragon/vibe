@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from vibe.backends.base import Backend, FileRole, FileSpec
+from vibe.hf_downloader import HFDownloadError
 from vibe.loader import (
     FileMap,
     LoaderError,
@@ -188,27 +189,23 @@ def test_source_string_hf_prefix_suggests_local_when_path_exists(tmp_path: Path)
     assert "looks like a local folder" in message
 
 
-def test_source_string_auto_tries_hf_after_local_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_source_string_auto_existing_local_dir_reports_missing_required(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     specs = [
         FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
     ]
 
     local_dir = tmp_path / "owner" / "repo"
     local_dir.mkdir(parents=True)
-
-    def _always_missing(*args, **kwargs):
-        del args, kwargs
-        raise LoaderError("hf missing")
-
-    monkeypatch.setattr("vibe.loader.resolve_from_hf_repo", _always_missing)
+    del monkeypatch
 
     with pytest.raises(LoaderError) as excinfo:
         resolve_from_source_string(str(local_dir), specs, Backend.ONNX, allow_download=False)
 
     message = str(excinfo.value)
-    assert "Auto mode tries local folder first" in message
-    assert "Local attempt failed" in message
-    assert "HF attempt failed" in message
+    assert f"Could not resolve source '{local_dir}'" in message
+    assert "Required file(s) ['model.onnx']" in message
 
 
 def test_source_string_auto_local_dir_backfills_missing_required_from_fallback_hf(
@@ -259,6 +256,50 @@ def test_source_string_auto_local_dir_backfills_missing_required_from_fallback_h
 
     assert file_map["selected_tags.csv"] == tags
     assert file_map["model.safetensors"] == local_materialized
+
+
+def test_source_string_auto_local_dir_error_is_single_path_for_missing_required(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    local_dir = tmp_path / "local_model"
+    local_dir.mkdir()
+    (local_dir / "selected_tags.csv").write_text("name,category\n", encoding="utf-8")
+
+    specs = [
+        FileSpec("config.json", role=FileRole.CONFIG, required=True, backends=[Backend.PYTORCH]),
+        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST),
+    ]
+
+    def _fake_download_with_reason(
+        repo_id: str,
+        filename: str,
+        *,
+        revision: str | None = None,
+        cache_dir: str | None = None,
+        allow_download: bool | None = None,
+        required: bool = True,
+    ) -> tuple[Path | None, str | None]:
+        del revision, cache_dir, allow_download, required
+        assert repo_id == "animetimm/caformer_b36.dbv4-full"
+        assert filename == "config.json"
+        raise HFDownloadError("Auto-download disabled and 'config.json' is not in cache")
+
+    monkeypatch.setattr("vibe.loader.download_or_cached_with_reason", _fake_download_with_reason)
+
+    with pytest.raises(LoaderError) as excinfo:
+        resolve_from_source_string(
+            str(local_dir),
+            specs,
+            Backend.PYTORCH,
+            fallback_hf_repo_id="animetimm/caformer_b36.dbv4-full",
+            allow_download=False,
+        )
+
+    message = str(excinfo.value)
+    assert "Could not resolve source" in message
+    assert "could not be resolved from HuggingFace fallback" in message
+    assert "Repo id must be in the form" not in message
 
 
 def test_source_string_auto_local_dir_optional_reason_includes_hf_fallback_failure(
