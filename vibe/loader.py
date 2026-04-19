@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
 
@@ -432,7 +433,13 @@ def _resolve_local_then_hf_missing(
                 required=spec.required,
             )
             if local is not None:
-                paths[spec.name] = Path(local)
+                # TODO: Revisit whether local write-back should be optional/configurable.
+                local_materialized = _materialize_downloaded_file_to_local_folder(
+                    source_path=Path(local),
+                    destination_folder=folder,
+                    destination_name=mapped_name,
+                )
+                paths[spec.name] = local_materialized
                 optional_missing.pop(spec.name, None)
                 continue
 
@@ -455,6 +462,22 @@ def _resolve_local_then_hf_missing(
             )
 
     return FileMap(paths, optional_missing_reasons=optional_missing)
+
+
+def _materialize_downloaded_file_to_local_folder(
+    *,
+    source_path: Path,
+    destination_folder: Path,
+    destination_name: str,
+) -> Path:
+    destination_path = destination_folder / destination_name
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if source_path.resolve() == destination_path.resolve():
+        return destination_path
+
+    shutil.copy2(source_path, destination_path)
+    return destination_path
 
 
 def _looks_like_hf_repo_id(value: str) -> bool:

@@ -253,8 +253,12 @@ def test_source_string_auto_local_dir_backfills_missing_required_from_fallback_h
         allow_download=True,
     )
 
+    local_materialized = local_dir / "model.safetensors"
+    assert local_materialized.is_file()
+    assert local_materialized.read_text(encoding="utf-8") == "weights"
+
     assert file_map["selected_tags.csv"] == tags
-    assert file_map["model.safetensors"] == resolved_model
+    assert file_map["model.safetensors"] == local_materialized
 
 
 def test_source_string_auto_local_dir_optional_reason_includes_hf_fallback_failure(
