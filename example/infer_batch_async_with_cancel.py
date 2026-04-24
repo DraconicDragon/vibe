@@ -23,13 +23,11 @@ ANSI_RESET = "\033[0m"
 
 def _configure_logging() -> None:
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         force=True,
     )
-    logging.getLogger("vibe").setLevel(logging.DEBUG)
-    # Keep Pillow parser internals out of normal debugging signal.
-    logging.getLogger("PIL").setLevel(logging.WARNING)
+    logging.getLogger("vibe").setLevel(logging.INFO)
 
 
 def _natural_sort_key(path: Path) -> list[int | str]:
