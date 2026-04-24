@@ -1,0 +1,79 @@
+[tool.uv]
+constraint-dependencies = [
+    # todo: remove
+    "nvidia-cublas-cu12==12.8.4.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vibe"
+version = "0.3.0"
+description = "End-to-end inference library for (mostly small) vision transformers, supporting both pytorch & onnx."
+requires-python = ">=3.11"
+
+# Core deps only - no backend is included by default
+# You MUST install at least one backend extra (onnx-* or torch-*) for the library to function.
+# See README § Installation for the right command for your hardware
+dependencies = ["Pillow>=11.3", "numpy>=1.26.4", "huggingface_hub>=0.32"]
+
+[project.optional-dependencies]
+
+# ONNX BACKEND
+# Pick AT MOST ONE onnx-*, multiple onnxruntime variants silently overwrite each
+# other's entry points. The last installed wins and the conflict won't always surface as an error.
+# Minimum supported: 1.17.3. Note: cu130 requires onnxruntime-gpu>=1.24.1.
+
+# CPU-only.
+onnx-cpu = ["onnxruntime>=1.17.3"]
+
+# NVIDIA GPU (CUDA).
+# Windows: onnxruntime-gpu can get CUDA/cuDNN from system or something, driver bundled maybe - need testing?
+# Linux: needs CUDA/cuDNN system-wide, or use onnx-cuda-bundled to pull them from PyPI.
+onnx-cuda = ["onnxruntime-gpu>=1.17.3"]
+
+onnx-cuda-cu13 = ["onnxruntime-gpu>=1.24.1"]
+
+
+# NVIDIA GPU (CUDA) on Linux with CUDA libs from PyPI.
+# Unnecessary if PyTorch+CUDA is already installed (nvidia-* packages already present)
+# if pytorch+cuda is cu130, onnxruntime needs to be >=v1.24.1 and 
+# I think the packages below need to be cu13 instead too 
+onnx-cuda-linux-bundled-cu12 = [
+    "onnxruntime-gpu>=1.17.3; platform_system == 'Linux'",
+    "nvidia-cudnn-cu12; platform_system == 'Linux'",
+    "nvidia-curand-cu12; platform_system == 'Linux'",
+    "nvidia-cufft-cu12; platform_system == 'Linux'",
+    "nvidia-cuda-runtime-cu12; platform_system == 'Linux'",
+    "nvidia-cublas-cu12; platform_system == 'Linux'",
+]
+
+onnx-cuda-linux-bundled-cu13 = [
+    "onnxruntime-gpu>=v1.24.1; platform_system == 'Linux'",
+    "nvidia-cudnn-cu13; platform_system == 'Linux'",
+    "nvidia-curand-cu13; platform_system == 'Linux'",
+    "nvidia-cufft-cu13; platform_system == 'Linux'",
+    "nvidia-cuda-runtime-cu13; platform_system == 'Linux'",
+    "nvidia-cublas-cu13; platform_system == 'Linux'",
+]
+
+# PYTORCH BACKEND
+# ONNX and PyTorch backends are independent and can coexist (e.g. onnx-cuda + torch-cpu).
+
+# CPU-only
+torch-cpu = ["torch>=2.7.1", "timm", "safetensors>=0.6.2"]
+
+
+# OTHER
+
+# JPEG XL image support
+jpegxl = ["pillow-jxl-plugin>=1.3.7"]
+
+# Testing
+test = ["pytest>=9.0"]
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["vibe"]

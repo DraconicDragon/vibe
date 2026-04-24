@@ -11,7 +11,7 @@ example/images/
 example/_*
 
 # temp
-pyproject.toml
+#pyproject.toml
 uv.lock 
 
 # Byte-compiled / optimized / DLL files
