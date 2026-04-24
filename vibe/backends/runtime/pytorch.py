@@ -156,7 +156,7 @@ class PyTorchBackend:
                 output = self._model(model_input)
             except Exception:
                 if self._compute_dtype == torch.float32 and self._weight_dtype not in {None, torch.float32}:
-                    logger.warning(
+                    logger.debug(
                         "FP32 compute with weight_dtype=%s on device=%s needed a temporary fp32 weight promotion for this inference. "
                         "This is expected when using fp16/bf16 weights with fp32 compute; weights are restored to %s after the forward pass.",
                         self._weight_dtype,
