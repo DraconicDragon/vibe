@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -54,6 +55,14 @@ class PyTorchBackend:
             raise RuntimeError(
                 "PyTorch is required to use the pytorch backend. Install it with: pip install torch"
             ) from exc
+
+        # Configure cuDNN based on environment variable
+        if os.getenv("VIBE_DISABLE_CUDNN", "false").lower() in ("true", "1", "yes"):
+            torch.backends.cudnn.enabled = False
+            logger.info("cuDNN disabled via VIBE_DISABLE_CUDNN environment variable")
+        else:
+            torch.backends.cudnn.enabled = True
+            logger.debug("cuDNN enabled (VIBE_DISABLE_CUDNN not set or false)")
 
         self._device = device
         self._requested_precision = normalize_precision_string(precision)
