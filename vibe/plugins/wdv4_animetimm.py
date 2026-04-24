@@ -1,3 +1,8 @@
+# Notes about the models:
+# - Most or all models seem to allow dynamic input sizes even though they were trained
+#   with specific ones like 384x384
+#   - They won't error but will have lower accuracy
+
 from __future__ import annotations
 
 import json
