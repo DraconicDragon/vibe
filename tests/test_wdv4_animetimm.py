@@ -94,7 +94,7 @@ def test_registry_contains_all_selected_wdv4_models(repo_id: str) -> None:
     assert expected_model_id in models
 
     alias = repo_id.split("/", 1)[-1]
-    resolved = vibe.registry.get(alias)
+    resolved = vibe.model_registry.get(alias)
     assert resolved.model_id == expected_model_id
 
 

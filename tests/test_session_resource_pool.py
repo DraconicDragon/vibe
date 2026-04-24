@@ -54,7 +54,7 @@ def test_build_session_reuses_pooled_backend_until_last_close(
     model_path.write_bytes(b"fake")
     _write_selected_tags_csv(tmp_path / "selected_tags.csv")
 
-    plugin_cls = vibe.registry.get("wd-eva02-v3")
+    plugin_cls = vibe.model_registry.get("wd-eva02-v3")
     source = f"local:{tmp_path}"
 
     session1 = build_session(
@@ -92,7 +92,7 @@ def test_build_session_releases_pooled_backend_on_ancillary_failure(
     model_path.write_bytes(b"fake")
     _write_selected_tags_csv(tmp_path / "selected_tags.csv")
 
-    plugin_cls = vibe.registry.get("wd-eva02-v3")
+    plugin_cls = vibe.model_registry.get("wd-eva02-v3")
     source = f"local:{tmp_path}"
 
     def _failing_load_ancillary(self, file_map):

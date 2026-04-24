@@ -26,7 +26,7 @@ def test_registry_contains_non_caformer_wd_models() -> None:
     assert "wd-vit-v3" in models
 
     # list_models() returns canonical model IDs; aliases should still resolve.
-    assert vibe.registry.get("wd-eva02-v3").model_id == "wd-eva02-large-v3"
+    assert vibe.model_registry.get("wd-eva02-v3").model_id == "wd-eva02-large-v3"
 
 
 def test_list_plugin_classes_contains_wd_classes() -> None:

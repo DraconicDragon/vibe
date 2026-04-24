@@ -64,7 +64,7 @@ def test_build_session_rejects_invalid_precision(monkeypatch, tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    plugin_cls = __import__("vibe").registry.get("wd-eva02-v3")
+    plugin_cls = __import__("vibe").model_registry.get("wd-eva02-v3")
 
     with pytest.raises(SessionError, match="Unsupported precision"):
         build_session(
@@ -86,7 +86,7 @@ def test_build_session_pytorch_int8_ov_falls_back_to_auto(monkeypatch, tmp_path:
         encoding="utf-8",
     )
 
-    plugin_cls = __import__("vibe").registry.get("wd-eva02-v3")
+    plugin_cls = __import__("vibe").model_registry.get("wd-eva02-v3")
 
     session = build_session(
         plugin_cls=plugin_cls,

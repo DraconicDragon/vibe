@@ -63,7 +63,7 @@ def _build_session(
     tmp_path: Path,
     providers: list[str] | None = None,
 ) -> tuple[ModelSession, _DummyBackend]:
-    plugin = vibe.registry.get("wd-eva02-v3")()
+    plugin = vibe.model_registry.get("wd-eva02-v3")()
     tags = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv(tags)
     plugin.configure(auto_download=False)
