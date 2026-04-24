@@ -108,12 +108,6 @@ def build_session(
             except ValueError as exc:
                 raise SessionError(str(exc)) from exc
 
-            if backend == Backend.ONNX and normalized_precision in {"fp16", "bf16"}:
-                logger.warning(
-                    "Precision '%s' requested while running ONNX backend; runtime casting is provider/model dependent. "
-                    "The model's graph precision will generally be used.",
-                    normalized_precision,
-                )
             if backend == Backend.PYTORCH and normalized_precision == "int8_ov":
                 logger.warning(
                     "Precision 'int8_ov'/'ov' is ONNX/OpenVINO-oriented and is not supported by PyTorch backend; falling back to auto.",
@@ -204,6 +198,12 @@ def build_session(
                     optional_missing_files=file_map.optional_missing_reasons(),
                 )
                 plugin.load_ancillary(file_map.as_path_dict())
+                if backend == Backend.ONNX and normalized_precision in {"fp16", "bf16"}:
+                    logger.warning(
+                        "Precision '%s' requested while running ONNX backend; runtime casting is provider/model dependent. "
+                        "The model's graph precision will generally be used.",
+                        normalized_precision,
+                    )
                 logger.debug("Session ready model_id=%s", plugin_cls.model_id)
                 return ModelSession(
                     plugin=plugin,
