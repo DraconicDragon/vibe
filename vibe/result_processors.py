@@ -144,10 +144,28 @@ class CleanTags(ResultProcessor):
 
 
 class TagLevelThresholds(ResultProcessor):
-    """Apply CSV `best_threshold` filtering when threshold metadata is available."""
+    """Filter tags using per-tag thresholds from selected_tags.csv.
 
-    def __init__(self, *, threshold_column: str = "best_threshold") -> None:
+    Use `threshold_offset` for a fixed adjustment, or `threshold_relaxation` for
+    a proportional adjustment that scales with each tag's own threshold.
+    Example: with `threshold_relaxation=0.1`, a threshold of `0.80` becomes
+    `0.72` and a threshold of `0.20` becomes `0.18`.
+    """
+
+    def __init__(
+        self,
+        *,
+        threshold_column: str = "best_threshold",
+        threshold_offset: float = 0.0,
+        threshold_relaxation: float = 0.0,
+    ) -> None:
+        if threshold_offset != 0.0 and threshold_relaxation != 0.0:
+            raise ValueError("Use only one of threshold_offset or threshold_relaxation.")
+        if threshold_relaxation < 0.0 or threshold_relaxation >= 1.0:
+            raise ValueError("threshold_relaxation must be between 0.0 and 1.0 (non-inclusive).")
         self._threshold_column = threshold_column
+        self._threshold_offset = threshold_offset
+        self._threshold_relaxation = threshold_relaxation
         self._threshold_cache: dict[str, dict[str, float]] = {}
         self._threshold_stats_cache: dict[str, tuple[int, int, bool]] = {}
         self._warned_this_call: set[str] = set()
@@ -218,6 +236,10 @@ class TagLevelThresholds(ResultProcessor):
             filtered: list[TagEntry] = []
             for entry in entries:
                 threshold = threshold_map.get(entry.tag)
+                if threshold is not None:
+                    threshold += self._threshold_offset
+                    if self._threshold_relaxation != 0.0:
+                        threshold *= 1.0 - self._threshold_relaxation
                 if threshold is None or entry.score >= threshold:
                     filtered.append(entry)
             entries[:] = filtered

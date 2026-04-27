@@ -82,6 +82,61 @@ def test_tag_level_thresholds_filters_tags_by_best_threshold(tmp_path: Path) -> 
     assert [entry.tag for entry in out.rating] == ["safe"]  # ty:ignore[unresolved-attribute]
 
 
+def test_tag_level_thresholds_applies_threshold_offset(tmp_path: Path) -> None:
+    csv_path = tmp_path / "selected_tags.csv"
+    _write_selected_tags_csv(csv_path)
+
+    processor = TagLevelThresholds(threshold_offset=-0.01)
+    context = _make_context(csv_path=csv_path)
+
+    result = _SimpleTagResult(
+        general=[TagEntry(tag="1girl", score=0.44)],
+        artist=[TagEntry(tag="artist_name", score=0.54)],
+        character=[TagEntry(tag="char_name", score=0.74)],
+        rating=[TagEntry(tag="safe", score=0.59)],
+    )
+
+    processor.on_infer_start(context=context)
+    out = processor.process(result, context=context)
+
+    assert [entry.tag for entry in out.general] == ["1girl"]  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.artist] == ["artist_name"]  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.character] == ["char_name"]  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.rating] == ["safe"]  # ty:ignore[unresolved-attribute]
+
+
+def test_tag_level_thresholds_applies_threshold_relaxation(tmp_path: Path) -> None:
+    csv_path = tmp_path / "selected_tags.csv"
+    _write_selected_tags_csv(csv_path)
+
+    processor = TagLevelThresholds(threshold_relaxation=0.1)
+    context = _make_context(csv_path=csv_path)
+
+    result = _SimpleTagResult(
+        general=[TagEntry(tag="1girl", score=0.41)],
+        artist=[TagEntry(tag="artist_name", score=0.50)],
+        character=[TagEntry(tag="char_name", score=0.68)],
+        rating=[TagEntry(tag="safe", score=0.54)],
+    )
+
+    processor.on_infer_start(context=context)
+    out = processor.process(result, context=context)
+
+    assert [entry.tag for entry in out.general] == ["1girl"]  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.artist] == ["artist_name"]  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.character] == ["char_name"]  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.rating] == ["safe"]  # ty:ignore[unresolved-attribute]
+
+
+def test_tag_level_thresholds_rejects_offset_and_relaxation_together() -> None:
+    try:
+        TagLevelThresholds(threshold_offset=-0.01, threshold_relaxation=0.1)
+    except ValueError as exc:
+        assert "Use only one of threshold_offset or threshold_relaxation" in str(exc)
+    else:
+        raise AssertionError("Expected TagLevelThresholds to reject conflicting threshold adjustments.")
+
+
 def test_tag_level_thresholds_warns_once_per_call_for_partial_thresholds(tmp_path: Path, caplog) -> None:
     csv_path = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv(csv_path)
