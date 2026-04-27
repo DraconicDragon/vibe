@@ -111,9 +111,9 @@ class ScoreResult:
     """
 
     output_type: Literal[OutputType.SCORE] = field(default=OutputType.SCORE, init=False)
-    score: float = 0.0
-    score_min: float = 0.0
-    score_max: float = 1.0
+    score: float
+    score_min: float
+    score_max: float
     label: str = "score"
 
     def to_dict(self) -> dict[str, Any]:
