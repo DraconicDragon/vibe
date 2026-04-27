@@ -107,14 +107,14 @@ class ScoreResult:
         score:      The predicted score.
         score_min:  The minimum of the model's output range (informational).
         score_max:  The maximum of the model's output range (informational).
-        label:      Human-readable label for what the score means.
+        label:      Human-readable label for what the score means. Default: "score".
     """
 
     output_type: Literal[OutputType.SCORE] = field(default=OutputType.SCORE, init=False)
-    label: str
     score: float = 0.0
     score_min: float = 0.0
     score_max: float = 1.0
+    label: str = "score"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
