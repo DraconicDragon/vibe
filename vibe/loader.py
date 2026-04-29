@@ -113,16 +113,17 @@ def resolve_from_hf_repo(
 
     for spec in needed:
         mapped_name = normalized_file_name_map.get(spec.name, spec.name)
+        spec_repo_id = spec.repo_id or repo_id
         try:
             logger.debug(
                 "Resolving file from HF repo='%s' spec='%s' mapped='%s' required=%s",
-                repo_id,
+                spec_repo_id,
                 spec.name,
                 mapped_name,
                 spec.required,
             )
             download_result = download_or_cached(
-                repo_id=repo_id,
+                repo_id=spec_repo_id,
                 filename=mapped_name,
                 revision=revision,
                 cache_dir=cache_dir,
@@ -138,7 +139,13 @@ def resolve_from_hf_repo(
                 optional_reason = None
             if local is not None:
                 paths[spec.name] = Path(local)
-                logger.debug("Resolved HF file spec='%s' mapped='%s' -> %s", spec.name, mapped_name, local)
+                logger.debug(
+                    "Resolved HF file spec='%s' repo='%s' mapped='%s' -> %s",
+                    spec.name,
+                    spec_repo_id,
+                    mapped_name,
+                    local,
+                )
             elif not spec.required and optional_reason:
                 optional_missing[spec.name] = optional_reason
         except HFDownloadError as exc:
@@ -444,8 +451,9 @@ def _resolve_local_then_hf_missing(
     for spec in missing_specs:
         mapped_name = normalized_file_name_map.get(spec.name, spec.name)
         try:
+            spec_repo_id = spec.repo_id or fallback_hf_repo_id
             local, reason = download_or_cached_with_reason(
-                repo_id=fallback_hf_repo_id,
+                repo_id=spec_repo_id,
                 filename=mapped_name,
                 revision=revision,
                 cache_dir=cache_dir,
@@ -467,18 +475,18 @@ def _resolve_local_then_hf_missing(
                 local_reason = optional_missing.get(spec.name, "local file missing")
                 hf_reason = reason or "HF fallback did not provide a reason"
                 optional_missing[spec.name] = (
-                    f"{local_reason}; HF fallback '{fallback_hf_repo_id}' could not resolve '{mapped_name}': {hf_reason}"
+                    f"{local_reason}; HF fallback '{spec_repo_id}' could not resolve '{mapped_name}': {hf_reason}"
                 )
         except HFDownloadError as exc:
             if spec.required:
                 raise LoaderError(
                     f"Required file '{mapped_name}' was not found in local folder '{folder}', "
-                    f"and could not be resolved from HuggingFace fallback '{fallback_hf_repo_id}': {exc}"
+                    f"and could not be resolved from HuggingFace fallback '{spec_repo_id}': {exc}"
                 ) from None
 
             local_reason = optional_missing.get(spec.name, "local file missing")
             optional_missing[spec.name] = (
-                f"{local_reason}; HF fallback '{fallback_hf_repo_id}' failed for '{mapped_name}': {exc}"
+                f"{local_reason}; HF fallback '{spec_repo_id}' failed for '{mapped_name}': {exc}"
             )
 
     return FileMap(paths, optional_missing_reasons=optional_missing)

@@ -51,12 +51,14 @@ class FileSpec:
         required:   If False the plugin can run without it (feature degrades).
         backends:   Which backends need this file. Empty list = all backends.
                     Use this to declare .onnx files only for Backend.ONNX, etc.
+        repo_id:    Optional HuggingFace repo override for this file.
     """
 
     name: str
     role: FileRole
     required: bool = True
     backends: list[Backend] = field(default_factory=list)
+    repo_id: str | None = None
 
     def needed_for(self, backend: Backend) -> bool:
         if not self.backends:
