@@ -110,13 +110,6 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
         values = scores[:usable_count]
 
         score_map = {label: float(values[idx]) for idx, label in enumerate(labels)}
-        if values.size:
-            max_index = int(np.argmax(values))
-            primary_label = labels[max_index]
-            primary_score = float(values[max_index])
-        else:
-            primary_label = None
-            primary_score = None
 
         weighted_score = self._weighted_mean(labels, values)
         percentile = self._score_to_percentile(weighted_score)
@@ -132,8 +125,6 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
             score_min=self.SCORE_MIN,
             score_max=self.SCORE_MAX,
             label_order=list(labels),
-            primary_label=primary_label,
-            primary_score=primary_score,
             metrics=metrics,
         )
 
