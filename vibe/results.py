@@ -125,24 +125,45 @@ class ScoreResult:
 @dataclass
 class MultiScoreResult:
     """
-    Result from a model that outputs multiple named scores
-    (e.g. good/normal/bad).
+    Result from a model that outputs multiple named scores.
 
     Attributes:
-        scores:     Mapping of {label: value} for each named score.
-        score_min:  Minimum of each score's range.
-        score_max:  Maximum of each score's range.
+        scores:        Mapping of {label: value} for each named score.
+        score_min:     Minimum of each score's range (informational).
+        score_max:     Maximum of each score's range (informational).
+        label_order:   Optional label ordering for score indices.
+        primary_label: Optional label picked as the "best" match.
+        primary_score: Optional score for the primary label.
+        metrics:       Optional extra numeric metrics (e.g. percentile).
     """
 
     output_type: Literal[OutputType.MULTI_SCORE] = field(default=OutputType.MULTI_SCORE, init=False)
     scores: dict[str, float] = field(default_factory=dict)
-    score_min: float = 0.0
-    score_max: float = 1.0
+    score_min: float | None = None
+    score_max: float | None = None
+    label_order: list[str] = field(default_factory=list)
+    primary_label: str | None = None
+    primary_score: float | None = None
+    metrics: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["output_type"] = self.output_type.value
-        return d
+        data: dict[str, Any] = {
+            "output_type": self.output_type.value,
+            "scores": self.scores,
+        }
+        if self.score_min is not None:
+            data["score_min"] = self.score_min
+        if self.score_max is not None:
+            data["score_max"] = self.score_max
+        if self.label_order:
+            data["label_order"] = list(self.label_order)
+        if self.primary_label is not None:
+            data["primary_label"] = self.primary_label
+        if self.primary_score is not None:
+            data["primary_score"] = self.primary_score
+        if self.metrics:
+            data["metrics"] = dict(self.metrics)
+        return data
 
 
 @dataclass
