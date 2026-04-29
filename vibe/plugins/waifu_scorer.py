@@ -1,3 +1,6 @@
+# Todo: find out if possible to use timm or open_clip_torch instead of clip library OR
+# find out if clip lib can take external weights instead of downloading by itself
+
 from __future__ import annotations
 
 import logging
@@ -37,12 +40,12 @@ class WaifuScorerBasePlugin(ModelPlugin):
             role=FileRole.WEIGHTS,
             backends=[Backend.PYTORCH],
         ),
-        FileSpec(
-            name="clip_model.safetensors",
-            role=FileRole.WEIGHTS,
-            backends=[Backend.PYTORCH],
-            repo_id="openai/clip-vit-large-patch14",
-        ),
+        # FileSpec(
+        #     name="model.safetensors",
+        #     role=FileRole.WEIGHTS,
+        #     backends=[Backend.PYTORCH],
+        #     repo_id="openai/clip-vit-large-patch14",
+        # ),
     ]
 
     _backend: Backend | None = None
