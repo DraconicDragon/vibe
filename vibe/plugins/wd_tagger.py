@@ -1,3 +1,6 @@
+# Todo: make this use timm
+# models come with timm config files but no preprocess but config alone should be sufficient
+
 from __future__ import annotations
 
 import logging
