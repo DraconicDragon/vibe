@@ -102,7 +102,7 @@ def download_or_cached_with_reason(
         revision=revision,
         cache_dir=cache_dir,
     )
-    if cached and Path(cached).is_file():
+    if isinstance(cached, str) and Path(cached).is_file():
         logger.debug("HF cache hit repo='%s' file='%s' -> %s", repo_id, filename, cached)
         return Path(cached), None
 
