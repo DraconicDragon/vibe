@@ -108,7 +108,7 @@ def _format_model_section(info: vibe.ModelPluginInfo) -> str:
         f"- Backends: {_format_backends(info)}",
         f"- Output: {_code(info.output_type.value)}",
         f"- Result processors: {_format_processors(info)}",
-        f"- Image size: {_code(str(info.image_size)) if info.image_size is not None else '—'}",
+        #f"- Image size: {_code(str(info.image_size)) if info.image_size is not None else '—'}",
         f"- Description: {_format_optional_text(info.description)}",
         "",
         "</details>",
@@ -121,7 +121,7 @@ def build_markdown() -> str:
     grouped: dict[str, list[vibe.ModelPluginInfo]] = defaultdict(list)
 
     for info in infos:
-        plugin_cls = vibe.registry.get(info.model_id)
+        plugin_cls = vibe.model_registry.get(info.model_id)
         grouped[_family_label(plugin_cls)].append(info)
 
     lines = [
