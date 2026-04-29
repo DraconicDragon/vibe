@@ -2,6 +2,8 @@
 
 # todo: specify subfolders and all that
 
+# todo: way of not computing percentile/weighted score
+
 from __future__ import annotations
 
 import json
@@ -205,10 +207,10 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
 
 
 class DGHSAesSwinV2xPlugin(DeepGHSAnimeAesPlugin):
-    model_id = "dghs-aes-swinv2pv3-448-ls0.2-x"
+    model_id = "dghs-aes-swinv2pv3-ls0.2-x"
     aliases = [
         "swinv2pv3_v0_448_ls0.2_x",
-        "deepghs-aes-swinv2pv3-x",
+        "dghs-aes-swinv2pv3-x",
     ]
     IMAGE_SIZE = 384
     display_name = "DeepGHS Anime Aesthetic SwinV2 PV3 448 x"
@@ -217,10 +219,10 @@ class DGHSAesSwinV2xPlugin(DeepGHSAnimeAesPlugin):
 
 
 class DGHSAesSwinV2Plugin(DeepGHSAnimeAesPlugin):
-    model_id = "dghs-aes-swinv2pv3-448-ls0.2"
+    model_id = "dghs-aes-swinv2pv3-ls0.2"
     aliases = [
         "swinv2pv3_v0_448_ls0.2",
-        "deepghs-aes-swinv2pv3",
+        "dghs-aes-swinv2pv3",
     ]
     display_name = "DeepGHS Anime Aesthetic SwinV2 PV3 448"
     description = "Anime aesthetic scorer using DeepGHS SwinV2 PV3 448 (ls0.2) model."
@@ -231,7 +233,7 @@ class DGHSAesCaformerS36Plugin(DeepGHSAnimeAesPlugin):
     model_id = "dghs-aes-caformer-s36-ls0.2"
     aliases = [
         "caformer_s36_v0_ls0.2",
-        "deepghs-aes-caformer-s36",
+        "dghs-aes-caformer-s36",
     ]
     display_name = "DeepGHS Anime Aesthetic CaFormer S36"
     description = "Anime aesthetic scorer using DeepGHS CaFormer S36 (ls0.2) model."
