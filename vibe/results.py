@@ -25,6 +25,8 @@ class OutputType(str, Enum):
 
 # region Result Dataclasses
 
+# todo: turn asdicts into manual to_dict, less processing and simpler and fine anyway since these arent expected to change when done
+
 
 @dataclass
 class TagEntry:
@@ -122,47 +124,46 @@ class ScoreResult:
         return d
 
 
-@dataclass
+@dataclass(slots=True)
 class MultiScoreResult:
     """
-    Result from a model that outputs multiple named scores.
+    Result from a model that returns multiple scores.
 
-    Attributes:
-        scores:        Mapping of {label: value} for each named score.
-        score_min:     Minimum of each score's range (informational).
-        score_max:     Maximum of each score's range (informational).
-        label_order:   Optional label ordering for score indices.
-        primary_label: Optional label picked as the "best" match.
-        primary_score: Optional score for the primary label.
-        metrics:       Optional extra numeric metrics (e.g. percentile).
+    Attributes
+    ----------
+    output_type
+        Result type identifier used for dispatch and serialization.
+    scores
+        Mapping from label to score.
+    label_order
+        Optional label ordering that reflects the model's native output order.
+    score_min
+        Optional lower bound of the score range.
+    score_max
+        Optional upper bound of the score range.
+    metrics
+        Optional extra scalar metrics associated with the result.
     """
 
     output_type: Literal[OutputType.MULTI_SCORE] = field(default=OutputType.MULTI_SCORE, init=False)
     scores: dict[str, float] = field(default_factory=dict)
+    label_order: list[str] = field(default_factory=list)
     score_min: float | None = None
     score_max: float | None = None
-    label_order: list[str] = field(default_factory=list)
-    primary_label: str | None = None
-    primary_score: float | None = None
     metrics: dict[str, float] = field(default_factory=dict)
 
+    def __getitem__(self, label: str) -> float:
+        return self.scores[label]
+
+    def get(self, label: str, default: float | None = None) -> float | None:
+        return self.scores.get(label, default)
+
+    def items(self):
+        return self.scores.items()
+
     def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "output_type": self.output_type.value,
-            "scores": self.scores,
-        }
-        if self.score_min is not None:
-            data["score_min"] = self.score_min
-        if self.score_max is not None:
-            data["score_max"] = self.score_max
-        if self.label_order:
-            data["label_order"] = list(self.label_order)
-        if self.primary_label is not None:
-            data["primary_label"] = self.primary_label
-        if self.primary_score is not None:
-            data["primary_score"] = self.primary_score
-        if self.metrics:
-            data["metrics"] = dict(self.metrics)
+        data = asdict(self)
+        data["output_type"] = self.output_type.value
         return data
 
 
