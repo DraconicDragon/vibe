@@ -6,13 +6,16 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
+from vibe.backends.base import FileRole
 from vibe.backends.char_ip_mapping import (
     apply_character_ip_mapping,
     resolve_character_ip_mapping,
 )
 from vibe.loader import FileMap
 from vibe.plugins.shared.tagger_shared import load_tag_metadata
-from vibe.results import ModelResult, TagEntry, TagResult
+from vibe.results import ModelResult, MultiScoreResult, ScoreResult, TagEntry, TagResult
 
 logger = logging.getLogger(__name__)
 
@@ -106,9 +109,9 @@ class CharacterIPMapping(ResultProcessor):
         return self._mapping_cache
 
     def _resolve_model_dir(self, file_map: FileMap) -> Path:
-        selected_tags = file_map.get("selected_tags.csv")
-        if selected_tags is not None:
-            return selected_tags.parent
+        tag_list_path = _resolve_file_path(file_map, preferred_names=("selected_tags.csv",), roles=(FileRole.TAG_LIST,))
+        if tag_list_path is not None:
+            return tag_list_path.parent
 
         values = file_map.values()
         first_path = values[0] if values else None
@@ -183,12 +186,17 @@ class TagLevelThresholds(ResultProcessor):
         if not isinstance(result, TagResult):
             return result
 
-        csv_path = context.file_map.get("selected_tags.csv")
+        csv_path = _resolve_file_path(
+            context.file_map,
+            preferred_names=("selected_tags.csv",),
+            roles=(FileRole.TAG_LIST,),
+            suffixes=(".csv",),
+        )
         if csv_path is None:
             self._warn(
                 key=f"missing-csv:{context.source}",
                 message=(
-                    "TagLevelThresholds could not find selected_tags.csv in model files; "
+                    "TagLevelThresholds could not find a tag-list CSV in model files; "
                     "cannot apply tag-level thresholds."
                 ),
             )
@@ -297,6 +305,184 @@ class TagLevelThresholds(ResultProcessor):
             return
         self._warned_this_call.add(namespaced)
         logger.warning(message)
+
+
+class MultiScoreToScore(ResultProcessor):
+    """Convert MultiScoreResult into a single ScoreResult.
+
+    - Computes a weighted mean over labels.
+        - When `use_samples_percentile=False` (default), falls back to simple
+            min/max scaling for normalization using the result's score bounds.
+        - When `use_samples_percentile=True`, requires a resolved auxiliary
+            samples file and uses it to normalize the weighted mean to a percentile.
+
+    Args:
+        use_samples_percentile:
+            If True, use the auxiliary samples file for percentile normalization.
+        label:
+            Label for the resulting ScoreResult.
+    """
+
+    def __init__(
+        self,
+        *,
+        use_samples_percentile: bool = False,
+        label: str = "score",
+    ) -> None:
+        self._use_samples_percentile = use_samples_percentile
+        self._label = label
+
+        # cache: samples_path -> (x, y) mark table
+        self._samples_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._warned_paths: set[str] = set()
+
+    def process(
+        self,
+        result: ModelResult,
+        *,
+        context: ResultProcessorContext,
+    ) -> ModelResult:
+        if not isinstance(result, MultiScoreResult):
+            return result
+
+        if not result.scores:
+            logger.warning("MultiScoreToScore received empty scores; returning zero score.")
+            return ScoreResult(score=0.0, score_min=0.0, score_max=1.0, label=self._label)
+
+        # weighted mean
+        labels = result.label_order or list(result.scores.keys())
+        values = result.scores
+
+        weighted_mean = 0.0
+        for i, label in enumerate(labels):
+            v = values.get(label)
+            if v is None:
+                continue
+            weighted_mean += i * float(v)
+
+        # percentile normalization
+        percentile: float | None = None
+
+        samples_path = self._resolve_samples_path(context.file_map)
+
+        if self._use_samples_percentile:
+            if samples_path is None:
+                raise FileNotFoundError(
+                    "MultiScoreToScore: use_samples_percentile=True but no samples file was resolved."
+                )
+            x, y = self._get_samples_table(samples_path)
+            percentile = self._interp_percentile(weighted_mean, x, y)
+
+        else:
+            if samples_path is not None:
+                key = str(samples_path)
+                if key not in self._warned_paths:
+                    logger.warning(
+                        f"Samples file '{samples_path}' detected but not used. "
+                        f"Enable use_samples_percentile=True to apply percentile normalization."
+                    )
+                    self._warned_paths.add(key)
+
+            min_v = 0.0
+            max_v = float(max(len(labels) - 1, 1))
+
+            if max_v > min_v:
+                # at this point, without samples file, percentile here just means normalized score
+                percentile = (weighted_mean - min_v) / (max_v - min_v)
+            else:
+                percentile = 0.0
+
+        percentile = float(np.clip(percentile, 0.0, 1.0))
+
+        return ScoreResult(
+            score=percentile,
+            score_min=0.0,
+            score_max=1.0,
+            label=self._label,
+        )
+
+    def _get_samples_table(self, path: Path) -> tuple[np.ndarray, np.ndarray]:
+        key = str(path)
+        cached = self._samples_cache.get(key)
+        if cached is not None:
+            return cached
+
+        with np.load(path, allow_pickle=False) as data:
+            if "arr_0" not in data:
+                raise ValueError(f"Samples file '{path}' missing required arr_0 data.")
+
+            arr = np.asarray(data["arr_0"], dtype=np.float32)
+            if arr.ndim != 2 or arr.shape[0] < 2:
+                raise ValueError(f"Samples file '{path}' must contain a 2D array with at least two rows.")
+
+            x = np.asarray(arr[0], dtype=np.float32)
+            y = np.asarray(arr[1], dtype=np.float32)
+
+        if x.size != y.size:
+            raise ValueError(f"Samples file '{path}' score and percentile arrays must be the same length.")
+
+        order = np.argsort(x)
+        x = x[order]
+        y = y[order]
+
+        x = np.concatenate(([0.0], x, [x[-1] + 1e-6])).astype(np.float32, copy=False)
+        y = np.concatenate(([0.0], y, [1.0])).astype(np.float32, copy=False)
+
+        self._samples_cache[key] = (x, y)
+        return x, y
+
+    @staticmethod
+    def _interp_percentile(value: float, x: np.ndarray, y: np.ndarray) -> float:
+        value = float(np.clip(value, x[0], x[-1]))
+        idx = np.searchsorted(x, value)
+
+        if idx >= len(x) - 1:
+            return float(y[-1])
+
+        x0, y0 = x[idx], y[idx]
+        x1, y1 = x[idx + 1], y[idx + 1]
+
+        if x1 == x0:
+            return float(y0)
+
+        return float((value - x0) / (x1 - x0) * (y1 - y0) + y0)
+
+    def _resolve_samples_path(self, file_map: FileMap) -> Path | None:
+        return _resolve_file_path(
+            file_map,
+            preferred_names=("samples.npz", "samples.csv"),
+            roles=(FileRole.MAPPING,),
+            suffixes=(".npz", ".csv"),
+        )
+
+
+def _resolve_file_path(
+    file_map: FileMap,
+    *,
+    preferred_names: tuple[str, ...] = (),
+    roles: tuple[FileRole, ...] = (),
+    suffixes: tuple[str, ...] = (),
+) -> Path | None:
+    resolved = file_map.as_path_dict()
+
+    for name in preferred_names:
+        path = resolved.get(name)
+        if path is not None:
+            return path
+
+    if roles:
+        role_names = {role.value for role in roles}
+        for key, path in resolved.items():
+            if key in role_names:
+                return path
+
+    if suffixes:
+        normalized_suffixes = tuple(suffix.lower() for suffix in suffixes)
+        for path in resolved.values():
+            if path.suffix.lower() in normalized_suffixes:
+                return path
+
+    return None
 
 
 def _clean_tag_text(tag: str) -> str:
