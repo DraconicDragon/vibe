@@ -22,8 +22,8 @@ with vibe.load(
     },
     auto_download=False,
 ) as session:
-    result = session.infer(
+    inference_result = session.infer(
         Image.open("example/example.jpg"),
-    ).first()
+    )
 
-    print(result.score)
+    print(inference_result.items[0].result.score)

@@ -108,7 +108,6 @@ def _format_model_section(info: vibe.ModelPluginInfo) -> str:
         f"- Backends: {_format_backends(info)}",
         f"- Output: {_code(info.output_type.value)}",
         f"- Result processors: {_format_processors(info)}",
-        #f"- Image size: {_code(str(info.image_size)) if info.image_size is not None else '—'}",
         f"- Description: {_format_optional_text(info.description)}",
         "",
         "</details>",
