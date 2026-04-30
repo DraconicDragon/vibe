@@ -68,17 +68,14 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
         FileSpec(
             name="config.json",
             role=FileRole.CONFIG,
-            backends=[],
         ),
         FileSpec(
             name="preprocess.json",
             role=FileRole.CONFIG,
-            backends=[],
         ),
         FileSpec(
             name="selected_tags.csv",
             role=FileRole.TAG_LIST,
-            backends=[],
         ),
     ]
 
@@ -497,6 +494,28 @@ class WDV4ConvNextV2HugePlugin(WDV4AnimeTimmBasePlugin):
     display_name = "AnimeTimm ConvNeXtV2 Huge (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm ConvNeXtV2 Huge architecture."
     default_hf_repo = "animetimm/convnextv2_huge.dbv4-full"
+
+    supported_backends = [Backend.PYTORCH]
+
+    required_files = [
+        FileSpec(
+            name="model.safetensors",
+            role=FileRole.WEIGHTS,
+            backends=[Backend.PYTORCH],
+        ),
+        FileSpec(
+            name="config.json",
+            role=FileRole.CONFIG,
+        ),
+        FileSpec(
+            name="preprocess.json",
+            role=FileRole.CONFIG,
+        ),
+        FileSpec(
+            name="selected_tags.csv",
+            role=FileRole.TAG_LIST,
+        ),
+    ]
 
 
 class WDV4CaformerB36FullPlugin(WDV4AnimeTimmBasePlugin):
