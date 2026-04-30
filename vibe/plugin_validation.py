@@ -19,6 +19,10 @@ def validate_plugin_declaration(plugin_cls: type[ModelPlugin]) -> list[str]:
         if len(specs) < 2:
             continue
 
+        keys = [spec.key or spec.name for spec in specs]
+        if len(set(keys)) == len(specs):
+            continue
+
         duplicate_repo_ids = {spec.repo_id for spec in specs}
         if len(duplicate_repo_ids) == len(specs):
             default_repo = plugin_cls.default_hf_repo
