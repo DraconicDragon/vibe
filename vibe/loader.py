@@ -30,7 +30,7 @@ class FileMap:
     """
     A resolved set of file paths for a plugin.
 
-    Access paths by filename:  file_map["model.onnx"]  → Path(...)
+    Access paths by logical file key:  file_map["model.onnx"]  → Path(...)
     """
 
     def __init__(
@@ -60,11 +60,11 @@ class FileMap:
         return {k: str(v) for k, v in self._paths.items()}
 
     def as_path_dict(self) -> dict[str, Path]:
-        """Return a copy of resolved paths keyed by filename."""
+        """Return a copy of resolved paths keyed by file key."""
         return dict(self._paths)
 
     def optional_missing_reasons(self) -> dict[str, str]:
-        """Return optional file resolution reasons keyed by plugin-declared filename."""
+        """Return optional file resolution reasons keyed by plugin-declared file key."""
         return dict(self._optional_missing_reasons)
 
     def values(self) -> list[Path]:
@@ -72,6 +72,10 @@ class FileMap:
 
 
 # region Resolve Files
+
+
+def _spec_key(spec: FileSpec) -> str:
+    return spec.key or spec.name
 
 
 def resolve_from_hf_repo(
@@ -112,7 +116,8 @@ def resolve_from_hf_repo(
     )
 
     for spec in needed:
-        mapped_name = normalized_file_name_map.get(spec.name, spec.name)
+        spec_key = _spec_key(spec)
+        mapped_name = normalized_file_name_map.get(spec_key, spec.name)
         spec_repo_id = spec.repo_id or repo_id
         try:
             logger.debug(
@@ -138,7 +143,7 @@ def resolve_from_hf_repo(
                 local = download_result
                 optional_reason = None
             if local is not None:
-                paths[spec.name] = Path(local)
+                paths[spec_key] = Path(local)
                 logger.debug(
                     "Resolved HF file spec='%s' repo='%s' mapped='%s' -> %s",
                     spec.name,
@@ -147,7 +152,7 @@ def resolve_from_hf_repo(
                     local,
                 )
             elif not spec.required and optional_reason:
-                optional_missing[spec.name] = optional_reason
+                optional_missing[spec_key] = optional_reason
         except HFDownloadError as exc:
             raise LoaderError(str(exc)) from None
         except Exception as exc:
@@ -192,10 +197,11 @@ def resolve_from_local_folder(
     )
 
     for spec in needed:
-        mapped_name = normalized_file_name_map.get(spec.name, spec.name)
+        spec_key = _spec_key(spec)
+        mapped_name = normalized_file_name_map.get(spec_key, spec.name)
         candidate = folder / mapped_name
         if candidate.is_file():
-            paths[spec.name] = candidate
+            paths[spec_key] = candidate
             logger.debug(
                 "Resolved local file spec='%s' mapped='%s' -> %s",
                 spec.name,
@@ -214,7 +220,7 @@ def resolve_from_local_folder(
                 f"Rename your file to match exactly, or check the plugin docs."
             )
         else:
-            optional_missing[spec.name] = f"'{mapped_name}' not found in local folder '{folder}'"
+            optional_missing[spec_key] = f"'{mapped_name}' not found in local folder '{folder}'"
 
     logger.debug("Resolved %d file(s) from local folder '%s'", len(paths), folder)
     return FileMap(paths, optional_missing_reasons=optional_missing)
@@ -271,6 +277,73 @@ def resolve_from_source_string(
         file_name_map=file_name_map,
         fallback_hf_repo_id=fallback_hf_repo_id,
     )
+
+
+def resolve_from_sources(
+    source: str,
+    file_specs: list[FileSpec],
+    backend: Backend,
+    *,
+    revision: str | None = None,
+    cache_dir: str | None = None,
+    allow_download: bool | None = None,
+    file_name_map: Mapping[str, str] | None = None,
+    fallback_hf_repo_id: str | None = None,
+    source_map: Mapping[str, str] | None = None,
+) -> FileMap:
+    """
+    Resolve files from a primary source string plus optional per-repo overrides.
+
+    When source_map is provided, any FileSpec with a matching repo_id uses the
+    mapped source string. Specs without a mapping fall back to the primary source.
+    """
+    normalized_file_name_map = _normalize_file_name_map(file_name_map, file_specs)
+
+    if not source_map:
+        return resolve_from_source_string(
+            source,
+            file_specs,
+            backend,
+            revision=revision,
+            cache_dir=cache_dir,
+            allow_download=allow_download,
+            file_name_map=normalized_file_name_map,
+            fallback_hf_repo_id=fallback_hf_repo_id,
+        )
+
+    grouped: dict[tuple[str, str | None], list[FileSpec]] = {}
+    for spec in file_specs:
+        spec_repo = spec.repo_id
+        mapped_source = source_map.get(spec_repo, source) if spec_repo else source
+        fallback_repo = spec_repo if mapped_source != source else fallback_hf_repo_id
+        key = (mapped_source, fallback_repo)
+        grouped.setdefault(key, []).append(spec)
+
+    merged_paths: dict[str, Path] = {}
+    merged_optional: dict[str, str] = {}
+    for (group_source, group_fallback_repo), group_specs in grouped.items():
+        group_keys = {_spec_key(spec) for spec in group_specs}
+        group_file_name_map = {key: value for key, value in normalized_file_name_map.items() if key in group_keys}
+        file_map = resolve_from_source_string(
+            group_source,
+            group_specs,
+            backend,
+            revision=revision,
+            cache_dir=cache_dir,
+            allow_download=allow_download,
+            file_name_map=group_file_name_map,
+            fallback_hf_repo_id=group_fallback_repo,
+        )
+        for key, value in file_map.as_path_dict().items():
+            if key in merged_paths and merged_paths[key] != value:
+                raise LoaderError(
+                    f"Resolved duplicate file key '{key}' from multiple sources: {merged_paths[key]} vs {value}"
+                )
+            merged_paths[key] = value
+        for key, reason in file_map.optional_missing_reasons().items():
+            merged_optional.setdefault(key, reason)
+
+    return FileMap(merged_paths, optional_missing_reasons=merged_optional)
 
 
 def _resolve_local_prefixed(
@@ -398,16 +471,17 @@ def _resolve_local_then_hf_missing(
     missing_specs: list[FileSpec] = []
 
     for spec in needed:
-        mapped_name = normalized_file_name_map.get(spec.name, spec.name)
+        spec_key = _spec_key(spec)
+        mapped_name = normalized_file_name_map.get(spec_key, spec.name)
         candidate = folder / mapped_name
         if candidate.is_file():
-            paths[spec.name] = candidate
+            paths[spec_key] = candidate
             continue
 
         if spec.required:
             missing_specs.append(spec)
         else:
-            optional_missing[spec.name] = f"'{mapped_name}' not found in local folder '{folder}'"
+            optional_missing[spec_key] = f"'{mapped_name}' not found in local folder '{folder}'"
             missing_specs.append(spec)
 
     if not missing_specs:
@@ -425,7 +499,7 @@ def _resolve_local_then_hf_missing(
 
     if not fallback_hf_repo_id:
         required_mapped = [
-            normalized_file_name_map.get(spec.name, spec.name) for spec in missing_specs if spec.required
+            normalized_file_name_map.get(_spec_key(spec), spec.name) for spec in missing_specs if spec.required
         ]
         if required_mapped:
             raise LoaderError(
@@ -434,7 +508,7 @@ def _resolve_local_then_hf_missing(
             )
         return FileMap(paths, optional_missing_reasons=optional_missing)
 
-    missing_names = [normalized_file_name_map.get(spec.name, spec.name) for spec in missing_specs]
+    missing_names = [normalized_file_name_map.get(_spec_key(spec), spec.name) for spec in missing_specs]
     if allow_download:
         logger.info(
             "Missing local file(s) %s. Attempting HuggingFace fallback repo '%s'.",
@@ -449,7 +523,8 @@ def _resolve_local_then_hf_missing(
         )
 
     for spec in missing_specs:
-        mapped_name = normalized_file_name_map.get(spec.name, spec.name)
+        spec_key = _spec_key(spec)
+        mapped_name = normalized_file_name_map.get(spec_key, spec.name)
         try:
             spec_repo_id = spec.repo_id or fallback_hf_repo_id
             local, reason = download_or_cached_with_reason(
@@ -467,14 +542,14 @@ def _resolve_local_then_hf_missing(
                     destination_folder=folder,
                     destination_name=mapped_name,
                 )
-                paths[spec.name] = local_materialized
-                optional_missing.pop(spec.name, None)
+                paths[spec_key] = local_materialized
+                optional_missing.pop(spec_key, None)
                 continue
 
             if not spec.required:
-                local_reason = optional_missing.get(spec.name, "local file missing")
+                local_reason = optional_missing.get(spec_key, "local file missing")
                 hf_reason = reason or "HF fallback did not provide a reason"
-                optional_missing[spec.name] = (
+                optional_missing[spec_key] = (
                     f"{local_reason}; HF fallback '{spec_repo_id}' could not resolve '{mapped_name}': {hf_reason}"
                 )
         except HFDownloadError as exc:
@@ -484,8 +559,8 @@ def _resolve_local_then_hf_missing(
                     f"and could not be resolved from HuggingFace fallback '{spec_repo_id}': {exc}"
                 ) from None
 
-            local_reason = optional_missing.get(spec.name, "local file missing")
-            optional_missing[spec.name] = (
+            local_reason = optional_missing.get(spec_key, "local file missing")
+            optional_missing[spec_key] = (
                 f"{local_reason}; HF fallback '{spec_repo_id}' failed for '{mapped_name}': {exc}"
             )
 
@@ -528,7 +603,14 @@ def _normalize_file_name_map(
     if not file_name_map:
         return {}
 
-    allowed_names = {spec.name for spec in file_specs}
+    allowed_names: dict[str, str] = {}
+    for spec in file_specs:
+        spec_key = _spec_key(spec)
+        allowed_names[spec.name] = spec_key
+        if spec.key:
+            if spec.key in allowed_names and allowed_names[spec.key] != spec_key:
+                raise LoaderError(f"file_name_map key '{spec.key}' is ambiguous for multiple plugin files: {spec.name}")
+            allowed_names[spec.key] = spec_key
     normalized: dict[str, str] = {}
     for original_name, mapped_name in file_name_map.items():
         key = str(original_name).strip()
@@ -541,7 +623,13 @@ def _normalize_file_name_map(
             raise LoaderError(
                 f"file_name_map contains unknown key '{key}'. Known plugin files: {sorted(allowed_names)}"
             )
-        normalized[key] = value
+        normalized_key = allowed_names[key]
+        existing = normalized.get(normalized_key)
+        if existing is not None and existing != value:
+            raise LoaderError(
+                f"file_name_map provides conflicting values for '{normalized_key}': '{existing}' vs '{value}'"
+            )
+        normalized[normalized_key] = value
 
     return normalized
 

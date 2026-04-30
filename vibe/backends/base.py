@@ -48,6 +48,8 @@ class FileSpec:
     Attributes:
         name:       The filename as it appears in the HF repo / local folder.
         role:       What kind of file this is.
+        key:        Optional logical key for this file. When set, this is the
+                    lookup key used by FileMap and file_name_map. Defaults to name.
         required:   If False the plugin can run without it (feature degrades).
         backends:   Which backends need this file. Empty list = all backends.
                     Use this to declare .onnx files only for Backend.ONNX, etc.
@@ -56,6 +58,7 @@ class FileSpec:
 
     name: str
     role: FileRole
+    key: str | None = None
     required: bool = True
     backends: list[Backend] = field(default_factory=list)
     repo_id: str | None = None

@@ -107,6 +107,7 @@ def load(
     model: str,
     *,
     source: str | None = None,
+    source_map: Mapping[str, str] | None = None,
     backend: str | Backend | None = None,
     device: str = "auto",
     precision: str = "auto",
@@ -132,6 +133,10 @@ def load(
                           - Unprefixed (auto mode):
                               first tries local folder when it exists,
                               then tries HF repo/cache/download.
+        source_map:     Optional mapping of repo_id -> source string used
+                        to override the source for specific FileSpec entries.
+                        Any FileSpec whose repo_id matches a key here uses
+                        the mapped source. All others use `source`.
         backend:        "pytorch" or "onnx". None = auto-detect.
         device:         Logical device selector. For ONNX it guides provider
             auto-selection (e.g. "cpu", "gpu", "gpu:1", "cuda:0").
@@ -186,6 +191,7 @@ def load(
     return build_session(
         plugin_cls=plugin_cls,
         source=resolved_source,
+        source_map=source_map,
         backend=backend,
         device=device,
         precision=normalized_precision,
@@ -201,6 +207,7 @@ def load(
 def load_custom(
     *,
     source: str | None = None,
+    source_map: Mapping[str, str] | None = None,
     plugin: str,
     backend: str | Backend | None = None,
     device: str = "auto",
@@ -229,6 +236,10 @@ def load_custom(
                           - Unprefixed (auto mode):
                               first tries local folder when it exists,
                               then tries HF repo/cache/download.
+        source_map:     Optional mapping of repo_id -> source string used
+                        to override the source for specific FileSpec entries.
+                        Any FileSpec whose repo_id matches a key here uses
+                        the mapped source. All others use `source`.
         plugin:         Plugin class name (e.g. "WDEva02Plugin").
                         Run vibe.list_plugin_classes() to see all options.
         backend, device, precision, hf_revision, hf_cache_dir, onnx_providers:
@@ -265,6 +276,7 @@ def load_custom(
     return build_session(
         plugin_cls=plugin_cls,
         source=resolved_source,
+        source_map=source_map,
         backend=backend,
         device=device,
         precision=normalized_precision,

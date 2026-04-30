@@ -10,7 +10,7 @@ from typing import Any, Callable, Mapping
 from vibe.backends.base import Backend, ModelPlugin
 from vibe.devices import normalize_device_string
 from vibe.hf_downloader import get_auto_download_default
-from vibe.loader import FileMap, resolve_from_source_string
+from vibe.loader import FileMap, resolve_from_sources
 from vibe.precision import normalize_precision_string
 from vibe.session import ModelSession, SessionError
 
@@ -31,6 +31,7 @@ def build_session(
     hf_cache_dir: str | None = None,
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
+    source_map: Mapping[str, str] | None = None,
     memory_tracking: bool = True,
 ) -> ModelSession:
     """
@@ -131,7 +132,7 @@ def build_session(
             )
 
             try:
-                file_map = resolve_from_source_string(
+                file_map = resolve_from_sources(
                     source,
                     plugin_cls.required_files,
                     backend,
@@ -140,6 +141,7 @@ def build_session(
                     allow_download=allow_download_for_attempt,
                     file_name_map=file_name_map,
                     fallback_hf_repo_id=plugin_cls.default_hf_repo if allow_hf_fallback else None,
+                    source_map=source_map,
                 )
             except Exception as exc:
                 if backend_was_explicit or len(backend_candidates) == 1:
@@ -434,7 +436,8 @@ def _find_weights(
 
     for spec in plugin_cls.required_files:
         if spec.role == FileRole.WEIGHTS and spec.needed_for(backend):
-            path = file_map.get(spec.name)
+            spec_key = spec.key or spec.name
+            path = file_map.get(spec_key)
             if path is not None:
                 return path
 
