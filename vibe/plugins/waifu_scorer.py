@@ -34,18 +34,37 @@ class WaifuScorerBasePlugin(ModelPlugin):
     supported_backends = [Backend.PYTORCH]
     supported_processors = []
 
+    MLP_WEIGHTS_KEY = "mlp_weights"
+    CLIP_WEIGHTS_KEY = "clip_weights"
+    CLIP_CONFIG_KEY = "clip_config"
+    CLIP_PREPROCESSOR_KEY = "clip_preprocessor"
+
     required_files = [
         FileSpec(
             name="model.safetensors",
+            key=MLP_WEIGHTS_KEY,
             role=FileRole.WEIGHTS,
             backends=[Backend.PYTORCH],
         ),
-        # FileSpec(
-        #     name="model.safetensors",
-        #     role=FileRole.WEIGHTS,
-        #     backends=[Backend.PYTORCH],
-        #     repo_id="openai/clip-vit-large-patch14",
-        # ),
+        FileSpec(
+            name="model.safetensors",
+            key=CLIP_WEIGHTS_KEY,
+            role=FileRole.WEIGHTS,
+            backends=[Backend.PYTORCH],
+            repo_id="openai/clip-vit-large-patch14",
+        ),
+        FileSpec(
+            name="config.json",
+            key=CLIP_CONFIG_KEY,
+            role=FileRole.CONFIG,
+            repo_id="openai/clip-vit-large-patch14",
+        ),
+        FileSpec(
+            name="preprocessor_config.json",
+            key=CLIP_PREPROCESSOR_KEY,
+            role=FileRole.CONFIG,
+            repo_id="openai/clip-vit-large-patch14",
+        ),
     ]
 
     _backend: Backend | None = None
@@ -78,7 +97,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
             raise RuntimeError("Waifu scorer weights must be a PyTorch state dict or nn.Module.")
 
         device = getattr(backend, "device", "cpu")
-        clip_model, clip_preprocess = self._load_clip_model(device)
+        clip_model, clip_preprocess = self._load_clip_model(device, file_map)
         mlp = self._build_mlp()
         normalized_state = self._normalize_mlp_state_dict(model_or_state)
         self._load_state_dict(mlp, normalized_state)
@@ -102,10 +121,14 @@ class WaifuScorerBasePlugin(ModelPlugin):
         if self._clip_preprocess is None:
             raise RuntimeError("Waifu scorer preprocess is unavailable until the plugin is loaded.")
 
-        tensor = self._clip_preprocess(image)
-        if hasattr(tensor, "unsqueeze"):
-            tensor = tensor.unsqueeze(0)
-        return tensor
+        if hasattr(self._clip_preprocess, "__call__"):
+            batch = self._clip_preprocess(images=image, return_tensors="pt")
+            try:
+                return batch["pixel_values"]
+            except Exception:
+                pass
+
+        raise RuntimeError("Waifu scorer preprocess could not prepare image tensors.")
 
     def postprocess(self, raw_output: Any) -> ScoreResult:
         scores = np.asarray(raw_output, dtype=np.float32).reshape(-1)
@@ -120,17 +143,36 @@ class WaifuScorerBasePlugin(ModelPlugin):
             score_max=self.SCORE_MAX,
         )
 
-    def _load_clip_model(self, device: str) -> tuple[Any, Any]:
+    def _load_clip_model(self, device: str, file_map: dict[str, Path]) -> tuple[Any, Any]:
         try:
-            import clip  # type: ignore[import-not-found]
+            from transformers import CLIPImageProcessor, CLIPModel
         except ImportError as exc:
-            raise RuntimeError("openai-clip is required to run the waifu scorer models.") from exc
+            raise RuntimeError(
+                "transformers is required to run the waifu scorer models since they are made for CLIP.\n"
+                + "Install it with: pip install transformers"
+            ) from exc
 
-        clip_model, preprocess = clip.load("ViT-L/14", device=device)
+        clip_weights = file_map.get(self.CLIP_WEIGHTS_KEY)
+        clip_config = file_map.get(self.CLIP_CONFIG_KEY)
+        clip_preprocessor = file_map.get(self.CLIP_PREPROCESSOR_KEY)
+
+        if not clip_weights or not clip_config or not clip_preprocessor:
+            raise RuntimeError("Waifu scorer is missing CLIP files; check resolved sources.")
+
+        clip_dir = clip_weights.parent
+        if clip_config.parent != clip_dir or clip_preprocessor.parent != clip_dir:
+            raise RuntimeError(
+                "CLIP files must be located in the same folder to load locally. "
+                "Use source_map or file_name_map to align file locations."
+            )
+
+        processor = CLIPImageProcessor.from_pretrained(str(clip_dir), local_files_only=True)
+        clip_model = CLIPModel.from_pretrained(str(clip_dir), local_files_only=True)
+        clip_model = clip_model.to(device=device)
         clip_model.eval()
         clip_model.requires_grad_(False)
 
-        return clip_model, preprocess
+        return clip_model, processor
 
     def _normalize_mlp_state_dict(self, state_dict: dict[str, Any]) -> dict[str, Any]:
         if not state_dict:
@@ -207,15 +249,10 @@ if nn is not None:
             self.mlp = mlp
 
         def forward(self, images: Any) -> Any:
-            if hasattr(self.clip_model, "encode_image"):
-                features = self.clip_model.encode_image(images)
-                if hasattr(features, "norm"):
-                    features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
-            else:
-                features = self.clip_model(images)
-                if hasattr(features, "norm"):
-                    features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
-            return self.mlp(features)
+            features = self.clip_model.get_image_features(images).pooler_output
+            features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+            return self.mlp(features).clamp(0, 10) / 10.0
 
 else:  # pragma: no cover - only used when torch is missing entirely
 
