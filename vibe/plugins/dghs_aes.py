@@ -4,6 +4,8 @@
 
 # todo: way of not computing percentile/weighted score
 
+# todo: remove percentile/weighted mean from here and move to a result processor
+
 from __future__ import annotations
 
 import json
@@ -46,12 +48,10 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
         FileSpec(
             name="meta.json",
             role=FileRole.CONFIG,
-            backends=[],
         ),
         FileSpec(
             name="samples.npz",
             role=FileRole.MAPPING,
-            backends=[],
         ),
     ]
 
@@ -212,7 +212,6 @@ class DGHSAesSwinV2xPlugin(DeepGHSAnimeAesPlugin):
         "swinv2pv3_v0_448_ls0.2_x",
         "dghs-aes-swinv2pv3-x",
     ]
-    IMAGE_SIZE = 384
     display_name = "DeepGHS Anime Aesthetic SwinV2 PV3 448 x"
     description = "Anime aesthetic scorer using DeepGHS SwinV2 PV3 448 (ls0.2 x) model."
     default_hf_repo = "deepghs/anime_aesthetic"
@@ -235,6 +234,7 @@ class DGHSAesCaformerS36Plugin(DeepGHSAnimeAesPlugin):
         "caformer_s36_v0_ls0.2",
         "dghs-aes-caformer-s36",
     ]
+    IMAGE_SIZE = 384
     display_name = "DeepGHS Anime Aesthetic CaFormer S36"
     description = "Anime aesthetic scorer using DeepGHS CaFormer S36 (ls0.2) model."
     default_hf_repo = "deepghs/anime_aesthetic"
