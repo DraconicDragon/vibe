@@ -79,7 +79,6 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
         ),
     ]
 
-    IMAGE_SIZE = 448
     FALLBACK_TIMM_MODEL_ARGS: dict[str, Any] = {}
 
     _raw_tag_names: list[str]
@@ -490,7 +489,6 @@ class WDV4ConvNextV2HugePlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-convnextv2-huge",
         "wdv4-convnextv2-huge",
     ]
-    IMAGE_SIZE = 512
     display_name = "AnimeTimm ConvNeXtV2 Huge (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm ConvNeXtV2 Huge architecture."
     default_hf_repo = "animetimm/convnextv2_huge.dbv4-full"
@@ -528,7 +526,6 @@ class WDV4CaformerB36FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-caformer-b36",
         "wdv4-caformer-b36",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm CaFormer B36 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm CaFormer B36 architecture."
     default_hf_repo = "animetimm/caformer_b36.dbv4-full"
@@ -544,7 +541,6 @@ class WDV4CaformerM36FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-caformer-m36",
         "wdv4-caformer-m36",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm CaFormer M36 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm CaFormer M36 architecture."
     default_hf_repo = "animetimm/caformer_m36.dbv4-full"
@@ -560,7 +556,6 @@ class WDV4CaformerS36FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-caformer-s36",
         "wdv4-caformer-s36",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm CaFormer S36 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm CaFormer S36 architecture."
     default_hf_repo = "animetimm/caformer_s36.dbv4-full"
@@ -576,7 +571,6 @@ class WDV4CaformerS18FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-caformer-s18",
         "wdv4-caformer-s18",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm CaFormer S18 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm CaFormer S18 architecture."
     default_hf_repo = "animetimm/caformer_s18.dbv4-full"
@@ -592,7 +586,6 @@ class WDV4ConvNextBaseFullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-convnext-base",
         "wdv4-convnext-base",
     ]
-    IMAGE_SIZE = 448
     display_name = "AnimeTimm ConvNeXt Base (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm ConvNeXt Base architecture."
     default_hf_repo = "animetimm/convnext_base.dbv4-full"
@@ -608,7 +601,6 @@ class WDV4Eva02LargePatch14448FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-eva02-large-patch14-448",
         "wdv4-eva02-large-patch14-448",
     ]
-    IMAGE_SIZE = 448
     display_name = "AnimeTimm Eva02 Large Patch14 448 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm Eva02 Large Patch14 448 architecture."
     default_hf_repo = "animetimm/eva02_large_patch14_448.dbv4-full"
@@ -624,7 +616,6 @@ class WDV4MobileNetV3Large100FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-mobilenetv3-large-100",
         "wdv4-mobilenetv3-large-100",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm MobileNetV3 Large 100 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 100 architecture."
     default_hf_repo = "animetimm/mobilenetv3_large_100.dbv4-full"
@@ -640,7 +631,6 @@ class WDV4MobileNetV3Large150dFullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-mobilenetv3-large-150d",
         "wdv4-mobilenetv3-large-150d",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm MobileNetV3 Large 150d (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 150d architecture."
     default_hf_repo = "animetimm/mobilenetv3_large_150d.dbv4-full"
@@ -656,7 +646,6 @@ class WDV4MobileNetV4ConvAaLargeFullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-mobilenetv4-conv-aa-large",
         "wdv4-mobilenetv4-conv-aa-large",
     ]
-    IMAGE_SIZE = 448
     display_name = "AnimeTimm MobileNetV4 Conv AA Large (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv AA Large architecture."
     default_hf_repo = "animetimm/mobilenetv4_conv_aa_large.dbv4-full"
@@ -672,7 +661,6 @@ class WDV4MobileNetV4ConvSmallFullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-mobilenetv4-conv-small",
         "wdv4-mobilenetv4-conv-small",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm MobileNetV4 Conv Small (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small architecture."
     default_hf_repo = "animetimm/mobilenetv4_conv_small.dbv4-full"
@@ -688,7 +676,6 @@ class WDV4MobileNetV4ConvSmall050FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-mobilenetv4-conv-small-050",
         "wdv4-mobilenetv4-conv-small-050",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm MobileNetV4 Conv Small 050 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small 050 architecture."
     default_hf_repo = "animetimm/mobilenetv4_conv_small_050.dbv4-full"
@@ -704,7 +691,6 @@ class WDV4ResNet101FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-resnet101",
         "wdv4-resnet101",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm ResNet101 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm ResNet101 architecture."
     default_hf_repo = "animetimm/resnet101.dbv4-full"
@@ -720,7 +706,6 @@ class WDV4ResNet152FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-resnet152",
         "wdv4-resnet152",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm ResNet152 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm ResNet152 architecture."
     default_hf_repo = "animetimm/resnet152.dbv4-full"
@@ -736,7 +721,6 @@ class WDV4ResNet18FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-resnet18",
         "wdv4-resnet18",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm ResNet18 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm ResNet18 architecture."
     default_hf_repo = "animetimm/resnet18.dbv4-full"
@@ -752,7 +736,6 @@ class WDV4ResNet34FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-resnet34",
         "wdv4-resnet34",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm ResNet34 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm ResNet34 architecture."
     default_hf_repo = "animetimm/resnet34.dbv4-full"
@@ -768,7 +751,6 @@ class WDV4ResNet50FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-resnet50",
         "wdv4-resnet50",
     ]
-    IMAGE_SIZE = 384
     display_name = "AnimeTimm ResNet50 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm ResNet50 architecture."
     default_hf_repo = "animetimm/resnet50.dbv4-full"
@@ -784,7 +766,6 @@ class WDV4SwinV2BaseWindow8256FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-swinv2-base-window8-256",
         "wdv4-swinv2-base-window8-256",
     ]
-    IMAGE_SIZE = 448
     display_name = "AnimeTimm SwinV2 Base Window8 256 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm SwinV2 Base Window8 256 architecture."
     default_hf_repo = "animetimm/swinv2_base_window8_256.dbv4-full"
@@ -800,7 +781,6 @@ class WDV4SwinV2BaseWindow8256Dbv4aFullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-swinv2-base-window8-256-dbv4a",
         "wdv4-swinv2-base-window8-256-dbv4a",
     ]
-    IMAGE_SIZE = 448
     display_name = "AnimeTimm SwinV2 Base Window8 256 (dbv4a-full)"
     description = "Danbooru v4a-full tagger using the AnimeTimm SwinV2 Base Window8 256 architecture."
     default_hf_repo = "animetimm/swinv2_base_window8_256.dbv4a-full"
@@ -816,7 +796,6 @@ class WDV4VitBasePatch16224FullPlugin(WDV4AnimeTimmBasePlugin):
         "animetimm-vit-base-patch16-224",
         "wdv4-vit-base-patch16-224",
     ]
-    IMAGE_SIZE = 448
     display_name = "AnimeTimm ViT Base Patch16 224 (dbv4-full)"
     description = "Danbooru v4-full tagger using the AnimeTimm ViT Base Patch16 224 architecture."
     default_hf_repo = "animetimm/vit_base_patch16_224.dbv4-full"
