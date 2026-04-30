@@ -41,6 +41,10 @@ class _MismatchedWeightsBackendPlugin(_BaseTestPlugin):
     pass
 
 
+class _DuplicateNameWithKeyPlugin(_BaseTestPlugin):
+    pass
+
+
 def test_validate_plugin_declaration_warns_when_supported_backend_has_no_weights() -> None:
     _MissingWeightsPlugin.model_id = "missing-weights"
     _MissingWeightsPlugin.supported_backends = [Backend.PYTORCH]
@@ -68,3 +72,30 @@ def test_validate_plugin_declaration_warns_when_weights_backend_not_supported() 
 
     assert warnings
     assert any("does not include it in supported_backends" in message for message in warnings)
+
+
+def test_validate_plugin_declaration_allows_duplicate_names_with_unique_keys() -> None:
+    _DuplicateNameWithKeyPlugin.model_id = "duplicate-keys-ok"
+    _DuplicateNameWithKeyPlugin.supported_backends = [Backend.PYTORCH]
+    _DuplicateNameWithKeyPlugin.required_files = [
+        FileSpec(
+            name="model.safetensors",
+            key="mlp_weights",
+            role=FileRole.WEIGHTS,
+            required=True,
+            backends=[Backend.PYTORCH],
+            repo_id="repo/a",
+        ),
+        FileSpec(
+            name="model.safetensors",
+            key="clip_weights",
+            role=FileRole.WEIGHTS,
+            required=True,
+            backends=[Backend.PYTORCH],
+            repo_id="repo/b",
+        ),
+    ]
+
+    warnings = validate_plugin_declaration(_DuplicateNameWithKeyPlugin)
+
+    assert not warnings

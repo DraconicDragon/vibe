@@ -12,6 +12,7 @@ from vibe.loader import (
     resolve_from_hf_repo,
     resolve_from_local_folder,
     resolve_from_source_string,
+    resolve_from_sources,
 )
 
 
@@ -256,6 +257,46 @@ def test_source_string_auto_local_dir_backfills_missing_required_from_fallback_h
 
     assert file_map["selected_tags.csv"] == tags
     assert file_map["model.safetensors"] == local_materialized
+
+
+def test_resolve_from_sources_uses_repo_specific_source_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    specs = [
+        FileSpec("model.safetensors", role=FileRole.WEIGHTS, backends=[Backend.PYTORCH], repo_id="repo/a"),
+        FileSpec("config.json", role=FileRole.CONFIG, repo_id="repo/b"),
+    ]
+
+    captured: list[tuple[str, list[str]]] = []
+
+    def _fake_resolve_from_source_string(
+        source: str,
+        file_specs: list[FileSpec],
+        backend: Backend,
+        *,
+        revision: str | None = None,
+        cache_dir: str | None = None,
+        allow_download: bool | None = None,
+        file_name_map: dict[str, str] | None = None,
+        fallback_hf_repo_id: str | None = None,
+    ) -> FileMap:
+        del backend, revision, cache_dir, allow_download, file_name_map, fallback_hf_repo_id
+        captured.append((source, [spec.name for spec in file_specs]))
+        return FileMap({})
+
+    monkeypatch.setattr("vibe.loader.resolve_from_source_string", _fake_resolve_from_source_string)
+
+    resolve_from_sources(
+        "hf:repo/default",
+        specs,
+        Backend.PYTORCH,
+        source_map={
+            "repo/a": "local:/path/a",
+            "repo/b": "hf:repo/other",
+        },
+        allow_download=False,
+    )
+
+    assert ("local:/path/a", ["model.safetensors"]) in captured
+    assert ("hf:repo/other", ["config.json"]) in captured
 
 
 def test_source_string_auto_local_dir_error_is_single_path_for_missing_required(
