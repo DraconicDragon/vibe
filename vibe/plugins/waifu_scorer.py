@@ -121,14 +121,11 @@ class WaifuScorerBasePlugin(ModelPlugin):
         if self._clip_preprocess is None:
             raise RuntimeError("Waifu scorer preprocess is unavailable until the plugin is loaded.")
 
-        if hasattr(self._clip_preprocess, "__call__"):
-            batch = self._clip_preprocess(images=image, return_tensors="pt")
-            try:
-                return batch["pixel_values"]
-            except Exception:
-                pass
-
-        raise RuntimeError("Waifu scorer preprocess could not prepare image tensors.")
+        try:
+            batch = self._clip_preprocess(image, return_tensors="pt")
+            return batch["pixel_values"]
+        except Exception as exc:
+            raise RuntimeError("Waifu scorer preprocess could not prepare image tensors.") from exc
 
     def postprocess(self, raw_output: Any) -> ScoreResult:
         scores = np.asarray(raw_output, dtype=np.float32).reshape(-1)
@@ -168,7 +165,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
 
         processor = CLIPImageProcessor.from_pretrained(str(clip_dir), local_files_only=True)
         clip_model = CLIPModel.from_pretrained(str(clip_dir), local_files_only=True)
-        clip_model = clip_model.to(device=device)
+        clip_model = clip_model.to(device=device)  # ty:ignore[missing-argument]
         clip_model.eval()
         clip_model.requires_grad_(False)
 
