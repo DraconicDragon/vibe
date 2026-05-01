@@ -13,7 +13,7 @@ plugins don't call the model directly.
 
 from __future__ import annotations
 
-import abc
+from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -108,7 +108,7 @@ class ModelPluginInfo:
 # region ModelPlugin API
 
 
-class ModelPlugin(abc.ABC):
+class ModelPlugin(ABC):
     """
     Abstract base class for all vibe model plugins.
 
@@ -186,7 +186,7 @@ class ModelPlugin(abc.ABC):
 
     # --- Implement these in every concrete plugin ---
 
-    @abc.abstractmethod
+    @abstractmethod
     def preprocess(self, image: Any) -> Any:
         """
         Transform a PIL Image (or numpy array) into a model-ready tensor/array.
@@ -198,7 +198,7 @@ class ModelPlugin(abc.ABC):
         The inference engine passes this directly to the model.
         """
 
-    @abc.abstractmethod
+    @abstractmethod
     def postprocess(
         self,
         raw_output: Any,
