@@ -19,6 +19,7 @@ def test_score_result_serializes_label() -> None:
         "score_min": 0.0,
         "score_max": 1.0,
         "label": "aesthetic",
+        "normalized_score": None,
     }
 
 
@@ -28,6 +29,8 @@ def test_multi_score_result_uses_mapping_keys_as_labels() -> None:
     assert result.to_dict() == {
         "output_type": "multi_score",
         "scores": {"good": 0.7, "bad": 0.1},
+        "label_order": [],
         "score_min": 0.0,
         "score_max": 1.0,
+        "normalized_score": None,
     }
