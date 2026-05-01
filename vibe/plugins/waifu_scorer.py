@@ -1,10 +1,6 @@
-# Todo: find out if possible to use timm or open_clip_torch instead of clip library OR
-# find out if clip lib can take external weights instead of downloading by itself
-
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +10,6 @@ from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
 from vibe.results import OutputType, ScoreResult
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class WaifuScorerResult(ScoreResult):
-    """Single-value score result for the Waifu scorer models."""
 
 
 class WaifuScorerBasePlugin(ModelPlugin):
@@ -134,7 +125,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
         else:
             score = float(np.clip(scores[0], self.SCORE_MIN, self.SCORE_MAX))
 
-        return WaifuScorerResult(
+        return ScoreResult(
             score=score,
             score_min=self.SCORE_MIN,
             score_max=self.SCORE_MAX,
