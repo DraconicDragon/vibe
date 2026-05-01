@@ -308,19 +308,13 @@ class TagLevelThresholds(ResultProcessor):
 
 
 class MultiScoreToScore(ResultProcessor):
-    """Convert MultiScoreResult into a single ScoreResult.
-
-    - Computes a weighted mean over labels.
-        - When `use_samples_percentile=False` (default), falls back to simple
-            min/max scaling for normalization using the result's score bounds.
-        - When `use_samples_percentile=True`, requires a resolved auxiliary
-            samples file and uses it to normalize the weighted mean to a percentile.
+    """Convert MultiScoreResult into a ScoreResult by normalizing
+    the scores using NormalizedScore result processor.
 
     Args:
         use_samples_percentile:
-            If True, use the auxiliary samples file for percentile normalization.
-        label:
-            Label for the resulting ScoreResult.
+            If True, use a resolved samples file to convert values into a
+            percentile instead of simple min/max normalization. (ref: dghs aes models)
     """
 
     def __init__(
@@ -329,12 +323,8 @@ class MultiScoreToScore(ResultProcessor):
         use_samples_percentile: bool = False,
         label: str = "score",
     ) -> None:
-        self._use_samples_percentile = use_samples_percentile
         self._label = label
-
-        # cache: samples_path -> (x, y) mark table
-        self._samples_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-        self._warned_paths: set[str] = set()
+        self._normalized_score = NormalizedScore(use_samples_percentile=use_samples_percentile)
 
     def process(
         self,
@@ -347,59 +337,98 @@ class MultiScoreToScore(ResultProcessor):
 
         if not result.scores:
             logger.warning("MultiScoreToScore received empty scores; returning zero score.")
-            return ScoreResult(score=0.0, score_min=0.0, score_max=1.0, label=self._label)
+            return ScoreResult(score=0.0, score_min=0.0, score_max=1.0, label=self._label, normalized_score=0.0)
 
-        # weighted mean
-        labels = result.label_order or list(result.scores.keys())
-        values = result.scores
+        normalized_result = self._normalized_score.process(result, context=context)
+        score = (
+            normalized_result.normalized_score
+            if isinstance(normalized_result, MultiScoreResult) and normalized_result.normalized_score is not None
+            else 0.0
+        )
+        return ScoreResult(
+            score=score,
+            score_min=0.0,
+            score_max=1.0,
+            label=self._label,
+            normalized_score=score,
+        )
 
-        weighted_mean = 0.0
-        for i, label in enumerate(labels):
-            v = values.get(label)
-            if v is None:
-                continue
-            weighted_mean += i * float(v)
 
-        # percentile normalization
-        percentile: float | None = None
+class NormalizedScore(ResultProcessor):
+    """Attach a normalized score or percentile to ScoreResult / MultiScoreResult.
 
+    Args:
+        use_samples_percentile:
+            If True, use a resolved samples file to convert values into a
+            percentile instead of simple min/max normalization. (ref: dghs aes models)
+    """
+
+    def __init__(self, *, use_samples_percentile: bool = False) -> None:
+        self._use_samples_percentile = use_samples_percentile
+        self._samples_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._warned_paths: set[str] = set()
+
+    def process(
+        self,
+        result: ModelResult,
+        *,
+        context: ResultProcessorContext,
+    ) -> ModelResult:
+        if isinstance(result, ScoreResult):
+            result.normalized_score = self._normalize_scalar(result.score, result.score_min, result.score_max)
+            return result
+        if not isinstance(result, MultiScoreResult):
+            return result
+
+        normalized = self._normalize_multiscore(result, context=context)
+        result.normalized_score = normalized
+        return result
+
+    def _normalize_scalar(self, score: float, score_min: float, score_max: float) -> float:
+        if score_max <= score_min:
+            return 0.0
+        return float(np.clip((score - score_min) / (score_max - score_min), 0.0, 1.0))
+
+    def _normalize_multiscore(self, result: MultiScoreResult, *, context: ResultProcessorContext) -> float:
+        if not result.scores:
+            return 0.0
+
+        weighted_mean = self._weighted_mean(result)
         samples_path = self._resolve_samples_path(context.file_map)
 
         if self._use_samples_percentile:
             if samples_path is None:
                 raise FileNotFoundError(
-                    "MultiScoreToScore: use_samples_percentile=True but no samples file was resolved."
+                    "NormalizedScore: use_samples_percentile=True but no samples file was resolved."
                 )
             x, y = self._get_samples_table(samples_path)
-            percentile = self._interp_percentile(weighted_mean, x, y)
+            return self._interp_percentile(weighted_mean, x, y)
 
-        else:
-            if samples_path is not None:
-                key = str(samples_path)
-                if key not in self._warned_paths:
-                    logger.warning(
-                        f"Samples file '{samples_path}' detected but not used. "
-                        f"Enable use_samples_percentile=True to apply percentile normalization."
-                    )
-                    self._warned_paths.add(key)
+        if samples_path is not None:
+            key = str(samples_path)
+            if key not in self._warned_paths:
+                logger.warning(
+                    f"Samples file '{samples_path}' detected but not used. "
+                    f"Enable use_samples_percentile=True to apply percentile normalization."
+                )
+                self._warned_paths.add(key)
 
-            min_v = 0.0
-            max_v = float(max(len(labels) - 1, 1))
+        labels = result.label_order or list(result.scores.keys())
+        max_v = float(max(len(labels) - 1, 1))
+        if max_v <= 0.0:
+            return 0.0
+        min_v = 0.0
+        return float(np.clip((weighted_mean - min_v) / (max_v - min_v), 0.0, 1.0))
 
-            if max_v > min_v:
-                # at this point, without samples file, percentile here just means normalized score
-                percentile = (weighted_mean - min_v) / (max_v - min_v)
-            else:
-                percentile = 0.0
-
-        percentile = float(np.clip(percentile, 0.0, 1.0))
-
-        return ScoreResult(
-            score=percentile,
-            score_min=0.0,
-            score_max=1.0,
-            label=self._label,
-        )
+    def _weighted_mean(self, result: MultiScoreResult) -> float:
+        labels = result.label_order or list(result.scores.keys())
+        weighted_mean = 0.0
+        for i, label in enumerate(labels):
+            value = result.scores.get(label)
+            if value is None:
+                continue
+            weighted_mean += i * float(value)
+        return weighted_mean
 
     def _get_samples_table(self, path: Path) -> tuple[np.ndarray, np.ndarray]:
         key = str(path)
