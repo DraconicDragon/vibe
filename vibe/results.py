@@ -106,16 +106,18 @@ class ScoreResult:
     Result from a single-value scoring model (e.g. aesthetic scorer).
 
     Attributes:
-        score:      The predicted score.
-        score_min:  The minimum of the model's output range (informational).
-        score_max:  The maximum of the model's output range (informational).
-        label:      Human-readable label for what the score means. Default: "score".
+        score:              The predicted score.
+        score_min:          The minimum of the model's output range (informational).
+        score_max:          The maximum of the model's output range (informational).
+        normalized_score:   Optional normalized score in [0, 1] computed by result processors.
+        label:              Human-readable label for what the score means. Default: "score".
     """
 
     output_type: Literal[OutputType.SCORE] = field(default=OutputType.SCORE, init=False)
     score: float
     score_min: float
     score_max: float
+    normalized_score: float | None = None
     label: str = "score"
 
     def to_dict(self) -> dict[str, Any]:
@@ -141,8 +143,8 @@ class MultiScoreResult:
         Optional lower bound of the score range.
     score_max
         Optional upper bound of the score range.
-    metrics
-        Optional extra scalar metrics associated with the result.
+    normalized_score
+        Optional normalized score in [0, 1] computed by result processors.
     """
 
     output_type: Literal[OutputType.MULTI_SCORE] = field(default=OutputType.MULTI_SCORE, init=False)
@@ -150,7 +152,7 @@ class MultiScoreResult:
     label_order: list[str] = field(default_factory=list)
     score_min: float | None = None
     score_max: float | None = None
-    metrics: dict[str, float] = field(default_factory=dict)
+    normalized_score: float | None = None
 
     def __getitem__(self, label: str) -> float:
         return self.scores[label]
