@@ -2,10 +2,6 @@
 
 # todo: specify subfolders and all that
 
-# todo: way of not computing percentile/weighted score
-
-# todo: remove percentile/weighted mean from here and move to a result processor
-
 from __future__ import annotations
 
 import json
@@ -113,21 +109,12 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
 
         score_map = {label: float(values[idx]) for idx, label in enumerate(labels)}
 
-        weighted_score = self._weighted_mean(labels, values)
-        percentile = self._score_to_percentile(weighted_score)
-
-        metrics: dict[str, float] = {}
-        if weighted_score is not None:
-            metrics["weighted_score"] = weighted_score
-        if percentile is not None:
-            metrics["percentile"] = percentile
-
         return MultiScoreResult(
             scores=score_map,
             score_min=self.SCORE_MIN,
             score_max=self.SCORE_MAX,
             label_order=list(labels),
-            metrics=metrics,
+            normalized_score=None,
         )
 
     def _read_meta_json(self, path: Path) -> dict[str, Any]:
@@ -175,32 +162,6 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
                 scores = np.squeeze(scores, axis=0)
             scores = np.ravel(scores)
         return scores.astype(np.float32, copy=False)
-
-    def _weighted_mean(self, labels: list[str], values: np.ndarray) -> float | None:
-        if values.size == 0:
-            return None
-        weights = np.arange(len(labels), dtype=np.float32)
-        return float(np.sum(weights[: values.size] * values))
-
-    def _score_to_percentile(self, weighted_score: float | None) -> float | None:
-        if weighted_score is None or self._mark_table is None:
-            return None
-
-        xs, ys = self._mark_table
-        if xs.size == 0 or ys.size == 0:
-            return None
-        clipped = float(np.clip(weighted_score, xs[0], xs[-1]))
-
-        idx = int(np.searchsorted(xs, clipped, side="right")) - 1
-        idx = np.clip(idx, 0, xs.size - 2)
-
-        x0, x1 = xs[idx], xs[idx + 1]
-        y0, y1 = ys[idx], ys[idx + 1]
-
-        if x1 == x0:
-            return float(np.clip(y0, 0.0, 1.0))
-        ratio = (clipped - x0) / (x1 - x0)
-        return float(np.clip(y0 + ratio * (y1 - y0), 0.0, 1.0))
 
 
 # region Model Variants
