@@ -249,7 +249,8 @@ if nn is not None:
             features = self.clip_model.get_image_features(images).pooler_output
             features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
-            return self.mlp(features).clamp(0, 10) / 10.0
+            # do not divide by 10 here, use NormalizedScore result processor to keep score in 0-1 range
+            return self.mlp(features).clamp(0, 10)
 
 else:  # pragma: no cover - only used when torch is missing entirely
 
