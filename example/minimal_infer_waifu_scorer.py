@@ -24,6 +24,8 @@ with vibe.load(
 ) as session:
     inference_result = session.infer(
         Image.open("example/example.jpg"),
+        result_processors=[vibe.NormalizedScore()],
     )
 
     print(inference_result.items[0].result.score)
+    print("Normalized:", inference_result.items[0].result.normalized_score)
