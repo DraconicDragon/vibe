@@ -13,13 +13,13 @@ logging.basicConfig(
 logging.getLogger("vibe").setLevel(logging.WARNING)
 
 MODEL_SOURCE = "/mnt/T7/Projects/GitHub/vibe/models/anime_aesthetic/swinv2pv3_v0_448_ls0.2_x"
-USE_SCORE_RESULT_PROCESSOR =  True
+USE_SCORE_RESULT_PROCESSOR = True
 
 result_processors = []
 if USE_SCORE_RESULT_PROCESSOR:
-    from vibe.result_processors import MultiScoreToScore
+    from vibe.result_processors import MultiScoreToScore, NormalizedScore
 
-    result_processors.append(MultiScoreToScore(use_samples_percentile=False))
+    result_processors.append(NormalizedScore(use_samples_percentile=True))
 
 with vibe.load(
     "dghs-aes-swinv2pv3-ls0.2-x",
@@ -32,8 +32,9 @@ with vibe.load(
 
     if is_multi_score_result(result):
         print(result.scores)
-        print(result.metrics)
+        print(result.normalized_score)
     elif is_score_result(result):
         print(result.score)
+        print(result.normalized_score)
     else:
         print(result)
