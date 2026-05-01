@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Generic, TypeVar, Union
 
 import numpy as np
 
@@ -42,6 +44,10 @@ KAOMOJIS = {
 }
 
 
+TIn = TypeVar("TIn", bound=ModelResult)
+TOut = TypeVar("TOut", bound=ModelResult)
+
+
 @dataclass
 class ResultProcessorContext:
     file_map: FileMap
@@ -49,24 +55,24 @@ class ResultProcessorContext:
     auto_download: bool
 
 
-class ResultProcessor:
+class ResultProcessor(ABC, Generic[TIn, TOut]):
     """Base class for result processors."""
 
     def on_infer_start(self, *, context: ResultProcessorContext) -> None:
         """Hook called once per infer/infer_batches/infer_async call before processing outputs."""
         del context
 
+    @abstractmethod
     def process(
         self,
-        result: ModelResult,
+        result: TIn,
         *,
         context: ResultProcessorContext,
-    ) -> ModelResult:
-        del context
-        return result
+    ) -> TOut:
+        raise NotImplementedError
 
 
-class CharacterIPMapping(ResultProcessor):
+class CharacterIPMapping(ResultProcessor[TagResult, TagResult]):
     """Attach character -> copyright/IP mappings to tag results."""
 
     def __init__(self, mapping_file: str | Path | None = None) -> None:
@@ -75,10 +81,10 @@ class CharacterIPMapping(ResultProcessor):
 
     def process(
         self,
-        result: ModelResult,
+        result: TagResult,
         *,
         context: ResultProcessorContext,
-    ) -> ModelResult:
+    ) -> TagResult:
         if not isinstance(result, TagResult):
             return result
 
@@ -121,15 +127,15 @@ class CharacterIPMapping(ResultProcessor):
         return Path.cwd()
 
 
-class CleanTags(ResultProcessor):
+class CleanTags(ResultProcessor[TagResult, TagResult]):
     """Normalize underscore-delimited tags while preserving kaomojis."""
 
     def process(
         self,
-        result: ModelResult,
+        result: TagResult,
         *,
         context: ResultProcessorContext,
-    ) -> ModelResult:
+    ) -> TagResult:
         del context
         if not isinstance(result, TagResult):
             return result
@@ -146,7 +152,7 @@ class CleanTags(ResultProcessor):
         return result
 
 
-class TagLevelThresholds(ResultProcessor):
+class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
     """Filter tags using per-tag thresholds from selected_tags.csv.
 
     Use `threshold_offset` for a fixed adjustment, or `threshold_relaxation` for
@@ -179,10 +185,10 @@ class TagLevelThresholds(ResultProcessor):
 
     def process(
         self,
-        result: ModelResult,
+        result: TagResult,
         *,
         context: ResultProcessorContext,
-    ) -> ModelResult:
+    ) -> TagResult:
         if not isinstance(result, TagResult):
             return result
 
@@ -307,7 +313,7 @@ class TagLevelThresholds(ResultProcessor):
         logger.warning(message)
 
 
-class MultiScoreToScore(ResultProcessor):
+class MultiScoreToScore(ResultProcessor[MultiScoreResult, ScoreResult]):
     """Convert MultiScoreResult into a ScoreResult by normalizing
     the scores using NormalizedScore result processor.
 
@@ -328,12 +334,12 @@ class MultiScoreToScore(ResultProcessor):
 
     def process(
         self,
-        result: ModelResult,
+        result: MultiScoreResult,
         *,
         context: ResultProcessorContext,
-    ) -> ModelResult:
+    ) -> ScoreResult:
         if not isinstance(result, MultiScoreResult):
-            return result
+            raise TypeError(f"Expected MultiScoreResult, got {type(result)}")
 
         if not result.scores:
             logger.warning("MultiScoreToScore received empty scores; returning zero score.")
@@ -354,7 +360,7 @@ class MultiScoreToScore(ResultProcessor):
         )
 
 
-class NormalizedScore(ResultProcessor):
+class NormalizedScore(ResultProcessor[Union[ScoreResult, MultiScoreResult], Union[ScoreResult, MultiScoreResult]]):
     """Attach a normalized score or percentile to ScoreResult / MultiScoreResult.
 
     Args:
@@ -370,10 +376,10 @@ class NormalizedScore(ResultProcessor):
 
     def process(
         self,
-        result: ModelResult,
+        result: Union[ScoreResult, MultiScoreResult],
         *,
         context: ResultProcessorContext,
-    ) -> ModelResult:
+    ) -> Union[ScoreResult, MultiScoreResult]:
         if isinstance(result, ScoreResult):
             result.normalized_score = self._normalize_scalar(result.score, result.score_min, result.score_max)
             return result
