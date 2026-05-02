@@ -106,14 +106,16 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
 
         labels = self._labels[:usable_count]
         values = scores[:usable_count]
+        score_values = [float(value) for value in values]
 
-        score_map = {label: float(values[idx]) for idx, label in enumerate(labels)}
+        label_map = {index: label for index, label in enumerate(labels)}
 
         return MultiScoreResult(
-            scores=score_map,
+            scores=score_values,
+            label_map=label_map,
+            label_order=list(labels),
             score_min=self.SCORE_MIN,
             score_max=self.SCORE_MAX,
-            label_order=list(labels),
             normalized_score=None,
         )
 
