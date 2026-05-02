@@ -136,9 +136,11 @@ class MultiScoreResult:
     output_type
         Result type identifier used for dispatch and serialization.
     scores
-        Mapping from label to score.
+        Score values in model output order.
+    label_map
+        Optional mapping from score index to label.
     label_order
-        Optional label ordering that reflects the model's native output order.
+        Optional label ordering for consumers that want a presentation order.
     score_min
         Optional lower bound of the score range.
     score_max
@@ -148,24 +150,94 @@ class MultiScoreResult:
     """
 
     output_type: Literal[OutputType.MULTI_SCORE] = field(default=OutputType.MULTI_SCORE, init=False)
-    scores: dict[str, float] = field(default_factory=dict)
-    label_order: list[str] = field(default_factory=list)
+    scores: dict[int, float] | list[float] = field(default_factory=dict)
+    label_map: dict[int, str] | None = None
+    label_order: list[str] | None = None
     score_min: float | None = None
     score_max: float | None = None
     normalized_score: float | None = None
 
-    def __getitem__(self, label: str) -> float:
-        return self.scores[label]
+    def __post_init__(self) -> None:
+        self.scores = self._normalize_scores(self.scores)
 
-    def get(self, label: str, default: float | None = None) -> float | None:
-        return self.scores.get(label, default)
+        if self.label_map is None:
+            self.label_map = {index: f"score_{index + 1}" for index in range(len(self.scores))}
+        else:
+            self.label_map = {int(index): str(label) for index, label in self.label_map.items()}
+
+        if self.label_order is not None:
+            self.label_order = [str(label) for label in self.label_order]
+
+    def __getitem__(self, key: int | str) -> float:
+        if isinstance(key, str):
+            label_map = self._label_to_index_map()
+            if key not in label_map:
+                raise KeyError(key)
+            return self.as_index_score_dict()[label_map[key]]
+        return self.as_index_score_dict()[key]
+
+    def get(self, key: int | str, default: float | None = None) -> float | None:
+        if isinstance(key, str):
+            label_map = self._label_to_index_map()
+            index = label_map.get(key)
+            if index is None:
+                return default
+            return self.as_index_score_dict().get(index, default)
+        return self.as_index_score_dict().get(key, default)
 
     def items(self):
-        return self.scores.items()
+        return self.as_label_score_dict().items()
+
+    def as_index_score_dict(self) -> dict[int, float]:
+        if isinstance(self.scores, list):
+            return {index: float(score) for index, score in enumerate(self.scores)}
+        return self.scores
+
+    def as_label_score_dict(self) -> dict[str, float]:
+        scores = self.as_index_score_dict()
+        label_map = self.label_map
+        label_order = self.label_order
+        assert label_map is not None
+        label_scores = {label_map[index]: score for index, score in scores.items()}
+        if label_order is None:
+            return label_scores
+
+        ordered_scores: dict[str, float] = {}
+        for label in label_order:
+            if label in label_scores and label not in ordered_scores:
+                ordered_scores[label] = label_scores[label]
+        for label, score in label_scores.items():
+            if label not in ordered_scores:
+                ordered_scores[label] = score
+        return ordered_scores
+
+    def _normalize_scores(self, scores: dict[int, float] | dict[str, float] | list[float]) -> dict[int, float]:
+        if isinstance(scores, list):
+            return {index: float(score) for index, score in enumerate(scores)}
+
+        if scores and not all(isinstance(index, int) for index in scores.keys()):
+            return {index: float(score) for index, score in enumerate(scores.values())}
+
+        normalized: dict[int, float] = {}
+        for index, score in sorted(scores.items(), key=lambda item: item[0]):
+            normalized[int(index)] = float(score)
+        return normalized
+
+    def _label_to_index_map(self) -> dict[str, int]:
+        label_map = self.label_map
+        assert label_map is not None
+        return {label: index for index, label in label_map.items()}
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["output_type"] = self.output_type.value
+        data: dict[str, Any] = {
+            "output_type": self.output_type.value,
+            "scores": self.scores,
+            "label_map": self.label_map,
+            "label_order": self.label_order,
+            "score_min": self.score_min,
+            "score_max": self.score_max,
+            "normalized_score": self.normalized_score,
+        }
         return data
 
 

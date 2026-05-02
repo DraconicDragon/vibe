@@ -419,21 +419,26 @@ class NormalizedScore(ResultProcessor[Union[ScoreResult, MultiScoreResult], Unio
                 )
                 self._warned_paths.add(key)
 
-        labels = result.label_order or list(result.scores.keys())
-        max_v = float(max(len(labels) - 1, 1))
+        max_v = float(max(len(result.scores) - 1, 1))
         if max_v <= 0.0:
             return 0.0
         min_v = 0.0
         return float(np.clip((weighted_mean - min_v) / (max_v - min_v), 0.0, 1.0))
 
     def _weighted_mean(self, result: MultiScoreResult) -> float:
-        labels = result.label_order or list(result.scores.keys())
+        scores = result.as_index_score_dict()
         weighted_mean = 0.0
-        for i, label in enumerate(labels):
-            value = result.scores.get(label)
-            if value is None:
-                continue
-            weighted_mean += i * float(value)
+
+        if result.label_order is not None and result.label_map is not None:
+            label_scores = result.as_label_score_dict()
+            ordered_values = [label_scores[label] for label in result.label_order if label in label_scores]
+            total = len(ordered_values)
+            for index, value in enumerate(ordered_values):
+                weighted_mean += (total - 1 - index) * float(value)
+            return weighted_mean
+
+        for index, value in enumerate(scores.values()):
+            weighted_mean += index * float(value)
         return weighted_mean
 
     def _get_samples_table(self, path: Path) -> tuple[np.ndarray, np.ndarray]:
