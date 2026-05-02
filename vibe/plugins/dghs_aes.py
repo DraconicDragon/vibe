@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from vibe import MultiScoreToScore, NormalizedScore
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
 from vibe.results import MultiScoreResult, OutputType
 
@@ -28,7 +29,7 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
 
     output_type = OutputType.MULTI_SCORE
     supported_backends = [Backend.PYTORCH, Backend.ONNX]
-    supported_processors = []
+    supported_processors = [NormalizedScore, MultiScoreToScore]
 
     required_files = [
         FileSpec(

@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.result_processors import NormalizedScore
 from vibe.results import OutputType, ScoreResult
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
 
     output_type = OutputType.SCORE
     supported_backends = [Backend.PYTORCH]
-    supported_processors = []
+    supported_processors = [NormalizedScore]
 
     MLP_WEIGHTS_KEY = "mlp_weights"
     CLIP_WEIGHTS_KEY = "clip_weights"
