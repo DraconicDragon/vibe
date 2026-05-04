@@ -22,7 +22,7 @@ def test_normalized_score_attaches_to_score_result() -> None:
 
 
 def test_normalized_score_attaches_to_multi_score_result() -> None:
-    result = MultiScoreResult(scores={"good": 0.2, "bad": 0.8}, label_order=["good", "bad"])
+    result = MultiScoreResult(scores=[0.2, 0.8], label_map={0: "good", 1: "bad"})
 
     processed = NormalizedScore().process(result, context=_context())
 
