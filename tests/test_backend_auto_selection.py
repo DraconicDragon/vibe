@@ -74,7 +74,7 @@ def _local_file_map(tmp_path: Path) -> FileMap:
 
 
 def test_build_session_auto_backend_falls_back_when_primary_files_missing(monkeypatch, tmp_path: Path) -> None:
-    plugin_cls = vibe.model_registry.get("wdv4-convnextv2-huge-dbv4-full")
+    plugin_cls = vibe.model_registry.get("wd-eva02-v3")
 
     monkeypatch.setattr("vibe.backends.runtime.onnx.ONNXBackend", _DummyONNXBackend)
     monkeypatch.setattr("vibe.backends.runtime.pytorch.PyTorchBackend", _DummyPyTorchBackend)
@@ -90,7 +90,7 @@ def test_build_session_auto_backend_falls_back_when_primary_files_missing(monkey
             raise RuntimeError("Required file 'model.onnx' not found")
         return _local_file_map(tmp_path)
 
-    monkeypatch.setattr("vibe.session_factory.resolve_from_source_string", _fake_resolve)
+    monkeypatch.setattr("vibe.session_factory.resolve_from_sources", _fake_resolve)
 
     session = build_session(
         plugin_cls=plugin_cls,
@@ -107,7 +107,7 @@ def test_build_session_auto_backend_falls_back_when_primary_files_missing(monkey
 
 
 def test_build_session_explicit_backend_does_not_fallback_on_missing_files(monkeypatch, tmp_path: Path) -> None:
-    plugin_cls = vibe.model_registry.get("wdv4-convnextv2-huge-dbv4-full")
+    plugin_cls = vibe.model_registry.get("wd-eva02-v3")
 
     monkeypatch.setattr("vibe.backends.runtime.onnx.ONNXBackend", _DummyONNXBackend)
     monkeypatch.setattr("vibe.backends.runtime.pytorch.PyTorchBackend", _DummyPyTorchBackend)
@@ -120,7 +120,7 @@ def test_build_session_explicit_backend_does_not_fallback_on_missing_files(monke
         del source, file_specs, backend, kwargs
         raise RuntimeError("Required file 'model.onnx' not found")
 
-    monkeypatch.setattr("vibe.session_factory.resolve_from_source_string", _fake_resolve)
+    monkeypatch.setattr("vibe.session_factory.resolve_from_sources", _fake_resolve)
 
     with pytest.raises(SessionError, match="model.onnx"):
         build_session(
@@ -135,7 +135,7 @@ def test_build_session_explicit_backend_does_not_fallback_on_missing_files(monke
 
 
 def test_build_session_auto_local_checks_all_backends_before_hf_fallback(monkeypatch, tmp_path: Path) -> None:
-    plugin_cls = vibe.model_registry.get("wdv4-convnextv2-huge-dbv4-full")
+    plugin_cls = vibe.model_registry.get("wd-eva02-v3")
 
     monkeypatch.setattr("vibe.backends.runtime.onnx.ONNXBackend", _DummyONNXBackend)
     monkeypatch.setattr("vibe.backends.runtime.pytorch.PyTorchBackend", _DummyPyTorchBackend)
@@ -168,7 +168,7 @@ def test_build_session_auto_local_checks_all_backends_before_hf_fallback(monkeyp
             return _local_file_map(tmp_path)
         raise RuntimeError("missing files")
 
-    monkeypatch.setattr("vibe.session_factory.resolve_from_source_string", _fake_resolve)
+    monkeypatch.setattr("vibe.session_factory.resolve_from_sources", _fake_resolve)
 
     session = build_session(
         plugin_cls=plugin_cls,
@@ -192,7 +192,7 @@ def test_build_session_auto_local_checks_all_backends_before_hf_fallback(monkeyp
 
 
 def test_build_session_auto_logs_concise_fallback_and_selection(monkeypatch, tmp_path: Path, caplog) -> None:
-    plugin_cls = vibe.model_registry.get("wdv4-convnextv2-huge-dbv4-full")
+    plugin_cls = vibe.model_registry.get("wd-eva02-v3")
 
     monkeypatch.setattr("vibe.backends.runtime.onnx.ONNXBackend", _DummyONNXBackend)
     monkeypatch.setattr("vibe.backends.runtime.pytorch.PyTorchBackend", _DummyPyTorchBackend)
@@ -208,7 +208,7 @@ def test_build_session_auto_logs_concise_fallback_and_selection(monkeypatch, tmp
             raise RuntimeError("Required file 'model.onnx' not found")
         return _local_file_map(tmp_path)
 
-    monkeypatch.setattr("vibe.session_factory.resolve_from_source_string", _fake_resolve)
+    monkeypatch.setattr("vibe.session_factory.resolve_from_sources", _fake_resolve)
 
     caplog.set_level("INFO")
     session = build_session(
