@@ -86,7 +86,11 @@ def list_available_devices() -> list[str]:
     try:
         import onnxruntime as ort
 
-        available = set(str(p) for p in ort.get_available_providers())
+        get_available_providers = getattr(ort, "get_available_providers", None)
+        if not callable(get_available_providers):
+            return candidates
+
+        available = set(str(p) for p in get_available_providers())
         if "ROCMExecutionProvider" in available:
             candidates.append("rocm")
         if "DmlExecutionProvider" in available:
