@@ -137,8 +137,9 @@ class WaifuScorerBasePlugin(ModelPlugin):
             from transformers import CLIPImageProcessor, CLIPModel
         except ImportError as exc:
             raise RuntimeError(
-                "transformers is required to run the waifu scorer models since they are made for CLIP.\n"
-                + "Install it with: pip install transformers"
+                "transformers could not be imported for the waifu scorer model. "
+                "This is usually a dependency mismatch between transformers and huggingface_hub. "
+                "Try upgrading or reinstalling both packages together."
             ) from exc
 
         clip_weights = file_map.get(self.CLIP_WEIGHTS_KEY)
