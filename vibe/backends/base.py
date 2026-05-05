@@ -82,6 +82,7 @@ class ModelPluginInfo:
     model_id: str
     aliases: list[str]
     display_name: str
+    family_name: str
     description: str
     output_type: OutputType
     default_hf_repo: str | None
@@ -136,6 +137,8 @@ class ModelPlugin(ABC):
         Optional result processors this plugin is designed to work with.
     display_name : str
         Human-readable name for GUIs and listings.
+    family_name : str
+        Short group label used for listings and generated docs.
     description : str
         One-line description.
     """
@@ -149,6 +152,7 @@ class ModelPlugin(ABC):
     supported_backends: list[Backend] = [Backend.PYTORCH, Backend.ONNX]
     supported_processors: list[type["ResultProcessor"]] = []
     display_name: str = ""
+    family_name: str = ""
     description: str = ""
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -228,10 +232,12 @@ class ModelPlugin(ABC):
 
     @classmethod
     def describe(cls) -> ModelPluginInfo:
+        family_name = cls.family_name.strip() or cls.display_name.strip() or cls.model_id
         return ModelPluginInfo(
             model_id=cls.model_id,
             aliases=list(cls.aliases),
             display_name=cls.display_name,
+            family_name=family_name,
             description=cls.description,
             output_type=cls.output_type,
             default_hf_repo=cls.default_hf_repo,
