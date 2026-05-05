@@ -29,7 +29,7 @@ with vibe.load(
     source=MODEL_SOURCE,
 ) as session:
     result = session.infer(
-        Image.open("examples/example.jpg"),
+        Image.open("example/example.jpg"),
         result_processors=result_processors,
     ).first()
 
