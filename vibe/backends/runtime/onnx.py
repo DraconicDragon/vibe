@@ -288,6 +288,7 @@ class ONNXBackend:
     def __init__(self) -> None:
         self._session: Any = None
         self._input_name: str = ""
+        self._output_names: list[str] | None = None
         self._providers: list[str] = []
         self._provider_options: list[dict[str, Any]] = []
         self._requested_precision: str = "auto"
@@ -339,7 +340,28 @@ class ONNXBackend:
         outputs = self._session.get_outputs()
         self._input_name = inputs[0].name
         input_meta = inputs[0]
+
+        # Find the most appropriate output tensor if multiple exist
+        self._output_names = None
         output_meta = outputs[0] if outputs else None
+        if outputs:
+            out_names = [o.name for o in outputs]
+            target_name = out_names[0]
+            if len(out_names) > 1:
+                # Prioritize prediction/logits over embeddings
+                for pref in (
+                    "prediction",
+                    "predictions",
+                    "probs",
+                    "probabilities",
+                    #"logits",
+                ):
+                    if pref in out_names:
+                        target_name = pref
+                        break
+            self._output_names = [target_name]
+            output_meta = next((o for o in outputs if o.name == target_name), outputs[0])
+
         available_providers = _available_onnx_providers(ort)
         primary_provider = self._providers[0] if self._providers else "CPUExecutionProvider"
 
@@ -414,7 +436,7 @@ class ONNXBackend:
         # TODO: support selecting a specific output name/index per model to avoid
         # fetching all outputs when only one tensor is needed.
         try:
-            outputs = self._session.run(None, {self._input_name: array})
+            outputs = self._session.run(self._output_names, {self._input_name: array})
         except Exception:
             logger.error(
                 "ONNX inference failed input_name=%s input_shape=%s expected_input_shape=%s",
