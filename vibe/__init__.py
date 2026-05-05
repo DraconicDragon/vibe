@@ -42,6 +42,7 @@ from vibe.hf_downloader import (
     get_auto_download_default,
     set_auto_download_default,
 )
+from vibe.image_loading import ImageChunk, iter_load_images
 from vibe.memory_stats import (
     InferenceMemoryRecord,
     MemorySnapshot,
@@ -370,6 +371,8 @@ __all__ = [
     "is_tag_result",
     "is_score_result",
     "is_multi_score_result",
+    "ImageChunk",
+    "iter_load_images",
     # Processors
     "ResultProcessor",
     "CleanTags",
