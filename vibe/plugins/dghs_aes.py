@@ -11,9 +11,9 @@ from typing import Any
 
 import numpy as np
 
-from vibe import MultiScoreToScore, NormalizedScore
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
 from vibe.results import MultiScoreResult, OutputType
+from vibe.result_processors import MultiScoreToScore, NormalizedScore
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,7 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
     """Shared implementation for DeepGHS anime aesthetic scorers."""
 
     _abstract = True
+    family_name = "DeepGHS Anime Aesthetic Scorers"
 
     IMAGE_SIZE = 448
     SCORE_MIN = 0.0
@@ -176,8 +177,8 @@ class DGHSAesSwinV2xPlugin(DeepGHSAnimeAesPlugin):
         "swinv2pv3_v0_448_ls0.2_x",
         "dghs-aes-swinv2pv3-x",
     ]
-    display_name = "DeepGHS Anime Aesthetic SwinV2 PV3 448 x"
-    description = "Anime aesthetic scorer using DeepGHS SwinV2 PV3 448 (ls0.2 x) model."
+    display_name = "DeepGHS Aesthetic SwinV2 PV3 x"
+    description = "Anime image aesthetic scorer."
     default_hf_repo = "deepghs/anime_aesthetic"
 
 
@@ -187,8 +188,8 @@ class DGHSAesSwinV2Plugin(DeepGHSAnimeAesPlugin):
         "swinv2pv3_v0_448_ls0.2",
         "dghs-aes-swinv2pv3",
     ]
-    display_name = "DeepGHS Anime Aesthetic SwinV2 PV3 448"
-    description = "Anime aesthetic scorer using DeepGHS SwinV2 PV3 448 (ls0.2) model."
+    display_name = "DeepGHS Aesthetic SwinV2 PV3"
+    description = "Anime image aesthetic scorer."
     default_hf_repo = "deepghs/anime_aesthetic"
 
 
@@ -199,8 +200,8 @@ class DGHSAesCaformerS36Plugin(DeepGHSAnimeAesPlugin):
         "dghs-aes-caformer-s36",
     ]
     IMAGE_SIZE = 384
-    display_name = "DeepGHS Anime Aesthetic CaFormer S36"
-    description = "Anime aesthetic scorer using DeepGHS CaFormer S36 (ls0.2) model."
+    display_name = "DeepGHS Aesthetic CaFormer S36"
+    description = "Anime image aesthetic scorer."
     default_hf_repo = "deepghs/anime_aesthetic"
 
 

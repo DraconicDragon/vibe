@@ -17,6 +17,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
     """Shared implementation for the Eugeoter waifu scorer models."""
 
     _abstract = True
+    family_name = "Eugeoter Aesthetic Scorers"
 
     SCORE_MIN = 0.0
     SCORE_MAX = 10.0
@@ -265,7 +266,7 @@ class WaifuScorerV3Plugin(WaifuScorerBasePlugin):
     model_id = "waifu-scorer-v3"
     aliases = []
     display_name = "Waifu Scorer v3"
-    description = "Waifu scorer using an open-clip ViT-L/14 image encoder and an MLP head."
+    description = "Anime image aesthetic scorer using CLIP ViT-L/14 image encoder and Waifu Scorer v3 MLP head."
     default_hf_repo = "Eugeoter/waifu-scorer-v3"
 
 
@@ -273,7 +274,7 @@ class WaifuScorerV4Plugin(WaifuScorerBasePlugin):
     model_id = "waifu-scorer-v4-beta"
     aliases = []
     display_name = "Waifu Scorer v4 Beta"
-    description = "Waifu scorer using an open-clip ViT-L/14 image encoder and an MLP head."
+    description = "Anime image aesthetic scorer using CLIP ViT-L/14 image encoder and Waifu Scorer v4-beta MLP head."
     default_hf_repo = "Eugeoter/waifu-scorer-v4-beta"
 
 
