@@ -15,7 +15,7 @@ from vibe.backends.base import Backend
 from vibe.loader import FileMap
 from vibe.result_processors import CharacterIPMapping, CleanTags, ResultProcessor
 from vibe.results import TagResult
-from vibe.session import InferenceCancelled, ModelSession
+from vibe.session import InferenceCancelled, ModelSession, SessionError
 
 # Optional dev-configurable real-world smoke test variables.
 RUN_REAL_WORLD_SMOKE_TEST = os.getenv("VIBE_REAL_WORLD_TEST", "0") == "1"
@@ -332,25 +332,28 @@ def test_infer_sync_can_be_cancelled_during_image_loading(tmp_path: Path) -> Non
         _write_test_image(path, (255, 0, 0))
         paths.append(str(path))
 
-    original_loader = session._load_image_if_path
+    original_loader = vibe.session.load_image_if_path
 
-    def _slow_loader(value: object, *, index: int) -> object:
+    def _slow_loader(value: object, index: int, **kwargs: object) -> object:
         time.sleep(0.03)
-        return original_loader(value, index=index)
+        return original_loader(value, index=index, **kwargs)
 
-    session._load_image_if_path = _slow_loader  # type: ignore[method-assign]
+    vibe.session.load_image_if_path = _slow_loader  # type: ignore[assignment]
+    try:
 
-    def _cancel_while_loading() -> None:
-        while not session.is_inference_running():
-            time.sleep(0.005)
-        time.sleep(0.04)
-        session.cancel_current_inference()
+        def _cancel_while_loading() -> None:
+            while not session.is_inference_running():
+                time.sleep(0.005)
+            time.sleep(0.04)
+            session.cancel_current_inference()
 
-    canceller = threading.Thread(target=_cancel_while_loading, daemon=True)
-    canceller.start()
-    with pytest.raises(InferenceCancelled, match="cancelled"):
-        session.infer(paths, batch_size=2, batch_method="sequential")
-    canceller.join(timeout=0.2)
+        canceller = threading.Thread(target=_cancel_while_loading, daemon=True)
+        canceller.start()
+        with pytest.raises(InferenceCancelled, match="cancelled"):
+            session.infer(paths, batch_size=2, batch_method="sequential")
+        canceller.join(timeout=0.2)
+    finally:
+        vibe.session.load_image_if_path = original_loader  # type: ignore[assignment]
 
     assert len(backend.calls) < len(paths)
     assert session.is_inference_running() is False
@@ -375,7 +378,12 @@ def test_load_image_if_path_preserves_inference_cancelled(tmp_path: Path) -> Non
     session._check_cancelled = _raise_on_second_check  # type: ignore[method-assign]
 
     with pytest.raises(InferenceCancelled, match="cancelled"):
-        session._load_image_if_path(str(img_path), index=0)
+        vibe.session.load_image_if_path(
+            str(img_path),
+            index=0,
+            cancel_check=session._check_cancelled,
+            error_cls=SessionError,
+        )
 
 
 def test_infer_many_sequential_runs_for_all_inputs(tmp_path: Path) -> None:
