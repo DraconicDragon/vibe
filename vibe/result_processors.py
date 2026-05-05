@@ -414,8 +414,8 @@ class NormalizedScore(ResultProcessor[Union[ScoreResult, MultiScoreResult], Unio
             key = str(samples_path)
             if key not in self._warned_paths:
                 logger.warning(
-                    f"Samples file '{samples_path}' detected but not used. "
-                    f"Enable use_samples_percentile=True to apply percentile normalization."
+                    f"Optional samples file '{samples_path}' detected but not used. "
+                    "Set use_samples_percentile=True to apply percentile normalization."
                 )
                 self._warned_paths.add(key)
 
