@@ -14,14 +14,18 @@ from __future__ import annotations
 
 import logging
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterator, Literal
 
 import numpy as np
 
 from vibe.backends.base import Backend, ModelPlugin
+from vibe.image_loading import (
+    iter_loaded_image_chunks,
+    load_image_if_path,
+    normalize_input_format,
+    should_prefetch_image_loading,
+)
 from vibe.loader import FileMap
 from vibe.memory_stats import MemoryTracker
 from vibe.result_processors import ResultProcessor, ResultProcessorContext
@@ -217,7 +221,7 @@ class ModelSession:
 
             before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
             try:
-                values, refs = self._normalize_input_format(images)
+                values, refs = normalize_input_format(images, error_cls=SessionError)
                 if not values:
                     logger.warning("No input images provided for model_id=%s", self.model_id)
                     return
@@ -228,7 +232,7 @@ class ModelSession:
                 path_inputs = sum(1 for value in values if isinstance(value, (str, Path)))
                 loaded_path_inputs = 0
                 method = self._resolve_batch_method(batch_method, batch_size)
-                prefetch_images = self._should_prefetch_image_loading(path_inputs=path_inputs)
+                prefetch_images = should_prefetch_image_loading(path_inputs=path_inputs)
                 if batch_size > 1 and method == "sequential" and batch_method != "sequential":
                     logger.warning(
                         "Batching disabled for model_id=%s backend=%s; using sequential processing",
@@ -251,11 +255,22 @@ class ModelSession:
                     if prefetch_images:
                         logger.debug("Image prefetch enabled model_id=%s", self.model_id)
 
+                def _loader(value: Any | str, index: int) -> Any:
+                    return load_image_if_path(
+                        value,
+                        index=index,
+                        cancel_check=self._check_cancelled,
+                        error_cls=SessionError,
+                        has_pillow_jxl=_has_pillow_jxl,
+                    )
+
                 if method == "sequential":
-                    for start, chunk_images in self._iter_loaded_image_chunks(
+                    for start, chunk_images in iter_loaded_image_chunks(
                         values,
                         chunk_size=1,
                         use_prefetch=prefetch_images,
+                        load_image_fn=_loader,
+                        cancel_check=self._check_cancelled,
                     ):
                         index = start
                         value = values[index]
@@ -271,10 +286,12 @@ class ModelSession:
                         )
                 else:
                     index = 0
-                    for start, chunk_images in self._iter_loaded_image_chunks(
+                    for start, chunk_images in iter_loaded_image_chunks(
                         values,
                         chunk_size=batch_size,
                         use_prefetch=prefetch_images,
+                        load_image_fn=_loader,
+                        cancel_check=self._check_cancelled,
                     ):
                         chunk_values = values[start : start + len(chunk_images)]
                         loaded_path_inputs += sum(1 for value in chunk_values if isinstance(value, (str, Path)))
@@ -419,163 +436,6 @@ class ModelSession:
         if record.index <= min_call_index:
             return None
         return record.to_dict()
-
-    def _normalize_input_format(
-        self,
-        images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-    ) -> tuple[list[Any | str], list[Any]]:
-        entries = images if isinstance(images, list) else [images]
-        if not entries:
-            return [], []
-
-        tuple_count = sum(1 for item in entries if isinstance(item, tuple))
-        if 0 < tuple_count < len(entries):
-            raise SessionError(
-                "Mixed input formats are not supported. "
-                f"Received {tuple_count} tuple item(s) and {len(entries) - tuple_count} bare item(s). "
-                "Use either all bare images/paths or all (image_or_path, ref) tuples."
-            )
-
-        values: list[Any | str] = []
-        refs: list[Any] = []
-        if tuple_count == len(entries):
-            for i, item in enumerate(entries):
-                if not isinstance(item, tuple) or len(item) != 2:
-                    raise SessionError(f"Tuple input at index {i} must be exactly (image_or_path, ref).")
-                value, ref = item
-                values.append(value)
-                refs.append(ref)
-            duplicates = self._find_duplicates(refs)
-            if duplicates:
-                duplicate_str = ", ".join(repr(value) for value in duplicates)
-                raise SessionError(f"Explicit refs must be unique. Duplicate refs: {duplicate_str}")
-        else:
-            values = list(entries)
-            refs = list(range(len(values)))
-
-        return values, refs
-
-    def _load_images(self, values: list[Any | str], *, start_index: int = 0) -> list[Any]:
-        normalized_images: list[Any] = []
-        for offset, value in enumerate(values):
-            self._check_cancelled()
-            normalized_images.append(self._load_image_if_path(value, index=start_index + offset))
-        self._check_cancelled()
-        logger.debug("Prepared %d input image(s) for model_id=%s", len(normalized_images), self.model_id)
-        return normalized_images
-
-    def _should_prefetch_image_loading(self, *, path_inputs: int) -> bool:
-        # Prefetch only helps when there are multiple path-based inputs.
-        return path_inputs > 1
-
-    def _await_loaded_chunk(self, future: Future[list[Any]]) -> list[Any]:
-        while True:
-            self._check_cancelled()
-            try:
-                return future.result(timeout=0.05)
-            except FutureTimeoutError:
-                continue
-
-    def _iter_loaded_image_chunks(
-        self,
-        values: list[Any | str],
-        *,
-        chunk_size: int,
-        use_prefetch: bool,
-    ) -> Iterator[tuple[int, list[Any]]]:
-        if not values:
-            return
-
-        if not use_prefetch:
-            for start in range(0, len(values), chunk_size):
-                self._check_cancelled()
-                chunk_values = values[start : start + chunk_size]
-                yield start, self._load_images(chunk_values, start_index=start)
-            return
-
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vibe-image-loader")
-        fast_shutdown = False
-        try:
-            start = 0
-            future: Future[list[Any]] = executor.submit(
-                self._load_images,
-                values[start : start + chunk_size],
-                start_index=start,
-            )
-
-            while True:
-                loaded_images = self._await_loaded_chunk(future)
-                next_start = start + chunk_size
-                next_future: Future[list[Any]] | None = None
-                if next_start < len(values):
-                    next_future = executor.submit(
-                        self._load_images,
-                        values[next_start : next_start + chunk_size],
-                        start_index=next_start,
-                    )
-
-                yield start, loaded_images
-
-                if next_future is None:
-                    break
-                start = next_start
-                future = next_future
-        except InferenceCancelled:
-            fast_shutdown = True
-            raise
-        finally:
-            executor.shutdown(wait=not fast_shutdown, cancel_futures=True)
-
-    def _find_duplicates(self, values: list[Any]) -> list[Any]:
-        seen_hashable: set[Any] = set()
-        seen_unhashable: list[Any] = []
-        duplicates: list[Any] = []
-        duplicates_set: set[Any] = set()  # fast membership check for hashable dupes
-
-        for value in values:
-            try:
-                is_seen = value in seen_hashable
-            except TypeError:
-                # Unhashable, fall back to linear scan
-                if any(value == existing for existing in seen_unhashable):
-                    if not any(value == existing for existing in duplicates):
-                        duplicates.append(value)
-                else:
-                    seen_unhashable.append(value)
-                continue
-
-            if is_seen:
-                if value not in duplicates_set:
-                    duplicates.append(value)
-                    duplicates_set.add(value)
-            else:
-                seen_hashable.add(value)
-
-        return duplicates
-
-    def _load_image_if_path(self, value: Any | str, *, index: int) -> Any:
-        self._check_cancelled()
-        if not isinstance(value, (str, Path)):
-            return value
-
-        from PIL import Image
-
-        path = Path(value)
-        logger.debug("Loading image index=%s path=%s", index, path)
-        try:
-            with Image.open(path) as img:
-                loaded = img.copy()
-            self._check_cancelled()
-            logger.debug("Loaded image index=%s path=%s", index, path)
-            return loaded
-        except InferenceCancelled:
-            raise
-        except Exception as exc:
-            suffix = Path(path).suffix.lower()
-            hint = ""
-            if suffix == ".jxl" and not _has_pillow_jxl:
-                hint = " Install 'pillow-jxl-plugin' to enable JPEG XL support: pip install pillow-jxl-plugin"
-            raise SessionError(f"Failed to load image at index {index} from path '{path}': {exc}.{hint}") from exc
 
     def _infer_single(
         self,
