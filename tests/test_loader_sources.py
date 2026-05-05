@@ -46,6 +46,118 @@ def test_resolve_local_folder_reports_missing_required_file(tmp_path: Path) -> N
     assert "Files present" in message
 
 
+def test_resolve_local_folder_accepts_hf_style_subdir_for_required_files(tmp_path: Path) -> None:
+    folder = tmp_path / "anime_aesthetic"
+    subdir = folder / "swinv2pv3_v0_448_ls0.2"
+    subdir.mkdir(parents=True)
+
+    model = subdir / "model.onnx"
+    meta = subdir / "meta.json"
+    samples = subdir / "samples.npz"
+    model.write_text("model", encoding="utf-8")
+    meta.write_text('{"labels": ["a"]}', encoding="utf-8")
+    samples.write_bytes(b"npz")
+
+
+    specs = [
+        FileSpec(
+            name="model.onnx",
+            role=FileRole.WEIGHTS,
+            required=True,
+            backends=[Backend.ONNX],
+            hf_subdir="swinv2pv3_v0_448_ls0.2",
+        ),
+        FileSpec(
+            name="meta.json",
+            role=FileRole.CONFIG,
+            required=True,
+            hf_subdir="swinv2pv3_v0_448_ls0.2",
+        ),
+        FileSpec(
+            name="samples.npz",
+            role=FileRole.MAPPING,
+            required=True,
+            hf_subdir="swinv2pv3_v0_448_ls0.2",
+        ),
+    ]
+
+    file_map = resolve_from_local_folder(folder, specs, Backend.ONNX)
+
+    assert file_map["model.onnx"] == model
+    assert file_map["meta.json"] == meta
+    assert file_map["samples.npz"] == samples
+
+
+def test_resolve_local_folder_prefers_root_over_hf_style_subdir(tmp_path: Path) -> None:
+    folder = tmp_path / "anime_aesthetic"
+    subdir = folder / "swinv2pv3_v0_448_ls0.2"
+    subdir.mkdir(parents=True)
+
+    root_model = folder / "model.onnx"
+    subdir_model = subdir / "model.onnx"
+    root_model.write_text("root", encoding="utf-8")
+    subdir_model.write_text("subdir", encoding="utf-8")
+
+    specs = [
+        FileSpec(
+            name="model.onnx",
+            role=FileRole.WEIGHTS,
+            required=True,
+            backends=[Backend.ONNX],
+            hf_subdir="swinv2pv3_v0_448_ls0.2",
+        ),
+    ]
+
+    file_map = resolve_from_local_folder(folder, specs, Backend.ONNX)
+
+    assert file_map["model.onnx"] == root_model
+
+
+def test_resolve_local_folder_reports_subdir_when_root_missing(tmp_path: Path) -> None:
+    folder = tmp_path / "anime_aesthetic"
+    subdir = folder / "swinv2pv3_v0_448_ls0.2"
+    subdir.mkdir(parents=True)
+
+    subdir_model = subdir / "model.onnx"
+    subdir_model.write_text("subdir", encoding="utf-8")
+
+    specs = [
+        FileSpec(
+            name="model.onnx",
+            role=FileRole.WEIGHTS,
+            required=True,
+            backends=[Backend.ONNX],
+            hf_subdir="swinv2pv3_v0_448_ls0.2",
+        ),
+    ]
+
+    file_map = resolve_from_local_folder(folder, specs, Backend.ONNX)
+
+    assert file_map["model.onnx"] == subdir_model
+
+
+def test_resolve_local_folder_missing_required_mentions_both_candidates(tmp_path: Path) -> None:
+    folder = tmp_path / "anime_aesthetic"
+    folder.mkdir()
+
+    specs = [
+        FileSpec(
+            name="model.onnx",
+            role=FileRole.WEIGHTS,
+            required=True,
+            backends=[Backend.ONNX],
+            hf_subdir="swinv2pv3_v0_448_ls0.2",
+        ),
+    ]
+
+    with pytest.raises(LoaderError) as excinfo:
+        resolve_from_local_folder(folder, specs, Backend.ONNX)
+
+    message = str(excinfo.value)
+    assert "model.onnx" in message
+    assert "tried 'model.onnx' and HF-style subfolder 'swinv2pv3_v0_448_ls0.2/model.onnx'" in message
+
+
 def test_resolve_hf_repo_skips_missing_optional(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     required = tmp_path / "model.onnx"
     required.write_text("x", encoding="utf-8")
