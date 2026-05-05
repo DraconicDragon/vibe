@@ -12,10 +12,37 @@ from typing import Any
 import numpy as np
 
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
-from vibe.results import MultiScoreResult, OutputType
 from vibe.result_processors import MultiScoreToScore, NormalizedScore
+from vibe.results import MultiScoreResult, OutputType
 
 logger = logging.getLogger(__name__)
+
+
+def _build_required_files(hf_subdir: str | None) -> list[FileSpec]:
+    return [
+        FileSpec(
+            name="model.ckpt",
+            role=FileRole.WEIGHTS,
+            backends=[Backend.PYTORCH],
+            hf_subdir=hf_subdir,
+        ),
+        FileSpec(
+            name="model.onnx",
+            role=FileRole.WEIGHTS,
+            backends=[Backend.ONNX],
+            hf_subdir=hf_subdir,
+        ),
+        FileSpec(
+            name="meta.json",
+            role=FileRole.CONFIG,
+            hf_subdir=hf_subdir,
+        ),
+        FileSpec(
+            name="samples.npz",
+            role=FileRole.MAPPING,
+            hf_subdir=hf_subdir,
+        ),
+    ]
 
 
 class DeepGHSAnimeAesPlugin(ModelPlugin):
@@ -32,26 +59,7 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
     supported_backends = [Backend.PYTORCH, Backend.ONNX]
     supported_processors = [NormalizedScore, MultiScoreToScore]
 
-    required_files = [
-        FileSpec(
-            name="model.ckpt",
-            role=FileRole.WEIGHTS,
-            backends=[Backend.PYTORCH],
-        ),
-        FileSpec(
-            name="model.onnx",
-            role=FileRole.WEIGHTS,
-            backends=[Backend.ONNX],
-        ),
-        FileSpec(
-            name="meta.json",
-            role=FileRole.CONFIG,
-        ),
-        FileSpec(
-            name="samples.npz",
-            role=FileRole.MAPPING,
-        ),
-    ]
+    required_files = _build_required_files(None)
 
     _labels: list[str]
     _mark_table: tuple[np.ndarray, np.ndarray] | None = None
@@ -180,6 +188,8 @@ class DGHSAesSwinV2xPlugin(DeepGHSAnimeAesPlugin):
     display_name = "DeepGHS Aesthetic SwinV2 PV3 x"
     description = "Anime image aesthetic scorer."
     default_hf_repo = "deepghs/anime_aesthetic"
+    hf_subdir = "swinv2pv3_v0_448_ls0.2_x"
+    required_files = _build_required_files(hf_subdir)
 
 
 class DGHSAesSwinV2Plugin(DeepGHSAnimeAesPlugin):
@@ -191,6 +201,8 @@ class DGHSAesSwinV2Plugin(DeepGHSAnimeAesPlugin):
     display_name = "DeepGHS Aesthetic SwinV2 PV3"
     description = "Anime image aesthetic scorer."
     default_hf_repo = "deepghs/anime_aesthetic"
+    hf_subdir = "swinv2pv3_v0_448_ls0.2"
+    required_files = _build_required_files(hf_subdir)
 
 
 class DGHSAesCaformerS36Plugin(DeepGHSAnimeAesPlugin):
@@ -203,6 +215,8 @@ class DGHSAesCaformerS36Plugin(DeepGHSAnimeAesPlugin):
     display_name = "DeepGHS Aesthetic CaFormer S36"
     description = "Anime image aesthetic scorer."
     default_hf_repo = "deepghs/anime_aesthetic"
+    hf_subdir = "caformer_s36_v0_ls0.2"
+    required_files = _build_required_files(hf_subdir)
 
 
 # endregion Model Variants
