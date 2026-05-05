@@ -78,6 +78,32 @@ def _spec_key(spec: FileSpec) -> str:
     return spec.key or spec.name
 
 
+def _mapped_name_for_hf(spec: FileSpec, normalized_file_name_map: Mapping[str, str]) -> str:
+    spec_key = _spec_key(spec)
+    if spec.hf_subdir:
+        base_name = f"{spec.hf_subdir.rstrip('/')}/{spec.name}"
+    else:
+        base_name = spec.name
+    return normalized_file_name_map.get(spec_key, base_name)
+
+
+def _mapped_name_for_local(spec: FileSpec, normalized_file_name_map: Mapping[str, str]) -> str:
+    spec_key = _spec_key(spec)
+    return normalized_file_name_map.get(spec_key, spec.name)
+
+
+def _local_candidate_names(spec: FileSpec, normalized_file_name_map: Mapping[str, str]) -> list[str]:
+    root_name = _mapped_name_for_local(spec, normalized_file_name_map)
+    candidates = [root_name]
+
+    if spec.hf_subdir:
+        hf_name = _mapped_name_for_hf(spec, normalized_file_name_map)
+        if hf_name not in candidates:
+            candidates.append(hf_name)
+
+    return candidates
+
+
 def resolve_from_hf_repo(
     repo_id: str,
     file_specs: list[FileSpec],
@@ -117,7 +143,7 @@ def resolve_from_hf_repo(
 
     for spec in needed:
         spec_key = _spec_key(spec)
-        mapped_name = normalized_file_name_map.get(spec_key, spec.name)
+        mapped_name = _mapped_name_for_hf(spec, normalized_file_name_map)
         spec_repo_id = spec.repo_id or repo_id
         try:
             logger.debug(
@@ -198,9 +224,11 @@ def resolve_from_local_folder(
 
     for spec in needed:
         spec_key = _spec_key(spec)
-        mapped_name = normalized_file_name_map.get(spec_key, spec.name)
-        candidate = folder / mapped_name
-        if candidate.is_file():
+        candidate_names = _local_candidate_names(spec, normalized_file_name_map)
+        matches = [folder / name for name in candidate_names if (folder / name).is_file()]
+        if matches:
+            candidate = matches[0]
+            mapped_name = candidate.relative_to(folder).as_posix()
             paths[spec_key] = candidate
             logger.debug(
                 "Resolved local file spec='%s' mapped='%s' -> %s",
@@ -212,15 +240,17 @@ def resolve_from_local_folder(
             # List what IS in the folder to help the user debug
             present = [f.name for f in folder.iterdir() if f.is_file()]
             map_hint = ""
-            if mapped_name != spec.name:
-                map_hint = f" (mapped from '{spec.name}' to '{mapped_name}')"
+            if len(candidate_names) > 1:
+                map_hint = f" (tried '{candidate_names[0]}' and HF-style subfolder '{candidate_names[1]}')"
+            elif candidate_names[0] != spec.name:
+                map_hint = f" (mapped from '{spec.name}' to '{candidate_names[0]}')"
             raise LoaderError(
-                f"Required file '{mapped_name}' not found in {folder}{map_hint}.\n"
+                f"Required file '{candidate_names[0]}' not found in {folder}{map_hint}.\n"
                 f"Files present: {present}\n"
                 f"Rename your file to match exactly, or check the plugin docs."
             )
         else:
-            optional_missing[spec_key] = f"'{mapped_name}' not found in local folder '{folder}'"
+            optional_missing[spec_key] = f"'{candidate_names[0]}' not found in local folder '{folder}'"
 
     logger.debug("Resolved %d file(s) from local folder '%s'", len(paths), folder)
     return FileMap(paths, optional_missing_reasons=optional_missing)
@@ -472,16 +502,16 @@ def _resolve_local_then_hf_missing(
 
     for spec in needed:
         spec_key = _spec_key(spec)
-        mapped_name = normalized_file_name_map.get(spec_key, spec.name)
-        candidate = folder / mapped_name
-        if candidate.is_file():
+        candidate_names = _local_candidate_names(spec, normalized_file_name_map)
+        candidate = next((folder / name for name in candidate_names if (folder / name).is_file()), None)
+        if candidate is not None:
             paths[spec_key] = candidate
             continue
 
         if spec.required:
             missing_specs.append(spec)
         else:
-            optional_missing[spec_key] = f"'{mapped_name}' not found in local folder '{folder}'"
+            optional_missing[spec_key] = f"'{candidate_names[0]}' not found in local folder '{folder}'"
             missing_specs.append(spec)
 
     if not missing_specs:
@@ -491,15 +521,15 @@ def _resolve_local_then_hf_missing(
     missing_optional = [spec for spec in missing_specs if not spec.required]
 
     if missing_required:
-        required_names = [normalized_file_name_map.get(spec.name, spec.name) for spec in missing_required]
+        required_names = [_local_candidate_names(spec, normalized_file_name_map)[0] for spec in missing_required]
         logger.debug("Missing required local files in '%s': %s", folder, required_names)
     if missing_optional:
-        optional_names = [normalized_file_name_map.get(spec.name, spec.name) for spec in missing_optional]
+        optional_names = [_local_candidate_names(spec, normalized_file_name_map)[0] for spec in missing_optional]
         logger.debug("Missing optional local files in '%s': %s", folder, optional_names)
 
     if not fallback_hf_repo_id:
         required_mapped = [
-            normalized_file_name_map.get(_spec_key(spec), spec.name) for spec in missing_specs if spec.required
+            _local_candidate_names(spec, normalized_file_name_map)[0] for spec in missing_specs if spec.required
         ]
         if required_mapped:
             raise LoaderError(
@@ -508,7 +538,7 @@ def _resolve_local_then_hf_missing(
             )
         return FileMap(paths, optional_missing_reasons=optional_missing)
 
-    missing_names = [normalized_file_name_map.get(_spec_key(spec), spec.name) for spec in missing_specs]
+    missing_names = [_local_candidate_names(spec, normalized_file_name_map)[0] for spec in missing_specs]
     if allow_download:
         logger.info(
             "Missing local file(s) %s. Attempting HuggingFace fallback repo '%s'.",
@@ -524,7 +554,7 @@ def _resolve_local_then_hf_missing(
 
     for spec in missing_specs:
         spec_key = _spec_key(spec)
-        mapped_name = normalized_file_name_map.get(spec_key, spec.name)
+        mapped_name = _mapped_name_for_hf(spec, normalized_file_name_map)
         try:
             spec_repo_id = spec.repo_id or fallback_hf_repo_id
             local, reason = download_or_cached_with_reason(

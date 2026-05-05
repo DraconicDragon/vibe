@@ -54,6 +54,7 @@ class FileSpec:
         backends:   Which backends need this file. Empty list = all backends.
                     Use this to declare .onnx files only for Backend.ONNX, etc.
         repo_id:    Optional HuggingFace repo override for this file.
+        hf_subdir:  Optional HF-only subfolder (e.g. "foo/bar").
     """
 
     name: str
@@ -62,6 +63,7 @@ class FileSpec:
     required: bool = True
     backends: list[Backend] = field(default_factory=list)
     repo_id: str | None = None
+    hf_subdir: str | None = None
 
     def needed_for(self, backend: Backend) -> bool:
         if not self.backends:

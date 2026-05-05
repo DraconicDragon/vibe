@@ -167,6 +167,8 @@ def build_session(
                 auto_resolution_failures.append((backend, str(exc)))
                 continue
 
+            _warn_local_subdir_mismatch(plugin_cls, source, file_map)
+
             weights_path = _find_weights(plugin_cls, file_map, backend)
             logger.debug("Resolved model weights for model_id=%s path=%s", plugin_cls.model_id, weights_path)
 
@@ -244,6 +246,60 @@ def _is_unprefixed_local_dir_source(source: str) -> bool:
     if normalized.startswith("local:") or normalized.startswith("hf:"):
         return False
     return Path(normalized).expanduser().is_dir()
+
+
+def _local_source_path(source: str) -> Path | None:
+    normalized = str(source).strip()
+    if normalized.startswith("local:"):
+        candidate = Path(normalized[6:]).expanduser()
+        return candidate if candidate.is_dir() else None
+    if normalized.startswith("hf:"):
+        return None
+    candidate = Path(normalized).expanduser()
+    return candidate if candidate.is_dir() else None
+
+
+def _warn_local_subdir_mismatch(
+    plugin_cls: type[ModelPlugin],
+    source: str,
+    file_map: FileMap,
+) -> None:
+    hf_subdir = getattr(plugin_cls, "hf_subdir", None)
+    if not hf_subdir:
+        return
+
+    source_path = _local_source_path(source)
+    if source_path is None:
+        return
+
+    try:
+        source_resolved = source_path.resolve()
+    except OSError:
+        return
+
+    if source_resolved.name == hf_subdir:
+        return
+
+    paths = file_map.values()
+    if not paths:
+        return
+
+    try:
+        all_in_root = all(path.parent.resolve() == source_resolved for path in paths)
+    except OSError:
+        return
+
+    if not all_in_root:
+        return
+
+    logger.warning(
+        "Local source '%s' matched files in the folder root, but '%s' also supports HF-style subfolder layouts. "
+        "This is a warning because the folder may contain another model with the same filenames, and the loader can "
+        "otherwise pick the wrong one without noticing. HF would use subfolder '%s'.",
+        source_resolved,
+        plugin_cls.model_id,
+        hf_subdir,
+    )
 
 
 def _next_backend_candidate(candidates: list[Backend], current: Backend) -> Backend | None:
