@@ -19,22 +19,33 @@ result_processors = []
 if USE_SCORE_RESULT_PROCESSOR:
     from vibe.result_processors import MultiScoreToScore, NormalizedScore
 
-    result_processors.append(NormalizedScore(use_samples_percentile=True))
+    # If you want multiscore result as the model outputs it, comment the line below and uncomment the line below that
+    result_processors.append(NormalizedScore(use_samples_percentile=False))
+    # result_processors.append(MultiScoreToScore(use_samples_percentile=True))
+
 
 with vibe.load(
     "dghs-aes-swinv2pv3-ls0.2-x",
     source=MODEL_SOURCE,
 ) as session:
     result = session.infer(
-        Image.open("example/example.jpg"),
+        Image.open("examples/example.jpg"),
         result_processors=result_processors,
     ).first()
 
     if is_multi_score_result(result):
-        print(result.scores)
-        print(result.normalized_score)
+        print("Aesthetic Scores:")
+        label_scores = result.as_label_score_dict()
+        if result.label_order is not None:
+            for label in result.label_order:
+                if label in label_scores:
+                    print(f"  {label}: {label_scores[label]:.4f}")
+        else:
+            for label, score in label_scores.items():
+                print(f"  {label}: {score:.4f}")
+        print(f"Normalized Score: {result.normalized_score:.4f}")
     elif is_score_result(result):
-        print(result.score)
-        print(result.normalized_score)
+        print(f"Score: {result.score:.4f}")
+        print(f"Normalized Score: {result.normalized_score:.4f}")
     else:
         print(result)
