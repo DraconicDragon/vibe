@@ -76,21 +76,6 @@ def _format_aliases(info: vibe.ModelPluginInfo) -> str:
     return ", ".join(_code(alias) for alias in info.aliases)
 
 
-def _family_label(plugin_cls: type[vibe.ModelPlugin]) -> str:
-    module_name = plugin_cls.__module__.split(".")[-1]
-    family_map = {
-        "wd_tagger": "WD Tagger",
-        "wdv4_animetimm": "AnimeTimm",
-    }
-    if module_name in family_map:
-        return family_map[module_name]
-
-    class_name = plugin_cls.__name__
-    if class_name.endswith("Plugin"):
-        class_name = class_name[:-6]
-    return class_name
-
-
 def _format_model_title(info: vibe.ModelPluginInfo) -> str:
     return f"<strong>{_escape_html(info.display_name)}</strong>"
 
@@ -120,8 +105,7 @@ def build_markdown() -> str:
     grouped: dict[str, list[vibe.ModelPluginInfo]] = defaultdict(list)
 
     for info in infos:
-        plugin_cls = vibe.model_registry.get(info.model_id)
-        grouped[_family_label(plugin_cls)].append(info)
+        grouped[info.family_name].append(info)
 
     lines = [
         "# Supported Models",
