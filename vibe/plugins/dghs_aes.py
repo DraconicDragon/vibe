@@ -1,6 +1,4 @@
-# Note: Scores deviate a negligible amount from deepgh-imgutils
-
-# todo: specify subfolders and all that
+# Note: Scores deviate a negligible amount from deepgh-imgutils implementation
 
 from __future__ import annotations
 
