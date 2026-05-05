@@ -17,7 +17,7 @@ requires-python = ">=3.11"
 # Core deps only - no backend is included by default
 # You MUST install at least one backend extra (onnx-* or torch-*) for the library to function.
 # See README § Installation for the right command for your hardware
-dependencies = ["Pillow>=12.2.0", "numpy>=1.26.4", "huggingface_hub>=0.32,<1.0.0"] # todo: make compatible with hf_hub v1.0.0+
+dependencies = ["Pillow>=12.2.0", "numpy>=1.26.4", "huggingface_hub>=1.0.0,<2"]
 
 [project.optional-dependencies]
 
@@ -63,7 +63,7 @@ onnx-cuda-linux-bundled-cu13 = [
 # ONNX and PyTorch backends are independent and can coexist (e.g. onnx-cuda + torch-cpu).
 
 # CPU-only
-torch-cpu = ["torch>=2.7.1", "timm", "transformers", "safetensors>=0.6.2"]
+torch-cpu = ["torch>=2.7.1", "timm", "transformers>=5.0.0", "safetensors>=0.6.2"]
 
 
 # OTHER
