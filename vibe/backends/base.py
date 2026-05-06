@@ -146,11 +146,11 @@ class ModelPlugin(ABC):
     """
 
     # --- Subclasses must override these ---
-    model_id: str
-    aliases: list[str]
-    output_type: OutputType
-    required_files: list[FileSpec]
-    supported_backends: list[Backend]
+    model_id: str = ""
+    aliases: list[str] = []
+    output_type: OutputType = OutputType.TAGS
+    required_files: list[FileSpec] = []
+    supported_backends: list[Backend] = [Backend.PYTORCH, Backend.ONNX]
     supported_processors: list[type["ResultProcessor"]] = []
     default_hf_repo: str | None = None
     display_name: str = ""
