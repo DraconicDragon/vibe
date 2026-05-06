@@ -5,16 +5,15 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image
 
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.tagger_shared import (
     build_entries_for_indices,
     load_tag_metadata,
@@ -45,7 +44,7 @@ class AnimeTimmV4TagResult(TagResult):
         }
 
 
-class WDV4AnimeTimmBasePlugin(ModelPlugin):
+class WDV4AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
     """Shared implementation for AnimeTimm dbv4-full taggers."""
 
     _abstract = True
@@ -93,10 +92,6 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
 
     # region Session Lifecycle
 
-    def configure(self, **kwargs: Any) -> None:
-        self._backend = kwargs.get("backend")
-        self._backend_instance = kwargs.get("backend_instance")
-
     def load_ancillary(self, file_map: dict[str, Path]) -> None:
         csv_path = file_map["selected_tags.csv"]
         logger.info("Loading AnimeTimm tag list from %s", csv_path)
@@ -109,10 +104,13 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
         self._character_indices = metadata.indices_for(int(DanbooruTagCategory.CHARACTER))
         self._artist_indices = metadata.indices_for(int(DanbooruTagCategory.ARTIST))
 
-        config = self._read_config_json(file_map["config.json"])
-        self._runtime_preprocess_steps = self._read_preprocess_json(file_map["preprocess.json"])
+        config = self.read_timm_config_json(file_map["config.json"])
+        self._runtime_preprocess_steps = self.resolve_timm_preprocess_steps(
+            config,
+            file_map.get("preprocess.json"),
+        )
 
-        self._maybe_prepare_pytorch_model(config=config)
+        self.maybe_prepare_timm_pytorch_model(config=config, num_classes=len(self._raw_tag_names))
 
         logger.info(
             # todo: update log message to be more model specific maybe
@@ -126,108 +124,7 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
 
     # endregion Session Lifecycle
 
-    # region PyTorch Bootstrap
-
-    def _maybe_prepare_pytorch_model(self, *, config: dict[str, Any] | None) -> None:
-        if self._backend != Backend.PYTORCH:
-            return
-
-        backend = self._backend_instance
-        if backend is None:
-            return
-
-        try:
-            import torch
-            import torch.nn as nn
-        except ImportError:
-            # Keep ONNX-only installations unaffected.
-            return
-
-        model_or_state = getattr(backend, "raw", None)
-        if isinstance(model_or_state, nn.Module):
-            return
-        if not isinstance(model_or_state, dict):
-            return
-
-        architecture = self._resolve_timm_architecture(config)
-        if not architecture:
-            raise RuntimeError(
-                "Could not resolve timm architecture for AnimeTimm PyTorch model reconstruction. "
-                "Provide config.json or use a model with a recognizable default_hf_repo suffix."
-            )
-
-        model_args = self._resolve_timm_model_args(config)
-        model_args["num_classes"] = len(self._raw_tag_names)
-
-        try:
-            import timm
-        except ImportError as exc:
-            raise RuntimeError(
-                "timm is required to build AnimeTimm PyTorch architectures from .safetensors state dicts. "
-                "Install it with your torch extra (e.g. pip install 'vibe[torch-cpu]')."
-            ) from exc
-
-        logger.info(
-            "Building timm model for model_id=%s architecture=%s num_classes=%s",
-            self.model_id,
-            architecture,
-            model_args["num_classes"],
-        )
-        model = self._create_timm_model(timm, architecture, model_args)
-
-        missing, unexpected = model.load_state_dict(model_or_state, strict=False)
-        if missing:
-            logger.warning("timm load_state_dict missing keys for model_id=%s: %s", self.model_id, missing[:8])
-        if unexpected:
-            logger.warning(
-                "timm load_state_dict unexpected keys for model_id=%s: %s",
-                self.model_id,
-                unexpected[:8],
-            )
-
-        backend._model = model
-
-        apply_precision = getattr(backend, "_apply_precision_plan", None)
-        if callable(apply_precision):
-            apply_precision(torch)
-        else:
-            device = getattr(backend, "device", "cpu")
-            model.to(device=device)
-            model.eval()
-
-    def _create_timm_model(self, timm_module: Any, architecture: str, model_args: dict[str, Any]) -> Any:
-        try:
-            return timm_module.create_model(architecture, pretrained=False, **model_args)
-        except TypeError as exc:
-            num_classes = int(model_args.get("num_classes", 0))
-            logger.warning(
-                "timm.create_model rejected model_args for model_id=%s architecture=%s (%s). "
-                "Retrying with conservative fallback args.",
-                self.model_id,
-                architecture,
-                exc,
-            )
-            return timm_module.create_model(architecture, pretrained=False, num_classes=num_classes)
-
-    def _resolve_timm_architecture(self, config: dict[str, Any] | None) -> str | None:
-        architecture = config.get("architecture") if config else None
-        if isinstance(architecture, str) and architecture.strip():
-            return architecture.strip()
-
-        if config is not None:
-            logger.debug("config.json missing usable architecture for model_id=%s", self.model_id)
-
-        repo = self.default_hf_repo or ""
-        suffix = repo.split("/", 1)[-1]
-        if ".dbv" in suffix:
-            fallback_arch = suffix.split(".dbv", 1)[0]
-            logger.info("Using fallback timm architecture '%s' for model_id=%s", fallback_arch, self.model_id)
-            return fallback_arch
-
-        logger.debug("Unable to infer fallback architecture from default_hf_repo for model_id=%s.", self.model_id)
-        return None
-
-    def _resolve_timm_model_args(self, config: dict[str, Any] | None) -> dict[str, Any]:
+    def resolve_timm_model_args(self, config: dict[str, Any] | None) -> dict[str, Any]:
         if config is not None and isinstance(config.get("model_args"), dict):
             logger.debug(
                 "Ignoring config.json model_args for model_id=%s to preserve stable PyTorch reconstruction behavior.",
@@ -235,207 +132,7 @@ class WDV4AnimeTimmBasePlugin(ModelPlugin):
             )
         return dict(self.FALLBACK_TIMM_MODEL_ARGS)
 
-    # endregion PyTorch Bootstrap
-
-    # region Config and Preprocess Resolution
-
-    def _read_config_json(self, config_path: Path) -> dict[str, Any]:
-        try:
-            with config_path.open("r", encoding="utf-8") as handle:
-                parsed = json.load(handle)
-            if isinstance(parsed, dict):
-                return parsed
-            raise RuntimeError(f"config.json at '{config_path}' is not a JSON object")
-        except Exception as exc:
-            raise RuntimeError(f"failed to parse config.json at '{config_path}': {exc}") from exc
-
-    def _read_preprocess_json(self, preprocess_path: Path) -> list[dict[str, Any]]:
-        try:
-            with preprocess_path.open("r", encoding="utf-8") as handle:
-                parsed = json.load(handle)
-            if not isinstance(parsed, dict):
-                raise RuntimeError(f"preprocess.json at '{preprocess_path}' is not a JSON object")
-
-            raw_steps = parsed.get("test")
-            if not isinstance(raw_steps, list):
-                raise RuntimeError(f"preprocess.json at '{preprocess_path}' missing required 'test' list")
-
-            steps: list[dict[str, Any]] = []
-            for item in raw_steps:
-                if isinstance(item, dict):
-                    steps.append(dict(item))
-
-            if not steps:
-                raise RuntimeError(f"preprocess.json at '{preprocess_path}' has no usable test steps")
-
-            logger.info("Using preprocess.json inference pipeline (test) for model_id=%s", self.model_id)
-            return steps
-        except Exception as exc:
-            raise RuntimeError(f"failed to parse preprocess.json at '{preprocess_path}': {exc}") from exc
-
-    def _extract_triplet(self, source: dict[str, Any], key: str) -> tuple[float, float, float] | None:
-        raw = source.get(key)
-        if not isinstance(raw, (list, tuple)) or len(raw) != 3:
-            return None
-        try:
-            return (float(raw[0]), float(raw[1]), float(raw[2]))
-        except (TypeError, ValueError):
-            return None
-
-    # endregion Config and Preprocess Resolution
-
     # region Preprocess & Out Mapping
-
-    def preprocess(self, image: Any) -> np.ndarray:
-        """Convert image to float32 NCHW tensor using timm-like normalization."""
-        return self._preprocess_with_steps(image, self._runtime_preprocess_steps)
-
-    def _preprocess_with_steps(self, image: Any, steps: list[dict[str, Any]]) -> np.ndarray:
-        if not isinstance(image, Image.Image):
-            image = Image.fromarray(np.asarray(image))
-        image = self._to_rgb_with_background(image)
-
-        normalize_mean: tuple[float, float, float] | None = None
-        normalize_std: tuple[float, float, float] | None = None
-
-        for step in steps:
-            step_type = str(step.get("type", "")).strip().lower()
-            if step_type == "pad_to_size":
-                size = step.get("size")
-                if isinstance(size, (list, tuple)) and len(size) == 2:
-                    image = self._pad_to_size(
-                        image,
-                        target_h=int(size[0]),
-                        target_w=int(size[1]),
-                        interpolation=str(step.get("interpolation", "bilinear")),
-                        background_color=step.get("background_color", "white"),
-                    )
-            elif step_type == "resize":
-                size = step.get("size")
-                image = self._resize_like_torchvision(
-                    image,
-                    size=size,
-                    interpolation=str(step.get("interpolation", "bilinear")),
-                )
-            elif step_type == "center_crop":
-                image = self._center_crop(image, size=step.get("size"))
-            elif step_type == "normalize":
-                normalize_mean = self._extract_triplet(step, "mean")
-                normalize_std = self._extract_triplet(step, "std")
-            elif step_type == "maybe_to_tensor":
-                # Tensor conversion happens at the end in one place.
-                continue
-
-        arr = np.asarray(image, dtype=np.float32) / 255.0
-        if normalize_mean is not None and normalize_std is not None:
-            mean_arr = np.asarray(normalize_mean, dtype=np.float32).reshape(1, 1, 3)
-            std_arr = np.asarray(normalize_std, dtype=np.float32).reshape(1, 1, 3)
-            arr = (arr - mean_arr) / std_arr
-
-        arr = np.transpose(arr, (2, 0, 1))
-        return np.expand_dims(arr, axis=0).astype(np.float32, copy=False)
-
-    def _to_rgb_with_background(self, image: Image.Image) -> Image.Image:
-        if image.mode == "RGBA":
-            background = Image.new("RGB", image.size, (255, 255, 255))
-            background.paste(image, mask=image.split()[3])
-            return background
-
-        if image.mode == "P" and "transparency" in image.info:
-            rgba = image.convert("RGBA")
-            background = Image.new("RGB", rgba.size, (255, 255, 255))
-            background.paste(rgba, mask=rgba.split()[3])
-            return background
-
-        return image.convert("RGB")
-
-    def _pad_to_size(
-        self,
-        image: Image.Image,
-        *,
-        target_h: int,
-        target_w: int,
-        interpolation: str,
-        background_color: Any,
-    ) -> Image.Image:
-        source_w, source_h = image.size
-        if source_w <= 0 or source_h <= 0 or target_w <= 0 or target_h <= 0:
-            return image
-
-        ratio = min(target_w / source_w, target_h / source_h)
-        resized_w = max(1, int(round(source_w * ratio)))
-        resized_h = max(1, int(round(source_h * ratio)))
-
-        resized = image.resize((resized_w, resized_h), self._pil_interpolation(interpolation))
-        color = self._resolve_background_color(background_color)
-        result = Image.new("RGB", (target_w, target_h), color)
-
-        left = (target_w - resized_w) // 2
-        top = (target_h - resized_h) // 2
-        result.paste(resized, (left, top))
-        return result
-
-    def _resize_like_torchvision(self, image: Image.Image, *, size: Any, interpolation: str) -> Image.Image:
-        resample = self._pil_interpolation(interpolation)
-        source_w, source_h = image.size
-
-        if isinstance(size, int):
-            if source_w <= 0 or source_h <= 0:
-                return image
-            if source_w < source_h:
-                new_w = size
-                new_h = int(round((source_h / source_w) * size))
-            else:
-                new_h = size
-                new_w = int(round((source_w / source_h) * size))
-            return image.resize((max(1, new_w), max(1, new_h)), resample)
-
-        if isinstance(size, (list, tuple)) and len(size) == 2:
-            new_h, new_w = int(size[0]), int(size[1])
-            return image.resize((max(1, new_w), max(1, new_h)), resample)
-
-        return image
-
-    def _center_crop(self, image: Image.Image, *, size: Any) -> Image.Image:
-        if isinstance(size, int):
-            crop_h = size
-            crop_w = size
-        elif isinstance(size, (list, tuple)) and len(size) == 2:
-            crop_h = int(size[0])
-            crop_w = int(size[1])
-        else:
-            return image
-
-        source_w, source_h = image.size
-        crop_w = min(max(1, crop_w), source_w)
-        crop_h = min(max(1, crop_h), source_h)
-
-        left = max(0, (source_w - crop_w) // 2)
-        top = max(0, (source_h - crop_h) // 2)
-        right = left + crop_w
-        bottom = top + crop_h
-        return image.crop((left, top, right, bottom))
-
-    def _pil_interpolation(self, name: str) -> int:
-        normalized = str(name).strip().lower()
-        if normalized == "nearest":
-            return Image.Resampling.NEAREST
-        if normalized == "bicubic":
-            return Image.Resampling.BICUBIC
-        if normalized == "lanczos":
-            return Image.Resampling.LANCZOS
-        return Image.Resampling.BILINEAR
-
-    def _resolve_background_color(self, value: Any) -> tuple[int, int, int]:
-        if isinstance(value, str):
-            if value.strip().lower() == "black":
-                return (0, 0, 0)
-            return (255, 255, 255)
-
-        if isinstance(value, (list, tuple)) and len(value) >= 3:
-            return (int(value[0]), int(value[1]), int(value[2]))
-
-        return (255, 255, 255)
 
     def postprocess(self, raw_output: Any) -> AnimeTimmV4TagResult:
         """Return full scored output grouped by AnimeTimm categories."""
