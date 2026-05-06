@@ -130,13 +130,13 @@ class ModelPlugin(ABC):
     required_files : list[FileSpec]
         Files the plugin needs. Declared at class level so the loader can
         inspect them before instantiating the plugin.
-    default_hf_repo : str | None
-        The HuggingFace repo ID this plugin uses out-of-the-box.
-        None means there is no canonical upstream repo.
     supported_backends : list[Backend]
         Which inference backends this plugin supports.
     supported_processors : list[type[ResultProcessor]]
         Optional result processors this plugin is designed to work with.
+    default_hf_repo : str | None
+        The HuggingFace repo ID this plugin uses out-of-the-box.
+        None means there is no canonical upstream repo.
     display_name : str
         Human-readable name for GUIs and listings.
     family_name : str
@@ -146,13 +146,13 @@ class ModelPlugin(ABC):
     """
 
     # --- Subclasses must override these ---
-    model_id: str = ""
-    aliases: list[str] = []
-    output_type: OutputType = OutputType.TAGS
-    required_files: list[FileSpec] = []
-    default_hf_repo: str | None = None
-    supported_backends: list[Backend] = [Backend.PYTORCH, Backend.ONNX]
+    model_id: str
+    aliases: list[str]
+    output_type: OutputType
+    required_files: list[FileSpec]
+    supported_backends: list[Backend]
     supported_processors: list[type["ResultProcessor"]] = []
+    default_hf_repo: str | None = None
     display_name: str = ""
     family_name: str = ""
     description: str = ""
