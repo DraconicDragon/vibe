@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -120,21 +121,18 @@ class ResultProcessor(ABC, Generic[TIn, TOut]):
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
-        # Skip processing only for the base ResultProcessor class itself, not for subclasses
-        if cls is ResultProcessor:
+        # Skip validation on the abstract base itself and any intermediate marker subclasses.
+        if cls is ResultProcessor or inspect.isabstract(cls):
             return
 
-        if not cls.display_name:
-            raise TypeError(f"{cls.__name__} must define a display_name class attribute.")
-        if not cls.description:
-            raise TypeError(f"{cls.__name__} must define a description class attribute.")
+        # Lightweight helper processors are allowed to omit public metadata.
+        if not cls.display_name or not cls.description:
+            return
 
         # Collect Param declarations from this class (not inherited ones)
         param_decls: dict[str, Param] = {k: v for k, v in vars(cls).items() if isinstance(v, Param)}
 
         # Build ProcessorInfo by merging Param descriptions with __init__ signature
-        import inspect
-
         sig = inspect.signature(cls.__init__)
         try:
             hints = get_type_hints(cls.__init__)
