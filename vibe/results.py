@@ -8,6 +8,7 @@ Consumers should check result.output_type before accessing type-specific fields.
 from __future__ import annotations
 
 import logging
+from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Literal, TypeGuard
@@ -40,7 +41,7 @@ class TagEntry:
 
 
 @dataclass
-class TagResult:
+class TagResult(ABC):
     """
     Structured result for tagger model outputs.
 
@@ -51,6 +52,7 @@ class TagResult:
     output_type: Literal[OutputType.TAGS] = field(default=OutputType.TAGS, init=False)
     character_mapping: dict[str, list[str]] | None = None
 
+    @abstractmethod
     def categories(self) -> dict[str, list[TagEntry]]:
         """Return category name -> entries."""
         raise NotImplementedError("TagResult subclasses must implement categories().")
