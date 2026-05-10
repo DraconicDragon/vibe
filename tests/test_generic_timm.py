@@ -8,7 +8,12 @@ import pytest
 from PIL import Image
 
 import vibe
-from vibe.plugins.generic_timm import GenericTimmMultiScorerPlugin, GenericTimmScorerPlugin, GenericTimmTaggerPlugin
+from vibe.plugins.generic_timm import (
+    GenericTimmMultiScorerPlugin,
+    GenericTimmScorerPlugin,
+    GenericTimmTaggerPlugin,
+    GenericTimmTagResult,
+)
 from vibe.results import MultiScoreResult, OutputType, ScoreResult, TagResult
 
 
@@ -36,12 +41,15 @@ def _write_config(path: Path) -> None:
 
 
 def test_generic_timm_is_registered_and_requires_source() -> None:
-    assert "generic-timm" in vibe.list_models()
-    info = vibe.describe("generic-timm")
+    assert "generic-timm-multi-score" in vibe.list_models()
+    assert "generic-timm-score" in vibe.list_models()
+    assert "generic-timm-tags" in vibe.list_models()
+
+    info = vibe.describe("generic-timm-multi-score")
     assert info.default_hf_repo is None
     assert info.supported_backends == [vibe.Backend.ONNX, vibe.Backend.PYTORCH]
     assert vibe.describe("generic-timm-score").output_type == OutputType.SCORE
-    assert vibe.describe("generic-timm-tag").output_type == OutputType.TAGS
+    assert vibe.describe("generic-timm-tags").output_type == OutputType.TAGS
 
 
 def test_generic_timm_uses_manual_config_preprocess_for_onnx(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -118,6 +126,7 @@ def test_generic_timm_postprocess_can_return_tags(tmp_path: Path) -> None:
     plugin.load_ancillary({"config.json": config_path})
 
     result = plugin.postprocess(np.array([[0.25, 0.75]], dtype=np.float32))
+    assert isinstance(result, GenericTimmTagResult)
     assert isinstance(result, TagResult)
     assert result.output_type == OutputType.TAGS
     assert [entry.tag for entry in result.category("tags")] == ["cat", "dog"]
