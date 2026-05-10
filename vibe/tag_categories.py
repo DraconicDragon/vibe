@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from enum import IntEnum, StrEnum
+from enum import IntEnum
+
+# region Category Enums
 
 
 class DanbooruTagCategory(IntEnum):
@@ -30,16 +32,20 @@ class E621TagCategory(IntEnum):
     LORE = 8
 
 
-class AestheticBucketSKAR(StrEnum):
-    """Named buckets used by Shio-Koube's aesthetic models.
-        - ConvNext-aesthetic-rater
-        - Anime-rater-2  
-    """
+# todo: implement model
+# class AestheticBucketSKAR(StrEnum):
+#     """Named buckets used by Shio-Koube's aesthetic models.
+#         - ConvNext-aesthetic-rater
+#         - Anime-rater-2
+#     """
 
-    GOOD = "good"
-    NORMAL = "normal"
-    BAD = "bad"
+#     GOOD = "good"
+#     NORMAL = "normal"
+#     BAD = "bad"
 
+# endregion
+
+# region Label mapping
 
 DANBOORU_CATEGORY_LABELS: dict[int, str] = {
     DanbooruTagCategory.GENERAL: "general",
@@ -60,3 +66,5 @@ E621_CATEGORY_LABELS: dict[int, str] = {
     E621TagCategory.META: "meta",
     E621TagCategory.LORE: "lore",
 }
+
+# endregion
