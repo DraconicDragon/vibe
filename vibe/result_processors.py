@@ -6,7 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generic, TypeVar, Union
+from typing import Any, Generic, TypeVar, Union, get_type_hints
 
 import numpy as np
 
@@ -43,7 +43,6 @@ KAOMOJIS = {
     "||_||",
 }
 
-
 TIn = TypeVar("TIn", bound=ModelResult)
 TOut = TypeVar("TOut", bound=ModelResult)
 
@@ -55,11 +54,126 @@ class ResultProcessorContext:
     auto_download: bool
 
 
+@dataclass(frozen=True)
+class ParamInfo:
+    name: str
+    type: Any
+    default: Any
+    required: bool
+    description: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "type": _type_to_string(self.type),
+            "default": self.default,
+            "required": self.required,
+            "description": self.description,
+        }
+
+
+@dataclass(frozen=True)
+class ProcessorInfo:
+    processor_id: str
+    display_name: str
+    description: str
+    params: list[ParamInfo]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "processor_id": self.processor_id,
+            "display_name": self.display_name,
+            "description": self.description,
+            "params": [param.to_dict() for param in self.params],
+        }
+
+
+class Param:
+    """Declare a processor parameter with its description.
+
+    Place as a class-level annotation on a ResultProcessor subclass.
+    The type and default come from the matching __init__ parameter —
+    this only carries the human-readable description for API/UI consumers.
+
+    Example:
+        class MyProcessor(ResultProcessor):
+            threshold = Param("Controls sensitivity. Higher = stricter.")
+    """
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self.name = name
+
+    def __init__(self, description: str) -> None:
+        self.description = description
+
+    def __repr__(self) -> str:
+        return f"Param({self.description!r})"
+
+
 class ResultProcessor(ABC, Generic[TIn, TOut]):
     """Base class for result processors."""
 
+    _abstract = True
+    display_name: str = ""
+    description: str = ""
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+
+        # Skip processing only for the base ResultProcessor class itself, not for subclasses
+        if cls is ResultProcessor:
+            return
+
+        if not cls.display_name:
+            raise TypeError(f"{cls.__name__} must define a display_name class attribute.")
+        if not cls.description:
+            raise TypeError(f"{cls.__name__} must define a description class attribute.")
+
+        # Collect Param declarations from this class (not inherited ones)
+        param_decls: dict[str, Param] = {k: v for k, v in vars(cls).items() if isinstance(v, Param)}
+
+        # Build ProcessorInfo by merging Param descriptions with __init__ signature
+        import inspect
+
+        sig = inspect.signature(cls.__init__)
+        try:
+            hints = get_type_hints(cls.__init__)
+        except Exception:
+            hints = {}
+
+        params: list[ParamInfo] = []
+        for name, p in sig.parameters.items():
+            if name in ("self", "args", "kwargs"):
+                continue
+            # keyword-only marker
+            if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+                continue
+
+            decl = param_decls.get(name)
+            params.append(
+                ParamInfo(
+                    name=name,
+                    type=hints.get(name),
+                    default=p.default if p.default is not inspect.Parameter.empty else None,
+                    required=p.default is inspect.Parameter.empty,
+                    description=decl.description if decl is not None else "",
+                )
+            )
+
+        cls._processor_info = ProcessorInfo(
+            processor_id=cls.__name__,
+            display_name=cls.display_name,
+            description=cls.description,
+            params=params,
+        )
+
+    @classmethod
+    def describe(cls) -> ProcessorInfo:
+        """Return metadata about this processor for API/UI consumers."""
+        return cls._processor_info
+
     def on_infer_start(self, *, context: ResultProcessorContext) -> None:
-        """Hook called once per infer/infer_batches/infer_async call before processing outputs."""
+        """Hook called once per infer call before any outputs are processed."""
         del context
 
     @abstractmethod
@@ -73,7 +187,12 @@ class ResultProcessor(ABC, Generic[TIn, TOut]):
 
 
 class CharacterIPMapping(ResultProcessor[TagResult, TagResult]):
-    """Attach character -> copyright/IP mappings to tag results."""
+    display_name = "Character IP Mapping"
+    description = "Maps copyright tags to character tags from tag results."
+
+    mapping_file = Param(
+        "Path to a custom character-to-IP mapping JSON file. If omitted, the mapping bundled with the model is used."
+    )
 
     def __init__(self, mapping_file: str | Path | None = None) -> None:
         self._mapping_file = str(mapping_file) if mapping_file is not None else None
@@ -128,7 +247,8 @@ class CharacterIPMapping(ResultProcessor[TagResult, TagResult]):
 
 
 class CleanTags(ResultProcessor[TagResult, TagResult]):
-    """Normalize underscore-delimited tags while preserving kaomojis."""
+    display_name = "Clean Tags"
+    description = "Replaces underscores with spaces, preserving kaomojis."
 
     def process(
         self,
@@ -153,13 +273,24 @@ class CleanTags(ResultProcessor[TagResult, TagResult]):
 
 
 class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
-    """Filter tags using per-tag thresholds from selected_tags.csv.
+    display_name = "Tag Level Thresholds"
+    description = (
+        "Filters tags using per-tag thresholds from selected_tags.csv. "
+    )
 
-    Use `threshold_offset` for a fixed adjustment, or `threshold_relaxation` for
-    a proportional adjustment that scales with each tag's own threshold.
-    Example: with `threshold_relaxation=0.1`, a threshold of `0.80` becomes
-    `0.72` and a threshold of `0.20` becomes `0.18`.
-    """
+    threshold_column = Param(
+        "Name of the CSV column containing per-tag threshold values. Defaults to 'best_threshold'."
+    )
+    threshold_offset = Param(
+        "Fixed value added to every tag's threshold. "
+        "Negative = more tags pass, positive = fewer. "
+        "Cannot be combined with threshold_relaxation."
+    )
+    threshold_relaxation = Param(
+        "Proportional reduction applied to each tag's threshold. "
+        "E.g. 0.1 reduces a threshold of 0.80 to 0.72 and 0.20 to 0.18. "
+        "Must be in [0.0, 1.0]. Cannot be combined with threshold_offset."
+    )
 
     def __init__(
         self,
@@ -266,10 +397,7 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
 
         return result
 
-    def _threshold_map_for_csv(
-        self,
-        csv_path: Path,
-    ) -> dict[str, float]:
+    def _threshold_map_for_csv(self, csv_path: Path) -> dict[str, float]:
         cache_key = str(csv_path)
         cached = self._threshold_cache.get(cache_key)
         if cached is not None:
@@ -314,14 +442,18 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
 
 
 class MultiScoreToScore(ResultProcessor[MultiScoreResult, ScoreResult]):
-    """Convert MultiScoreResult into a ScoreResult by normalizing
-    the scores using NormalizedScore result processor.
+    display_name = "Multi-Score to Score"
+    description = (
+        "Collapses a MultiScoreResult into a single normalized ScoreResult. "
+        "Useful for models that output multiple ranked scores (e.g. aesthetic models)."
+    )
 
-    Args:
-        use_samples_percentile:
-            If True, use a resolved samples file to convert values into a
-            percentile instead of simple min/max normalization. (ref: dghs aes models)
-    """
+    use_samples_percentile = Param(
+        "If True, uses a bundled samples file to map the score to a percentile "
+        "rather than using simple min/max normalization. "
+        "Requires a samples.npz file to be present in the model files."
+    )
+    label = Param("Label attached to the output ScoreResult. Defaults to 'score'.")
 
     def __init__(
         self,
@@ -361,13 +493,18 @@ class MultiScoreToScore(ResultProcessor[MultiScoreResult, ScoreResult]):
 
 
 class NormalizedScore(ResultProcessor[Union[ScoreResult, MultiScoreResult], Union[ScoreResult, MultiScoreResult]]):
-    """Attach a normalized score or percentile to ScoreResult / MultiScoreResult.
+    display_name = "Normalized Score"
+    description = (
+        "Attaches a normalized score in [0, 1] to a ScoreResult or MultiScoreResult. "
+        "Supports both simple min/max normalization and percentile-based normalization "
+        "via a bundled samples file."
+    )
 
-    Args:
-        use_samples_percentile:
-            If True, use a resolved samples file to convert values into a
-            percentile instead of simple min/max normalization. (ref: dghs aes models)
-    """
+    use_samples_percentile = Param(
+        "If True, uses a bundled samples.npz file to convert the raw score into a "
+        "percentile rather than using min/max normalization. "
+        "Requires a compatible samples.npz/csv file to be present in the model files."
+    )
 
     def __init__(self, *, use_samples_percentile: bool = False) -> None:
         self._use_samples_percentile = use_samples_percentile
@@ -422,8 +559,7 @@ class NormalizedScore(ResultProcessor[Union[ScoreResult, MultiScoreResult], Unio
         max_v = float(max(len(result.scores) - 1, 1))
         if max_v <= 0.0:
             return 0.0
-        min_v = 0.0
-        return float(np.clip((weighted_mean - min_v) / (max_v - min_v), 0.0, 1.0))
+        return float(np.clip((weighted_mean - 0.0) / max_v, 0.0, 1.0))
 
     def _weighted_mean(self, result: MultiScoreResult) -> float:
         scores = result.as_index_score_dict()
@@ -523,6 +659,12 @@ def _resolve_file_path(
                 return path
 
     return None
+
+
+def _type_to_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    return getattr(value, "__name__", str(value))
 
 
 def _clean_tag_text(tag: str) -> str:

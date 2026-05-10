@@ -55,6 +55,7 @@ from vibe.result_processors import (
     CleanTags,
     MultiScoreToScore,
     NormalizedScore,
+    ProcessorInfo,
     ResultProcessor,
     TagLevelThresholds,
 )
@@ -344,6 +345,41 @@ def _resolve_source(
 
 # endregion Helpers
 
+
+# region Utils
+# todo: move out in future
+
+
+def list_processors() -> list[ProcessorInfo]:
+    "Return metadata in form of ProcessorInfo for all available result processor classes in the library."
+    import vibe.result_processors as rp
+
+    return [
+        cls.describe()
+        for cls in vars(rp).values()
+        if isinstance(cls, type)
+        and issubclass(cls, rp.ResultProcessor)
+        and cls is not rp.ResultProcessor
+        and hasattr(cls, "_processor_info")  # only classes that completed __init_subclass__
+    ]
+
+
+def get_processor(name: str) -> type[ResultProcessor]:
+    """Return a result processor class by its class name in form of a string."""
+    import vibe.result_processors as rp
+
+    cls = getattr(rp, name, None)
+    if cls is None or not (isinstance(cls, type) and issubclass(cls, rp.ResultProcessor)):
+        available = [
+            c.__name__
+            for c in vars(rp).values()
+            if isinstance(c, type) and issubclass(c, rp.ResultProcessor) and c is not rp.ResultProcessor
+        ]
+        raise RegistryError(f"No processor named '{name}'. Available: {available}")
+    return cls
+
+
+# endregion Utils
 
 # region Public re-Exports
 # for users doing from vibe import ...
