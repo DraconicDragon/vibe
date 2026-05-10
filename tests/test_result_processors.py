@@ -28,3 +28,14 @@ def test_normalized_score_attaches_to_multi_score_result() -> None:
 
     assert isinstance(processed, MultiScoreResult)
     assert processed.normalized_score == pytest.approx(0.8)
+
+
+def test_processor_describe_is_json_friendly() -> None:
+    info = NormalizedScore.describe()
+
+    data = info.to_dict()
+
+    assert data["processor_id"] == "NormalizedScore"
+    assert data["display_name"] == "Normalized Score"
+    assert data["params"][0]["name"] == "use_samples_percentile"
+    assert data["params"][0]["type"] == "bool"
