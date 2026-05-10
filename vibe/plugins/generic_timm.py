@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
 from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin, flatten_timm_output
-from vibe.results import MultiScoreResult, OutputType, ScoreResult, TagResult
+from vibe.results import MultiScoreResult, OutputType, ScoreResult, TagEntry, TagResult
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GenericTimmTagResult(TagResult):
+    """Generic timm tag output grouped as a single flat tag category."""
+
+    tags: list[TagEntry] = field(default_factory=list)
+
+    def categories(self) -> dict[str, list[TagEntry]]:
+        return {"tags": self.tags}
 
 
 class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
@@ -73,7 +84,9 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
         score_values = [float(value) for value in scores]
         if self.output_type == OutputType.TAGS:
-            return TagResult()
+            return GenericTimmTagResult(
+                tags=[TagEntry(tag=label, score=score) for label, score in zip(labels, score_values, strict=False)]
+            )
 
         label_map = {index: label for index, label in enumerate(labels[: len(score_values)])}
         return MultiScoreResult(
