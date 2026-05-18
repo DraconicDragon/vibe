@@ -28,7 +28,7 @@ from vibe.image_loading import (
 )
 from vibe.loader import FileMap
 from vibe.memory_stats import MemoryTracker
-from vibe.result_processors import ResultProcessor, ResultProcessorContext
+from vibe.result_processors import CleanTags, ResultProcessor, ResultProcessorContext
 from vibe.results import InferenceResult, InferenceResultItem, ModelResult
 
 logger = logging.getLogger(__name__)
@@ -643,8 +643,20 @@ class ModelSession:
         if not result_processors:
             return result
 
+        # Pull CleanTags to the end if present, regardless of input order.
+        effective_processors: list[ResultProcessor] = []
+        cleanup_processors: list[CleanTags] = []
+
+        for rp in result_processors:
+            if isinstance(rp, CleanTags):
+                cleanup_processors.append(rp)
+            else:
+                effective_processors.append(rp)
+
+        effective_processors.extend(cleanup_processors)
+
         current = result
-        for result_processor in result_processors:
+        for result_processor in effective_processors:
             if not any(isinstance(result_processor, supported) for supported in self._plugin.supported_processors):
                 logger.warning(
                     "Processor '%s' is not declared as supported by model '%s'; attempting to apply anyway.",
