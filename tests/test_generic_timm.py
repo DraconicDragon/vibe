@@ -12,7 +12,6 @@ from vibe.plugins.generic_timm import (
     GenericTimmMultiScorerPlugin,
     GenericTimmScorerPlugin,
     GenericTimmTaggerPlugin,
-    GenericTimmTagResult,
 )
 from vibe.results import MultiScoreResult, OutputType, ScoreResult, TagResult
 
@@ -126,7 +125,6 @@ def test_generic_timm_postprocess_can_return_tags(tmp_path: Path) -> None:
     plugin.load_ancillary({"config.json": config_path})
 
     result = plugin.postprocess(np.array([[0.25, 0.75]], dtype=np.float32))
-    assert isinstance(result, GenericTimmTagResult)
     assert isinstance(result, TagResult)
     assert result.output_type == OutputType.TAGS
     assert [entry.tag for entry in result.category("tags")] == ["cat", "dog"]

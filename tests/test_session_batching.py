@@ -423,7 +423,7 @@ def test_true_batch_preprocesses_per_chunk_not_whole_input(tmp_path: Path) -> No
     assert backend.calls == [2]
 
 
-def test_result_pipeline_applies_character_mapping_from_csv(tmp_path: Path) -> None:
+def test_result_pipeline_applies_character_copyright_mapping_from_csv(tmp_path: Path) -> None:
     mapping_path = tmp_path / "char_ip_map.csv"
     mapping_path.write_text(
         'name,ips\nmiku_hatsune,"[""vocaloid"", ""crypton""]"\n',
@@ -441,10 +441,10 @@ def test_result_pipeline_applies_character_mapping_from_csv(tmp_path: Path) -> N
     )
 
     assert isinstance(result, TagResult)
-    assert result.character_mapping == {"miku_hatsune": ["vocaloid", "crypton"]}
+    assert result.character_copyright_mapping == {"miku_hatsune": ["vocaloid", "crypton"]}
 
 
-def test_result_pipeline_applies_character_mapping_from_manual_json_path(tmp_path: Path) -> None:
+def test_result_pipeline_applies_character_copyright_mapping_from_manual_json_path(tmp_path: Path) -> None:
     manual_mapping = tmp_path / "manual_mapping.json"
     manual_mapping.write_text(
         '{"mapping": {"miku_hatsune": ["vocaloid", "crypton"]}}',
@@ -462,7 +462,7 @@ def test_result_pipeline_applies_character_mapping_from_manual_json_path(tmp_pat
     )
 
     assert isinstance(result, TagResult)
-    assert result.character_mapping == {"miku_hatsune": ["vocaloid", "crypton"]}
+    assert result.character_copyright_mapping == {"miku_hatsune": ["vocaloid", "crypton"]}
 
 
 def test_result_pipeline_optional_cleaning_preserves_kaomojis(tmp_path: Path) -> None:
@@ -510,7 +510,7 @@ def test_result_pipeline_mapping_and_cleaning_can_run_together(tmp_path: Path) -
     )
 
     assert isinstance(result, TagResult)
-    assert result.character_mapping == {"miku hatsune": ["vocaloid ip", "crypton"]}
+    assert result.character_copyright_mapping == {"miku hatsune": ["vocaloid ip", "crypton"]}
 
 
 def test_unsupported_processor_logs_warning_but_still_applies(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

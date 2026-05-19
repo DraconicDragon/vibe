@@ -7,8 +7,9 @@ import pytest
 from PIL import Image
 
 import vibe
-from vibe.plugins.wd_tagger import WDEva02Plugin, WDTagResult
+from vibe.plugins.wd_tagger import WDEva02Plugin
 from vibe.result_processors import CharacterIPMapping, CleanTags
+from vibe.results import TagResult
 
 
 def _write_selected_tags_csv(path: Path) -> None:
@@ -82,16 +83,16 @@ def test_postprocess_returns_full_category_lists_and_sigmoid(tmp_path: Path) -> 
     raw = np.array([[3.0, -3.0, 2.0, 5.0, -2.0]], dtype=np.float32)
     result = plugin.postprocess(raw)
 
-    assert isinstance(result, WDTagResult)
+    assert isinstance(result, TagResult)
 
-    assert [entry.tag for entry in result.rating] == ["safe"]
-    assert [entry.tag for entry in result.general] == ["blue_hair", "cat_ears"]
-    assert [entry.tag for entry in result.character] == ["miku_hatsune", "^_^"]
+    assert [entry.tag for entry in result.tags["rating"]] == ["safe"]
+    assert [entry.tag for entry in result.tags["general"]] == ["blue_hair", "cat_ears"]
+    assert [entry.tag for entry in result.tags["character"]] == ["miku_hatsune", "^_^"]
 
     # Sorted descending by score in each category.
-    assert result.general[0].score > result.general[1].score
-    assert result.character[0].score > result.character[1].score
-    assert result.character_mapping is None
+    assert result.tags["general"][0].score > result.tags["general"][1].score
+    assert result.tags["character"][0].score > result.tags["character"][1].score
+    assert result.character_copyright_mapping is None
 
 
 def test_wd_plugin_declares_supported_processors_by_class() -> None:

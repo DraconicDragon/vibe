@@ -7,14 +7,6 @@ from vibe.plugin_validation import validate_plugin_declaration
 from vibe.results import OutputType, TagEntry, TagResult
 
 
-@dataclass
-class _TestTagResult(TagResult):
-    tags: list[TagEntry] = field(default_factory=list)
-
-    def categories(self) -> dict[str, list[TagEntry]]:
-        return {"tags": self.tags}
-
-
 class _BaseTestPlugin(ModelPlugin):
     model_id = ""
     aliases: list[str] = []
@@ -30,7 +22,7 @@ class _BaseTestPlugin(ModelPlugin):
 
     def postprocess(self, raw_output):
         del raw_output
-        return _TestTagResult(tags=[])
+        return TagResult()
 
 
 class _MissingWeightsPlugin(_BaseTestPlugin):

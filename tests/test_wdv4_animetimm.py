@@ -9,9 +9,9 @@ from PIL import Image
 import vibe
 from tests.common.animetimm_selected_repos import ANIMETIMM_V4_SELECTED_REPOS
 from vibe.plugins.wdv4_animetimm import (
-    AnimeTimmV4TagResult,
     WDV4CaformerB36FullPlugin,
 )
+from vibe.results import TagResult
 
 
 def _write_selected_tags_csv(path: Path) -> None:
@@ -175,12 +175,12 @@ def test_postprocess_returns_raw_artist_and_category_entries(tmp_path: Path) -> 
     raw = np.array([[0.50, 0.56, 0.70, 0.80]], dtype=np.float32)
     result = plugin.postprocess(raw)
 
-    assert isinstance(result, AnimeTimmV4TagResult)
+    assert isinstance(result, TagResult)
 
-    assert [entry.tag for entry in result.general] == ["1girl"]
-    assert [entry.tag for entry in result.artist] == ["artist_name"]
-    assert [entry.tag for entry in result.character] == ["char_name"]
-    assert [entry.tag for entry in result.rating] == ["safe"]
+    assert [entry.tag for entry in result.tags["general"]] == ["1girl"]
+    assert [entry.tag for entry in result.tags["artist"]] == ["artist_name"]
+    assert [entry.tag for entry in result.tags["character"]] == ["char_name"]
+    assert [entry.tag for entry in result.tags["rating"]] == ["safe"]
 
 
 def test_pytorch_preprocess_uses_config_image_size_when_available(tmp_path: Path) -> None:

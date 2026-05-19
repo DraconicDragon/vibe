@@ -90,15 +90,15 @@ def test_hf_real_world_wdv4_model_inference_smoke() -> None:
                 filtered = unfiltered
 
         assert isinstance(unfiltered, TagResult), f"Model '{repo_id}' returned unexpected result type."
-        categories = unfiltered.categories()
-        assert categories, f"Model '{repo_id}' returned empty category mapping."
-        assert any(len(entries) > 0 for entries in categories.values()), (
+        tags = unfiltered.tags
+        assert tags, f"Model '{repo_id}' returned empty category mapping."
+        assert any(len(entries) > 0 for entries in tags.values()), (
             f"Model '{repo_id}' returned category mapping with no entries."
         )
 
         if RUN_REAL_WORLD_THRESHOLDS:
-            unfiltered_count = sum(len(entries) for entries in unfiltered.categories().values())
-            filtered_count = sum(len(entries) for entries in filtered.categories().values())
+            unfiltered_count = sum(len(entries) for entries in unfiltered.tags.values())
+            filtered_count = sum(len(entries) for entries in filtered.tags.values())
             assert filtered_count <= unfiltered_count, (
                 f"Tag-level-thresholds increased output count for model '{repo_id}', which should not happen."
             )
