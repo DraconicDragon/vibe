@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,22 +21,6 @@ from vibe.results import OutputType, TagEntry, TagResult
 from vibe.tag_categories import DanbooruTagCategory
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class WDTagResult(TagResult):
-    """WD model output schema with explicit category fields."""
-
-    rating: list[TagEntry] = field(default_factory=list)
-    general: list[TagEntry] = field(default_factory=list)
-    character: list[TagEntry] = field(default_factory=list)
-
-    def categories(self) -> dict[str, list[TagEntry]]:
-        return {
-            "rating": self.rating,
-            "general": self.general,
-            "character": self.character,
-        }
 
 
 class WDTaggerBasePlugin(ModelPlugin):
@@ -113,7 +96,7 @@ class WDTaggerBasePlugin(ModelPlugin):
     def postprocess(
         self,
         raw_output: Any,
-    ) -> WDTagResult:
+    ) -> TagResult:
         """Return full scored output grouped by WD tag category."""
         scores = normalize_output_scores(raw_output)
 
@@ -129,10 +112,12 @@ class WDTaggerBasePlugin(ModelPlugin):
         general = self._entries_for_indices(self._general_indices, scores, usable_count)
         character = self._entries_for_indices(self._character_indices, scores, usable_count)
 
-        return WDTagResult(
-            rating=rating,
-            general=general,
-            character=character,
+        return TagResult(
+            tags={
+                "rating": rating,
+                "general": general,
+                "character": character,
+            }
         )
 
     def _entries_for_indices(

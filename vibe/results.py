@@ -8,7 +8,6 @@ Consumers should check result.output_type before accessing type-specific fields.
 from __future__ import annotations
 
 import logging
-from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Literal, TypeGuard
@@ -41,37 +40,32 @@ class TagEntry:
 
 
 @dataclass
-class TagResult(ABC):
+class TagResult:
     """
     Structured result for tagger model outputs.
 
-    Subclasses should expose category lists such as rating, general, and
-    character through categories().
+    Contains tags grouped by category.
     """
 
-    output_type: Literal[OutputType.TAGS] = field(default=OutputType.TAGS, init=False)
+    tags: dict[str, list[TagEntry]] = field(default_factory=dict)
     character_copyright_mapping: dict[str, list[str]] | None = None
-
-    @abstractmethod
-    def categories(self) -> dict[str, list[TagEntry]]:
-        """Return category name -> entries."""
-        raise NotImplementedError("TagResult subclasses must implement categories().")
+    output_type: Literal[OutputType.TAGS] = field(default=OutputType.TAGS, init=False)
 
     def category(self, name: str) -> list[TagEntry]:
         """Return tags of one category by name, or an empty list if missing."""
-        return self.categories().get(name, [])
+        return self.tags.get(name, [])
 
     def tag_names(self) -> list[str]:
-        """Return all tag names flattened across categories."""
+        """Return all tag names flattened across categories in a list."""
         names: list[str] = []
-        for entries in self.categories().values():
+        for entries in self.tags.values():
             names.extend(entry.tag for entry in entries)
         return names
 
     def as_score_dict(self) -> dict[str, float]:
         """Return a flat {tag: score} dict sorted by score descending."""
         all_entries: list[TagEntry] = []
-        for entries in self.categories().values():
+        for entries in self.tags.values():
             all_entries.extend(entries)
 
         sorted_entries = sorted(all_entries, key=lambda entry: entry.score, reverse=True)
@@ -88,10 +82,13 @@ class TagResult(ABC):
         return scores
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert the result to a dictionary."""
         d: dict[str, Any] = {
             "output_type": self.output_type.value,
         }
-        for category, entries in self.categories().items():
+
+        tags_dict: dict[str, dict[str, float]] = {}
+        for category, entries in self.tags.items():
             sorted_entries = sorted(entries, key=lambda entry: entry.score, reverse=True)
             tags_dict[category] = {entry.tag: entry.score for entry in sorted_entries}
 

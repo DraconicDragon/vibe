@@ -258,7 +258,7 @@ class CleanTags(ResultProcessor[TagResult, TagResult]):
         if not isinstance(result, TagResult):
             return result
 
-        for entries in result.categories().values():
+        for entries in result.tags.values():
             entries[:] = [TagEntry(tag=_clean_tag_text(entry.tag), score=entry.score) for entry in entries]
 
         if result.character_copyright_mapping is not None:
@@ -272,9 +272,7 @@ class CleanTags(ResultProcessor[TagResult, TagResult]):
 
 class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
     display_name = "Tag Level Thresholds"
-    description = (
-        "Filters tags using per-tag thresholds from selected_tags.csv. "
-    )
+    description = "Filters tags using per-tag thresholds from selected_tags.csv. "
 
     threshold_column = Param(
         "Name of the CSV column containing per-tag threshold values. Defaults to 'best_threshold'."
@@ -374,7 +372,7 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
                 ),
             )
 
-        for category, entries in result.categories().items():
+        for category, entries in result.tags.items():
             before = len(entries)
             filtered: list[TagEntry] = []
             for entry in entries:

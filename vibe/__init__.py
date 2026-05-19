@@ -1,6 +1,8 @@
 """
 vibe — vision transformer inference backend.
 
+# todo: change
+
 Quick start
 -----------
     import vibe
@@ -8,19 +10,19 @@ Quick start
     # Load a registered model (downloads from HF automatically)
     session = vibe.load("wd-eva02-v3")
     result = session.infer(image).first()
-    print(result.general[:5])
+    print([entry.tag for entry in result.tags["general"][:5]])
 
     # Batch processing: infer returns InferenceResult with multiple items
     results = session.infer([image1, image2, image3])
     for item in results:
-        print(f"Input {item.index}: {item.result.general[:3]}")
+        print(f"Input {item.index}: {[entry.tag for entry in item.result.tags['general'][:3]]}")
 
     # Use a local folder instead of HF
     session = vibe.load("wd-eva02-v3", source="local:/path/to/folder")
 
     # Custom: arbitrary source with a chosen plugin
     session = vibe.load_custom(
-        source="hf:SmilingWolf/wd-eva02-large-tagger-v3-updated",
+        source="hf:SmilingWolf/wd-eva02-large-tagger-v3-updated", # doesn't exist, just example
         plugin="WDEva02Plugin",
     )
 

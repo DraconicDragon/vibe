@@ -14,16 +14,6 @@ from vibe.results import MultiScoreResult, OutputType, ScoreResult, TagEntry, Ta
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class GenericTimmTagResult(TagResult):
-    """Generic timm tag output grouped as a single flat tag category."""
-
-    tags: list[TagEntry] = field(default_factory=list)
-
-    def categories(self) -> dict[str, list[TagEntry]]:
-        return {"tags": self.tags}
-
-
 class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
     """Generic timm classifier/scorer for timm-style repos."""
 
@@ -84,8 +74,12 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
         score_values = [float(value) for value in scores]
         if self.output_type == OutputType.TAGS:
-            return GenericTimmTagResult(
-                tags=[TagEntry(tag=label, score=score) for label, score in zip(labels, score_values, strict=False)]
+            return TagResult(
+                tags={
+                    "tags": [
+                        TagEntry(tag=label, score=score) for label, score in zip(labels, score_values, strict=False)
+                    ]
+                }
             )
 
         label_map = {index: label for index, label in enumerate(labels[: len(score_values)])}

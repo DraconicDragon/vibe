@@ -26,24 +26,6 @@ from vibe.tag_categories import DanbooruTagCategory
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class AnimeTimmV4TagResult(TagResult):
-    """AnimeTimm v4 output grouped by explicit category fields."""
-
-    rating: list[TagEntry] = field(default_factory=list)
-    general: list[TagEntry] = field(default_factory=list)
-    character: list[TagEntry] = field(default_factory=list)
-    artist: list[TagEntry] = field(default_factory=list)
-
-    def categories(self) -> dict[str, list[TagEntry]]:
-        return {
-            "rating": self.rating,
-            "general": self.general,
-            "character": self.character,
-            "artist": self.artist,
-        }
-
-
 class WDV4AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
     """Shared implementation for AnimeTimm dbv4-full taggers."""
 
@@ -134,7 +116,7 @@ class WDV4AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
     # region Preprocess & Out Mapping
 
-    def postprocess(self, raw_output: Any) -> AnimeTimmV4TagResult:
+    def postprocess(self, raw_output: Any) -> TagResult:
         """Return full scored output grouped by AnimeTimm categories."""
         scores = normalize_output_scores(raw_output)
 
@@ -151,11 +133,13 @@ class WDV4AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
         character = self._entries_for_indices(self._character_indices, scores, usable_count)
         artist = self._entries_for_indices(self._artist_indices, scores, usable_count)
 
-        return AnimeTimmV4TagResult(
-            rating=rating,
-            general=general,
-            character=character,
-            artist=artist,
+        return TagResult(
+            tags={
+                "rating": rating,
+                "general": general,
+                "character": character,
+                "artist": artist,
+            }
         )
 
     def _entries_for_indices(
