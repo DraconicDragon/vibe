@@ -50,7 +50,7 @@ class TagResult(ABC):
     """
 
     output_type: Literal[OutputType.TAGS] = field(default=OutputType.TAGS, init=False)
-    character_mapping: dict[str, list[str]] | None = None
+    character_copyright_mapping: dict[str, list[str]] | None = None
 
     @abstractmethod
     def categories(self) -> dict[str, list[TagEntry]]:
@@ -93,12 +93,13 @@ class TagResult(ABC):
         }
         for category, entries in self.categories().items():
             sorted_entries = sorted(entries, key=lambda entry: entry.score, reverse=True)
-            d[category] = [entry.to_dict() for entry in sorted_entries]
-        if self.character_mapping is None:
-            return d
-        d["character_mapping"] = {
-            key: [str(value) for value in values] for key, values in self.character_mapping.items()
-        }
+            tags_dict[category] = {entry.tag: entry.score for entry in sorted_entries}
+
+        d["tags"] = tags_dict
+
+        if self.character_copyright_mapping is not None:
+            d["character_copyright_mapping"] = self.character_copyright_mapping
+
         return d
 
 
