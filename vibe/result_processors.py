@@ -47,6 +47,8 @@ KAOMOJIS = {
 TIn = TypeVar("TIn", bound=ModelResult)
 TOut = TypeVar("TOut", bound=ModelResult)
 
+# todo: ability to run result processors separately outside of vibe.infer
+
 
 @dataclass
 class ResultProcessorContext:
@@ -184,6 +186,8 @@ class ResultProcessor(ABC, Generic[TIn, TOut]):
         raise NotImplementedError
 
 
+# todo: add option to choose between adding the copyright tags as is with same score to copyright category
+# or as it is right now in separate character_copyright_mapping field
 class CharacterIPMapping(ResultProcessor[TagResult, TagResult]):
     display_name = "Character IP Mapping"
     description = "Maps copyright tags to character tags from tag results."
@@ -245,8 +249,12 @@ class CharacterIPMapping(ResultProcessor[TagResult, TagResult]):
 
 
 class CleanTags(ResultProcessor[TagResult, TagResult]):
+    """Replaces underscores in all tags with spaces while preserving kaomoji tags like ^_^.
+    Will always run as the last ResultProcessor to prevent issues in the result processor pipeline.
+    """
+
     display_name = "Clean Tags"
-    description = "Replaces underscores with spaces, preserving kaomojis."
+    description = "Replaces underscores in all tags with spaces while preserving kaomoji tags like ^_^."
 
     def process(
         self,
