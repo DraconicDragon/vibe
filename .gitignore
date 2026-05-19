@@ -4,7 +4,6 @@ vibe/models/
 _reference/
 *.txt
 *.md
-old/
 .pytest_cache/
 thing_scripts/
 example/images/
