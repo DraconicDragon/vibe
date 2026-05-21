@@ -339,7 +339,7 @@ class ScoreThresholds(ResultProcessor[TagResult, TagResult]):
 
 class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
     display_name = "Tag Level Thresholds"
-    description = "Filters tags using per-tag thresholds from selected_tags.csv. "
+    description = "Filters tags using per-tag thresholds from selected_tags.csv."
 
     threshold_column = Param(
         "Name of the CSV column containing per-tag threshold values. Defaults to 'best_threshold'."
@@ -347,12 +347,13 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
     threshold_offset = Param(
         "Fixed value added to every tag's threshold. "
         "Negative = more tags pass, positive = fewer. "
-        "Cannot be combined with threshold_relaxation."
+        "Cannot be combined with threshold_multiplier."
     )
-    threshold_relaxation = Param(
-        "Proportional reduction applied to each tag's threshold. "
-        "E.g. 0.1 reduces a threshold of 0.80 to 0.72 and 0.20 to 0.18. "
-        "Must be in [0.0, 1.0]. Cannot be combined with threshold_offset."
+    threshold_multiplier = Param(
+        "Multiplicative adjustment applied to each tag's threshold. "
+        "Negative value relaxes the threshold, positive tightens it. "
+        "E.g. 0.10 increases 0.80 to 0.88, and -0.10 decreases 0.80 to 0.72. "
+        "Must be in [-1.0, 1.0]. Cannot be combined with threshold_offset."
     )
 
     def __init__(
@@ -360,15 +361,16 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
         *,
         threshold_column: str = "best_threshold",
         threshold_offset: float = 0.0,
-        threshold_relaxation: float = 0.0,
+        threshold_multiplier: float = 0.0,
     ) -> None:
-        if threshold_offset != 0.0 and threshold_relaxation != 0.0:
-            raise ValueError("Use only one of threshold_offset or threshold_relaxation.")
-        if threshold_relaxation < 0.0 or threshold_relaxation >= 1.0:
-            raise ValueError("threshold_relaxation must be between 0.0 and 1.0 (non-inclusive).")
+        if threshold_offset != 0.0 and threshold_multiplier != 0.0:
+            raise ValueError("Use only one of threshold_offset or threshold_multiplier.")
+        if threshold_multiplier < -1.0 or threshold_multiplier > 1.0:
+            raise ValueError("threshold_multiplier must be between -1.0 and 1.0 (inclusive).")
+
         self._threshold_column = threshold_column
         self._threshold_offset = threshold_offset
-        self._threshold_relaxation = threshold_relaxation
+        self._threshold_multiplier = threshold_multiplier
         self._threshold_cache: dict[str, dict[str, float]] = {}
         self._threshold_stats_cache: dict[str, tuple[int, int, bool]] = {}
         self._warned_this_call: set[str] = set()
@@ -446,8 +448,8 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
                 threshold = threshold_map.get(entry.tag)
                 if threshold is not None:
                     threshold += self._threshold_offset
-                    if self._threshold_relaxation != 0.0:
-                        threshold *= 1.0 - self._threshold_relaxation
+                    if self._threshold_multiplier != 0.0:
+                        threshold *= 1.0 + self._threshold_multiplier
                 if threshold is None or entry.score >= threshold:
                     filtered.append(entry)
             entries[:] = filtered
