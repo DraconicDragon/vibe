@@ -672,10 +672,11 @@ class ModelSession:
         current = result
         for result_processor in effective_processors:
             if not any(isinstance(result_processor, supported) for supported in self._plugin.supported_processors):
-                logger.warning(
-                    "Processor '%s' is not declared as supported by model '%s'; attempting to apply anyway.",
-                    result_processor.__class__.__name__,
-                    self.model_id,
+                proc_name = result_processor.__class__.__name__
+                self._processor_context.warn_once(
+                    f"unsupported-processor:{proc_name}",
+                    f"Processor '{proc_name}' is not declared as supported by model '{self.model_id}'; "
+                    "attempting to apply anyway.",
                 )
 
             try:

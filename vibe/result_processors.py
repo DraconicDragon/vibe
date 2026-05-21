@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Generic, TypeVar, Union, get_type_hints
 
@@ -55,6 +55,14 @@ class ResultProcessorContext:
     file_map: FileMap
     source: str
     auto_download: bool
+    _warned_keys: set[str] = field(default_factory=set, repr=False, compare=False)
+
+    def warn_once(self, key: str, message: str) -> None:
+        """Log a warning message exactly once for the given key in this context (session)."""
+        if key in self._warned_keys:
+            return
+        self._warned_keys.add(key)
+        logger.warning(message)
 
 
 @dataclass(frozen=True)
@@ -373,11 +381,6 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
         self._threshold_multiplier = threshold_multiplier
         self._threshold_cache: dict[str, dict[str, float]] = {}
         self._threshold_stats_cache: dict[str, tuple[int, int, bool]] = {}
-        self._warned_this_call: set[str] = set()
-
-    def on_infer_start(self, *, context: ResultProcessorContext) -> None:
-        del context
-        self._warned_this_call.clear()
 
     def process(
         self,
@@ -395,8 +398,8 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
             suffixes=(".csv",),
         )
         if csv_path is None:
-            self._warn(
-                key=f"missing-csv:{context.source}",
+            context.warn_once(
+                key=f"tag-level-thresholds:missing-csv:{context.source}",
                 message=(
                     "TagLevelThresholds could not find a tag-list CSV in model files; "
                     "cannot apply tag-level thresholds."
@@ -410,8 +413,8 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
         missing_pct = (missing_count / total_tags * 100.0) if total_tags > 0 else 0.0
 
         if not threshold_column_present:
-            self._warn(
-                key=f"threshold-column-missing:{csv_path}",
+            context.warn_once(
+                key=f"tag-level-thresholds:threshold-column-missing:{csv_path}",
                 message=(
                     f"selected_tags.csv at '{csv_path}' has no '{self._threshold_column}' column; "
                     f"0/{total_tags} tags have threshold data and {missing_count}/{total_tags} "
@@ -421,8 +424,8 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
             return result
 
         if not threshold_map:
-            self._warn(
-                key=f"threshold-values-missing:{csv_path}",
+            context.warn_once(
+                key=f"tag-level-thresholds:threshold-values-missing:{csv_path}",
                 message=(
                     f"selected_tags.csv at '{csv_path}' has a '{self._threshold_column}' column, "
                     f"but 0/{total_tags} tags have usable threshold data and {missing_count}/{total_tags} "
@@ -432,8 +435,8 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
             return result
 
         if missing_count > 0:
-            self._warn(
-                key=f"threshold-values-partial:{csv_path}",
+            context.warn_once(
+                key=f"tag-level-thresholds:threshold-values-partial:{csv_path}",
                 message=(
                     f"selected_tags.csv at '{csv_path}' has partial '{self._threshold_column}' data: "
                     f"{with_threshold_count}/{total_tags} tags have thresholds, while {missing_count}/{total_tags} "
@@ -498,13 +501,6 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
             return stats
         return (0, 0, False)
 
-    def _warn(self, *, key: str, message: str) -> None:
-        namespaced = f"tag-level-thresholds:{key}"
-        if namespaced in self._warned_this_call:
-            return
-        self._warned_this_call.add(namespaced)
-        logger.warning(message)
-
 
 class MultiScoreToScore(ResultProcessor[MultiScoreResult, ScoreResult]):
     display_name = "Multi-Score to Score"
@@ -539,7 +535,10 @@ class MultiScoreToScore(ResultProcessor[MultiScoreResult, ScoreResult]):
             raise TypeError(f"Expected MultiScoreResult, got {type(result)}")
 
         if not result.scores:
-            logger.warning("MultiScoreToScore received empty scores; returning zero score.")
+            context.warn_once(
+                f"MultiScoreToScore:empty-scores:{self._label}",
+                "MultiScoreToScore received empty scores; returning zero score.",
+            )
             return ScoreResult(score=0.0, score_min=0.0, score_max=1.0, label=self._label, normalized_score=0.0)
 
         normalized_result = self._normalized_score.process(result, context=context)
@@ -574,7 +573,6 @@ class NormalizedScore(ResultProcessor[Union[ScoreResult, MultiScoreResult], Unio
     def __init__(self, *, use_samples_percentile: bool = False) -> None:
         self._use_samples_percentile = use_samples_percentile
         self._samples_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-        self._warned_paths: set[str] = set()
 
     def process(
         self,
@@ -613,13 +611,11 @@ class NormalizedScore(ResultProcessor[Union[ScoreResult, MultiScoreResult], Unio
             return self._interp_percentile(weighted_mean, x, y)
 
         if samples_path is not None:
-            key = str(samples_path)
-            if key not in self._warned_paths:
-                logger.warning(
-                    f"Optional samples file '{samples_path}' detected but not used. "
-                    "Set use_samples_percentile=True to apply percentile normalization."
-                )
-                self._warned_paths.add(key)
+            context.warn_once(
+                f"NormalizedScore:samples-detected-not-used:{samples_path}",
+                f"Optional samples file '{samples_path}' detected but not used. "
+                "Set use_samples_percentile=True to apply percentile normalization.",
+            )
 
         max_v = float(max(len(result.scores) - 1, 1))
         if max_v <= 0.0:
