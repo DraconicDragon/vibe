@@ -34,13 +34,12 @@ onnx-cpu = ["onnxruntime>=1.17.3"]
 # Linux: needs CUDA/cuDNN system-wide, or use onnx-cuda-bundled to pull them from PyPI.
 onnx-cuda = ["onnxruntime-gpu>=1.17.3"]
 
-onnx-cuda-cu13 = ["onnxruntime-gpu>=1.24.1"]
+#onnx-cuda-cu13 = ["onnxruntime-gpu>=1.24.1"]
 
 
 # NVIDIA GPU (CUDA) on Linux with CUDA libs from PyPI.
 # Unnecessary if PyTorch+CUDA is already installed (nvidia-* packages already present)
-# if pytorch+cuda is cu130, onnxruntime needs to be >=v1.24.1 and 
-# I think the packages below need to be cu13 instead too 
+# Assuming that the cuda version is <13
 onnx-cuda-linux-bundled-cu12 = [
     "onnxruntime-gpu>=1.17.3; platform_system == 'Linux'",
     "nvidia-cudnn-cu12; platform_system == 'Linux'",
@@ -50,14 +49,14 @@ onnx-cuda-linux-bundled-cu12 = [
     "nvidia-cublas-cu12; platform_system == 'Linux'",
 ]
 
-onnx-cuda-linux-bundled-cu13 = [
-    "onnxruntime-gpu>=v1.24.1; platform_system == 'Linux'",
-    "nvidia-cudnn-cu13; platform_system == 'Linux'",
-    "nvidia-curand-cu13; platform_system == 'Linux'",
-    "nvidia-cufft-cu13; platform_system == 'Linux'",
-    "nvidia-cuda-runtime-cu13; platform_system == 'Linux'",
-    "nvidia-cublas-cu13; platform_system == 'Linux'",
-]
+# onnx-cuda-linux-bundled-cu13 = [
+#     "onnxruntime-gpu>=v1.24.1; platform_system == 'Linux'",
+#     "nvidia-cudnn-cu13; platform_system == 'Linux'",
+#     "nvidia-curand-cu13; platform_system == 'Linux'",
+#     "nvidia-cufft-cu13; platform_system == 'Linux'",
+#     "nvidia-cuda-runtime-cu13; platform_system == 'Linux'",
+#     "nvidia-cublas-cu13; platform_system == 'Linux'",
+# ]
 
 # PYTORCH BACKEND
 # ONNX and PyTorch backends are independent and can coexist (e.g. onnx-cuda + torch-cpu).
