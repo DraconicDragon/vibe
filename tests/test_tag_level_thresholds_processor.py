@@ -69,10 +69,10 @@ def test_tag_level_thresholds_filters_tags_by_best_threshold(tmp_path: Path) -> 
     processor.on_infer_start(context=context)
     out = processor.process(result, context=context)
 
-    assert [entry.tag for entry in out.tags["general"]] == ["missing_threshold"]  # ty:ignore[unresolved-attribute]
-    assert [entry.tag for entry in out.tags["artist"]] == ["artist_name"]  # ty:ignore[unresolved-attribute]
-    assert out.tags["character"] == []  # ty:ignore[unresolved-attribute]
-    assert [entry.tag for entry in out.tags["rating"]] == ["safe"]  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.tags["general"]] == ["missing_threshold"]
+    assert [entry.tag for entry in out.tags["artist"]] == ["artist_name"]
+    assert out.tags["character"] == []
+    assert [entry.tag for entry in out.tags["rating"]] == ["safe"]
 
 
 def test_tag_level_thresholds_applies_threshold_offset(tmp_path: Path) -> None:
@@ -92,40 +92,40 @@ def test_tag_level_thresholds_applies_threshold_offset(tmp_path: Path) -> None:
     processor.on_infer_start(context=context)
     out = processor.process(result, context=context)
 
-    assert [entry.tag for entry in out.tags["general"]] == ["1girl"]  # ty:ignore[unresolved-attribute]
-    assert [entry.tag for entry in out.tags["artist"]] == ["artist_name"]  # ty:ignore[unresolved-attribute]
-    assert [entry.tag for entry in out.tags["character"]] == ["char_name"]  # ty:ignore[unresolved-attribute]
-    assert [entry.tag for entry in out.tags["rating"]] == ["safe"]  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.tags["general"]] == ["1girl"]
+    assert [entry.tag for entry in out.tags["artist"]] == ["artist_name"]
+    assert [entry.tag for entry in out.tags["character"]] == ["char_name"]
+    assert [entry.tag for entry in out.tags["rating"]] == ["safe"]
 
 
-def test_tag_level_thresholds_applies_threshold_relaxation(tmp_path: Path) -> None:
+def test_tag_level_thresholds_applies_threshold_multiplier(tmp_path: Path) -> None:
     csv_path = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv(csv_path)
 
-    processor = TagLevelThresholds(threshold_relaxation=0.1)
+    processor = TagLevelThresholds(threshold_multiplier=0.1)
     context = _make_context(csv_path=csv_path)
 
     result = _SimpleTagResult(
-        general=[TagEntry(tag="1girl", score=0.41)],
-        artist=[TagEntry(tag="artist_name", score=0.50)],
-        character=[TagEntry(tag="char_name", score=0.68)],
-        rating=[TagEntry(tag="safe", score=0.54)],
+        general=[TagEntry(tag="1girl", score=0.50)],  # 0.45 -> 0.495, so keep
+        artist=[TagEntry(tag="artist_name", score=0.60)],  # 0.55 -> 0.605, so drop
+        character=[TagEntry(tag="char_name", score=0.83)],  # 0.75 -> 0.825, so keep
+        rating=[TagEntry(tag="safe", score=0.65)],  # 0.60 -> 0.66, so drop
     )
 
     processor.on_infer_start(context=context)
     out = processor.process(result, context=context)
 
-    assert [entry.tag for entry in out.tags["general"]] == ["1girl"]  # ty:ignore[unresolved-attribute]
-    assert [entry.tag for entry in out.tags["artist"]] == ["artist_name"]  # ty:ignore[unresolved-attribute]
-    assert [entry.tag for entry in out.tags["character"]] == ["char_name"]  # ty:ignore[unresolved-attribute]
-    assert [entry.tag for entry in out.tags["rating"]] == ["safe"]  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.tags["general"]] == ["1girl"]
+    assert out.tags["artist"] == []
+    assert [entry.tag for entry in out.tags["character"]] == ["char_name"]
+    assert out.tags["rating"] == []
 
 
-def test_tag_level_thresholds_rejects_offset_and_relaxation_together() -> None:
+def test_tag_level_thresholds_rejects_offset_and_multiplier_together() -> None:
     try:
-        TagLevelThresholds(threshold_offset=-0.01, threshold_relaxation=0.1)
+        TagLevelThresholds(threshold_offset=-0.01, threshold_multiplier=0.1)
     except ValueError as exc:
-        assert "Use only one of threshold_offset or threshold_relaxation" in str(exc)
+        assert "Use only one of threshold_offset or threshold_multiplier" in str(exc)
     else:
         raise AssertionError("Expected TagLevelThresholds to reject conflicting threshold adjustments.")
 
@@ -166,7 +166,7 @@ def test_tag_level_thresholds_warns_when_threshold_column_is_missing(tmp_path: P
     processor.on_infer_start(context=context)
     out = processor.process(result, context=context)
 
-    assert [entry.tag for entry in out.tags["general"]] == ["1girl"]  # ty:ignore[unresolved-attribute]
+    assert [entry.tag for entry in out.tags["general"]] == ["1girl"]
     messages = [record.message for record in caplog.records if record.levelno >= logging.WARNING]
     assert any("has no 'best_threshold' column" in message for message in messages)
     assert any("0/4 tags have threshold data" in message for message in messages)
