@@ -278,6 +278,65 @@ class CleanTags(ResultProcessor[TagResult, TagResult]):
         return result
 
 
+class ScoreThresholds(ResultProcessor[TagResult, TagResult]):
+    display_name = "Score Thresholds"
+    description = "Filters tags using global and/or per-category score thresholds."
+
+    threshold = Param(
+        "Global minimum score required for tags to be kept. Ignored for categories with explicit category thresholds."
+    )
+
+    category_thresholds = Param(
+        "Per-category score thresholds. Overrides the global threshold for matching categories."
+    )
+
+    def __init__(
+        self,
+        *,
+        threshold: float = 0.0,
+        category_thresholds: dict[str, float] | None = None,
+    ) -> None:
+        if threshold < 0.0 or threshold > 1.0:
+            raise ValueError("threshold must be between 0.0 and 1.0.")
+
+        self._threshold = float(threshold)
+        self._category_thresholds = {
+            str(category): float(value) for category, value in (category_thresholds or {}).items()
+        }
+
+        for category, value in self._category_thresholds.items():
+            if value < 0.0 or value > 1.0:
+                raise ValueError(f"Threshold for category '{category}' must be between 0.0 and 1.0.")
+
+    def process(
+        self,
+        result: TagResult,
+        *,
+        context: ResultProcessorContext,
+    ) -> TagResult:
+        del context
+
+        for category, entries in result.tags.items():
+            threshold = self._category_thresholds.get(
+                category,
+                self._threshold,
+            )
+
+            before = len(entries)
+
+            entries[:] = [entry for entry in entries if entry.score >= threshold]
+
+            logger.debug(
+                "ScoreThresholds applied category=%s threshold=%.3f kept=%d dropped=%d",
+                category,
+                threshold,
+                len(entries),
+                before - len(entries),
+            )
+
+        return result
+
+
 class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
     display_name = "Tag Level Thresholds"
     description = "Filters tags using per-tag thresholds from selected_tags.csv. "
