@@ -21,6 +21,13 @@ try:
 except ImportError:
     _HAS_PILLOW_JXL = False
 
+try:
+    import pillow_heif  # noqa: F401
+
+    _HAS_PILLOW_HEIF = True
+except ImportError:
+    _HAS_PILLOW_HEIF = False
+
 
 @dataclass(frozen=True)
 class ImageChunk:
@@ -79,6 +86,7 @@ def load_image_if_path(
     cancel_check: CancelCheck | None = None,
     error_cls: type[Exception] = ValueError,
     has_pillow_jxl: bool | None = None,
+    has_pillow_heif: bool | None = None,
 ) -> Any:
     if cancel_check is not None:
         cancel_check()
@@ -96,8 +104,11 @@ def load_image_if_path(
         suffix = Path(path).suffix.lower()
         hint = ""
         pillow_jxl_available = _HAS_PILLOW_JXL if has_pillow_jxl is None else has_pillow_jxl
+        pillow_heif_available = _HAS_PILLOW_HEIF if has_pillow_heif is None else has_pillow_heif
         if suffix == ".jxl" and not pillow_jxl_available:
             hint = " Install 'pillow-jxl-plugin' to enable JPEG XL support: pip install pillow-jxl-plugin"
+        elif suffix in {".heif", ".heic"} and not pillow_heif_available:
+            hint = " Install 'pillow-heif' to enable HEIF/HEIC support: pip install pillow-heif"
         raise error_cls(f"Failed to load image at index {index} from path '{path}': {exc}.{hint}") from exc
 
     if cancel_check is not None:
@@ -197,6 +208,7 @@ def iter_load_images(
     cancel_check: CancelCheck | None = None,
     error_cls: type[Exception] = ValueError,
     has_pillow_jxl: bool | None = None,
+    has_pillow_heif: bool | None = None,
 ) -> Iterator[ImageChunk]:
     """Yield image batches loaded from the input list.
 
@@ -217,6 +229,7 @@ def iter_load_images(
             cancel_check=cancel_check,
             error_cls=error_cls,
             has_pillow_jxl=has_pillow_jxl,
+            has_pillow_heif=has_pillow_heif,
         )
 
     for start, chunk_images in iter_loaded_image_chunks(

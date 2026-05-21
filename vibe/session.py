@@ -42,7 +42,7 @@ def _fmt_dtype(value: Any) -> Any:
     return getattr(value, "dtype", None)
 
 
-# Log pillow_jxl availability at module load time for diagnostics
+# Log optional image format support at module load time for diagnostics
 _has_pillow_jxl: bool
 try:
     import pillow_jxl as _pjxl  # noqa: F401
@@ -55,6 +55,19 @@ except ImportError:
         "Install 'pillow-jxl-plugin' package to enable JPEG XL support, e.g.: pip install pillow-jxl-plugin"
     )
     logger.debug("pillow-jxl-plugin import failed; JPEG XL support unavailable.", exc_info=True)
+
+_has_pillow_heif: bool
+try:
+    import pillow_heif as _pheif  # noqa: F401
+
+    _has_pillow_heif = True
+except ImportError:
+    _has_pillow_heif = False
+    logger.info(
+        "pillow-heif not installed; HEIF/HEIC image format support is unavailable. "
+        "Install 'pillow-heif' package to enable HEIF/HEIC support, e.g.: pip install pillow-heif"
+    )
+    logger.debug("pillow-heif import failed; HEIF/HEIC support unavailable.", exc_info=True)
 
 
 _ASYNC_INFER_DONE = object()
@@ -262,6 +275,7 @@ class ModelSession:
                         cancel_check=self._check_cancelled,
                         error_cls=SessionError,
                         has_pillow_jxl=_has_pillow_jxl,
+                        has_pillow_heif=_has_pillow_heif,
                     )
 
                 if method == "sequential":
