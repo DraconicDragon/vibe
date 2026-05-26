@@ -2,8 +2,6 @@
 models/
 vibe/models/
 _reference/
-*.txt
-*.md
 .pytest_cache/
 thing_scripts/
 example/images/
