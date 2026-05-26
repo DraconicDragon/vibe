@@ -170,3 +170,41 @@ def test_tag_level_thresholds_warns_when_threshold_column_is_missing(tmp_path: P
     messages = [record.message for record in caplog.records if record.levelno >= logging.WARNING]
     assert any("has no 'best_threshold' column" in message for message in messages)
     assert any("0/4 tags have threshold data" in message for message in messages)
+
+
+def test_tag_level_thresholds_uses_fallback_for_missing_thresholds(tmp_path: Path, caplog) -> None:
+    csv_path = tmp_path / "selected_tags.csv"
+    _write_selected_tags_csv(csv_path)
+
+    processor = TagLevelThresholds(threshold_fallback=0.1)
+    context = _make_context(csv_path=csv_path)
+    result = _SimpleTagResult(
+        general=[TagEntry(tag="missing_threshold", score=0.05)],
+    )
+
+    caplog.set_level(logging.WARNING)
+    processor.on_infer_start(context=context)
+    out = processor.process(result, context=context)
+
+    assert out.tags["general"] == []
+    messages = [record.message for record in caplog.records if record.levelno >= logging.WARNING]
+    assert any("will use fallback threshold 0.100" in message for message in messages)
+
+
+def test_tag_level_thresholds_leaves_missing_thresholds_unfiltered_without_fallback(tmp_path: Path, caplog) -> None:
+    csv_path = tmp_path / "selected_tags.csv"
+    _write_selected_tags_csv(csv_path)
+
+    processor = TagLevelThresholds()
+    context = _make_context(csv_path=csv_path)
+    result = _SimpleTagResult(
+        general=[TagEntry(tag="missing_threshold", score=0.05)],
+    )
+
+    caplog.set_level(logging.WARNING)
+    processor.on_infer_start(context=context)
+    out = processor.process(result, context=context)
+
+    assert [entry.tag for entry in out.tags["general"]] == ["missing_threshold"]
+    messages = [record.message for record in caplog.records if record.levelno >= logging.WARNING]
+    assert any("will remain unfiltered" in message for message in messages)
