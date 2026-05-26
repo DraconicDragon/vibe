@@ -1,6 +1,6 @@
 # Vibe
 
-Vibe, or: Vision transformer Inference Backend (very creative name I know, thank you), is a library to quickly get started with end to end inference using my (mostly) favourite (small) vision transformers - like wd taggers, aesthetic scorers, and other classifiers.  
+Vibe, or: Vision transformer Inference Backend (very creative name I know, thank you), is a library to quickly get started with end to end inference using (mostly) my favourite (small) vision transformers - like wd taggers, aesthetic scorers, and other classifiers.  
 
 ## TLDR
 
@@ -17,11 +17,13 @@ I may be open to feature requests but I would be surprised that 1. You found thi
 
 ### Things that work, or "Features"
 
+TODO  
+
 For a list of supported models see: [SUPPORTED_MODELS.md](./SUPPORTED_MODELS.md)
 
-- Supports either ONNX or PyTorch models, or both! At least one is a required
+- Supports either ONNX or PyTorch models, or both! At least one backend is a required
   - useful to save space I guess; PyTorch models may perform better at larger batches on GPU(?)
-- Simple usage I guess, you only need to vibe.load() session and then session.infer()
+- Simple usage I guess, you mainly only need to vibe.load() a session and then session.infer()
 - Batching for better performance (throughput) on GPU (and CPU if explicitly passed)
   - I'm mentioning this because it seems like a lot of projects only do one image at a time when the models actually support batch inputs which are a bit faster than one image per inference call on GPU (or CPUs with stupid amount of cores I believe). On normal CPUs batch tensor input seems to be slower than one image at a time so vibe will default to "true" batch for GPU and "sequential" if using CPU, unless you explicitly pass `batch_method="true"`
 - Batched input will load the next chunk of images on demand as inference runs to improve throughput.
