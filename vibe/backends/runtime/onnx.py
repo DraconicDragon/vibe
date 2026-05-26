@@ -181,6 +181,49 @@ def resolve_onnx_provider_chain(
     return providers, provider_options if has_non_empty_options else None
 
 
+def _wants_accelerator(device: str) -> bool:
+    try:
+        value = normalize_device_string(device, backend="onnx")
+    except ValueError:
+        return False
+    return value not in {"cpu", "auto"}
+
+
+def _requested_onnx_provider_name(device: str) -> str | None:
+    try:
+        value = normalize_device_string(device, backend="onnx")
+    except ValueError:
+        return None
+
+    if value in {"gpu", "cuda"}:
+        return "CUDAExecutionProvider"
+    if value.startswith("gpu:") or value.startswith("cuda:"):
+        return "CUDAExecutionProvider"
+    if value.startswith("rocm"):
+        return "ROCMExecutionProvider"
+    if value.startswith("dml"):
+        return "DmlExecutionProvider"
+    if value == "mps":
+        return "CoreMLExecutionProvider"
+    return None
+
+
+def _has_accelerator_provider(providers: list[str]) -> bool:
+    accelerator_eps = _GPU_CLASS_PROVIDERS | {"CoreMLExecutionProvider", "DirectMLExecutionProvider"}
+    return any(p in accelerator_eps for p in providers)
+
+
+def _fallback_warning_message(device: str, resolved_providers: list[str], session_provider: str) -> str:
+    requested_provider = _requested_onnx_provider_name(device)
+    if requested_provider is None and resolved_providers:
+        requested_provider = resolved_providers[0]
+    requested_label = requested_provider or device.strip() or "auto"
+    return (
+        f"ONNX backend fell back to {session_provider} after ORT could not load the requested "
+        f"provider {requested_label}."
+    )
+
+
 def _iter_candidate_nvidia_lib_dirs() -> list[Path]:
     # Common pip locations for NVIDIA runtime wheels used by torch/onnxruntime.
     candidates: list[Path] = []
@@ -290,6 +333,7 @@ class ONNXBackend:
         self._input_name: str = ""
         self._output_names: list[str] | None = None
         self._providers: list[str] = []
+        self._requested_providers: list[str] = []
         self._provider_options: list[dict[str, Any]] = []
         self._requested_precision: str = "auto"
 
@@ -328,6 +372,7 @@ class ONNXBackend:
             ort_module=ort,
         )
 
+        self._requested_providers = list(resolved_providers)
         self._providers = resolved_providers
         self._provider_options = resolved_provider_options or []
         self._session = ort.InferenceSession(
@@ -354,7 +399,7 @@ class ONNXBackend:
                     "predictions",
                     "probs",
                     "probabilities",
-                    #"logits",
+                    # "logits",
                 ):
                     if pref in out_names:
                         target_name = pref
@@ -362,8 +407,26 @@ class ONNXBackend:
             self._output_names = [target_name]
             output_meta = next((o for o in outputs if o.name == target_name), outputs[0])
 
-        available_providers = _available_onnx_providers(ort)
+        session_providers = _normalize_provider_list([str(provider) for provider in self._session.get_providers()])
+        self._providers = session_providers
         primary_provider = self._providers[0] if self._providers else "CPUExecutionProvider"
+
+        requested_provider = _requested_onnx_provider_name(device)
+        requested_has_accelerator = _has_accelerator_provider(self._requested_providers)
+        session_has_accelerator = _has_accelerator_provider(session_providers)
+
+        if requested_has_accelerator and not session_has_accelerator and _wants_accelerator(device):
+            raise RuntimeError(
+                f"ONNX provider request '{device}' ({requested_provider or 'requested provider'}) could not be satisfied; "
+                f"session loaded only with {session_providers}."
+            )
+
+        if requested_has_accelerator and not session_has_accelerator and device.strip().lower() == "auto":
+            fallback_message = _fallback_warning_message(device, self._requested_providers, primary_provider)
+            logger.warning(fallback_message)
+            import warnings
+
+            warnings.warn(fallback_message, RuntimeWarning, stacklevel=2)
 
         if self._requested_precision in {"fp16", "bf16", "fp32"}:
             logger.warning(
@@ -376,13 +439,7 @@ class ONNXBackend:
                 "ONNX precision request 'int8_ov' accepted as future provider-specific option; no runtime cast applied yet."
             )
 
-        logger.info(
-            "ONNX model loaded in %.2fs | available EPs=%s | selected EP=%s | provider chain=%s",
-            load_seconds,
-            available_providers,
-            primary_provider,
-            self._providers,
-        )
+        logger.info("ONNX model loaded in %.2fs | session EP=%s", load_seconds, primary_provider)
         input_precision = _onnx_type_to_precision(getattr(input_meta, "type", None))
         output_precision = _onnx_type_to_precision(getattr(output_meta, "type", None))
         model_precision = input_precision or output_precision or "unknown"
@@ -460,6 +517,7 @@ class ONNXBackend:
         self._session = None
         self._input_name = ""
         self._providers = []
+        self._requested_providers = []
         self._provider_options = []
 
     def output_names(self) -> list[str]:
