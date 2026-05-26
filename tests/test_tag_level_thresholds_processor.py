@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pytest
+
 from vibe.loader import FileMap
 from vibe.result_processors import ResultProcessorContext, TagLevelThresholds
 from vibe.results import TagEntry, TagResult
@@ -130,7 +132,7 @@ def test_tag_level_thresholds_rejects_offset_and_multiplier_together() -> None:
         raise AssertionError("Expected TagLevelThresholds to reject conflicting threshold adjustments.")
 
 
-def test_tag_level_thresholds_warns_once_per_call_for_partial_thresholds(tmp_path: Path, caplog) -> None:
+def test_tag_level_thresholds_warns_once_per_context_for_partial_thresholds(tmp_path: Path, caplog) -> None:
     csv_path = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv(csv_path)
 
@@ -149,12 +151,13 @@ def test_tag_level_thresholds_warns_once_per_call_for_partial_thresholds(tmp_pat
 
     warning_messages = [record.message for record in caplog.records if record.levelno >= logging.WARNING]
     partial_msgs = [msg for msg in warning_messages if "has partial 'best_threshold' data" in msg]
-    assert len(partial_msgs) == 2
+
+    assert len(partial_msgs) == 1
     assert "4/5 tags have thresholds" in partial_msgs[0]
     assert "1/5 tags (20.0%)" in partial_msgs[0]
 
 
-def test_tag_level_thresholds_warns_when_threshold_column_is_missing(tmp_path: Path, caplog) -> None:
+def test_tag_level_thresholds_raises_when_threshold_column_is_missing(tmp_path: Path) -> None:
     csv_path = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv_without_threshold_column(csv_path)
 
@@ -162,14 +165,10 @@ def test_tag_level_thresholds_warns_when_threshold_column_is_missing(tmp_path: P
     context = _make_context(csv_path=csv_path)
     result = _SimpleTagResult(general=[TagEntry(tag="1girl", score=0.10)])
 
-    caplog.set_level(logging.WARNING)
     processor.on_infer_start(context=context)
-    out = processor.process(result, context=context)
 
-    assert [entry.tag for entry in out.tags["general"]] == ["1girl"]
-    messages = [record.message for record in caplog.records if record.levelno >= logging.WARNING]
-    assert any("has no 'best_threshold' column" in message for message in messages)
-    assert any("0/4 tags have threshold data" in message for message in messages)
+    with pytest.raises(RuntimeError, match=r"is missing the 'best_threshold' column"):
+        processor.process(result, context=context)
 
 
 def test_tag_level_thresholds_uses_fallback_for_missing_thresholds(tmp_path: Path, caplog) -> None:
