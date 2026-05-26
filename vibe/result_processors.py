@@ -366,6 +366,10 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
         "E.g. 0.10 increases 0.80 to 0.88, and -0.10 decreases 0.80 to 0.72. "
         "Must be in [-1.0, 1.0]. Cannot be combined with threshold_offset."
     )
+    threshold_fallback = Param(
+        "Optional fallback threshold used when a tag has no per-tag threshold value. "
+        "If omitted, tags without thresholds remain unfiltered."
+    )
 
     def __init__(
         self,
@@ -373,15 +377,19 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
         threshold_column: str = "best_threshold",
         threshold_offset: float = 0.0,
         threshold_multiplier: float = 0.0,
+        threshold_fallback: float | None = None,
     ) -> None:
         if threshold_offset != 0.0 and threshold_multiplier != 0.0:
             raise ValueError("Use only one of threshold_offset or threshold_multiplier.")
         if threshold_multiplier < -1.0 or threshold_multiplier > 1.0:
             raise ValueError("threshold_multiplier must be between -1.0 and 1.0 (inclusive).")
+        if threshold_fallback is not None and (threshold_fallback < 0.0 or threshold_fallback > 1.0):
+            raise ValueError("threshold_fallback must be between 0.0 and 1.0 (inclusive) when provided.")
 
         self._threshold_column = threshold_column
         self._threshold_offset = threshold_offset
         self._threshold_multiplier = threshold_multiplier
+        self._threshold_fallback = threshold_fallback
         self._threshold_cache: dict[str, dict[str, float]] = {}
         self._threshold_stats_cache: dict[str, tuple[int, int, bool]] = {}
 
@@ -416,34 +424,30 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
         missing_pct = (missing_count / total_tags * 100.0) if total_tags > 0 else 0.0
 
         if not threshold_column_present:
-            context.warn_once(
-                key=f"tag-level-thresholds:threshold-column-missing:{csv_path}",
-                message=(
-                    f"selected_tags.csv at '{csv_path}' has no '{self._threshold_column}' column; "
-                    f"0/{total_tags} tags have threshold data and {missing_count}/{total_tags} "
-                    f"tags ({missing_pct:.1f}%) are missing it. Tag-level-threshold filtering is skipped."
-                ),
+            raise RuntimeError(
+                f"selected_tags.csv at '{csv_path}' is missing the '{self._threshold_column}' column. "
+                "Cannot apply tag-level thresholds."
             )
-            return result
 
         if not threshold_map:
-            context.warn_once(
-                key=f"tag-level-thresholds:threshold-values-missing:{csv_path}",
-                message=(
-                    f"selected_tags.csv at '{csv_path}' has a '{self._threshold_column}' column, "
-                    f"but 0/{total_tags} tags have usable threshold data and {missing_count}/{total_tags} "
-                    f"tags ({missing_pct:.1f}%) are missing it. Tag-level-threshold filtering is skipped."
-                ),
+            raise RuntimeError(
+                f"selected_tags.csv at '{csv_path}' has the '{self._threshold_column}' column, "
+                f"but 0/{total_tags} tags have usable threshold data. "
+                "Tag-level-threshold filtering is skipped because no thresholds were found."
             )
-            return result
 
         if missing_count > 0:
+            fallback_text = (
+                f"will use fallback threshold {self._threshold_fallback:.3f}"
+                if self._threshold_fallback is not None
+                else "will remain unfiltered"
+            )
             context.warn_once(
                 key=f"tag-level-thresholds:threshold-values-partial:{csv_path}",
                 message=(
                     f"selected_tags.csv at '{csv_path}' has partial '{self._threshold_column}' data: "
                     f"{with_threshold_count}/{total_tags} tags have thresholds, while {missing_count}/{total_tags} "
-                    f"tags ({missing_pct:.1f}%) are missing it and will remain unfiltered."
+                    f"tags ({missing_pct:.1f}%) are missing it and {fallback_text}."
                 ),
             )
 
@@ -452,6 +456,9 @@ class TagLevelThresholds(ResultProcessor[TagResult, TagResult]):
             filtered: list[TagEntry] = []
             for entry in entries:
                 threshold = threshold_map.get(entry.tag)
+                if threshold is None:
+                    threshold = self._threshold_fallback
+
                 if threshold is not None:
                     threshold += self._threshold_offset
                     if self._threshold_multiplier != 0.0:
