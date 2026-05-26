@@ -137,7 +137,7 @@ class ModelSession:
                 logger.debug("GPU process memory metric unavailable (likely missing NVML/pynvml).")
 
     # region Primary Interface
-
+# todo: theres 3 entry points when there only need to be one, consider changing infer_batches() to internal function, mind infer_single() too
     def infer(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],

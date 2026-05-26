@@ -65,6 +65,9 @@ class ResultProcessorContext:
         logger.warning(message)
 
 
+# todo: rework/improve, maybe add constraints or something, or dont, implicit is there but not explicit
+
+
 @dataclass(frozen=True)
 class ParamInfo:
     name: str

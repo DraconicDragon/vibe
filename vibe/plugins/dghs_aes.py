@@ -40,6 +40,14 @@ def _build_required_files(hf_subdir: str | None) -> list[FileSpec]:
             role=FileRole.MAPPING,
             hf_subdir=hf_subdir,
         ),
+        # todo: add support for both npz and csv, data is same.
+        # npz more efficient, download it if neither present, but ignore npz if csv present, if both present-use npz
+        # FileSpec(
+        #     name="samples.csv",
+        #     role=FileRole.MAPPING,
+        #     required=False,
+        #     hf_subdir=hf_subdir,
+        # ),
     ]
 
 
