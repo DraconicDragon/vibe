@@ -5,7 +5,7 @@ Vibe, or: Vision transformer Inference Backend (very creative name I know, thank
 ## TLDR
 
 Personal, vibecoded project. Messy, rough, but works on my machine:tm: for my purposes:registered:  
-Easy to get started with (probably); Check `examples` folder in this repo and/or [SUPPORTED_MODELS.md](./SUPPORTED_MODELS.md) if you want to get started using vibe without reading the garbage below. Don't forget you need to separately [install](#installation) onnx and/or pytorch.
+Easy to get started with (probably); Check [Quick Start section](#quick-start-examples), [examples folder](./example/) in this repo and/or [SUPPORTED_MODELS.md](./SUPPORTED_MODELS.md) if you want to get started using vibe without reading the garbage below. Don't forget to [install](#installation) onnx and/or pytorch.
 
 ## Info
 
@@ -122,8 +122,13 @@ You can replace cu128 in the --index-url to whatever version you like and that i
 RTX 50 series / Blackwell requires at least cu128 and torch 2.7.x seems to be the earliest pytorch version to come with cuda 12.8 builds
 
 ```bash
-pip install "torch>=2.7.1" --index-url https://download.pytorch.org/whl/cu128 \
-            "safetensors>=0.6.2" "timm>=1.0.22" "transformers>=5.0.0" --extra-index-url https://pypi.org/simple
+pip install git+https://github.com/DraconicDragon/vibe \
+  "torch>=2.7.1" \
+  "safetensors>=0.6.2" \
+  "timm>=1.0.22" \
+  "transformers>=5.0.0" \
+  --index-url https://download.pytorch.org/whl/cu128 \
+  --extra-index-url https://pypi.org/simple
 ```
 
 > **Note:** For Maxwell/Pascal GPUs you made need to replace cu128 with cu126 or cu124
@@ -177,7 +182,7 @@ I don't have an AMD gpu to test. So there's no instructions here. But it might b
 
 <details><summary>Intel GPU (ignore)</summary>
 
-I don't have an Intel gpu to test. So there's no instructions here. But it should basically be the same as installing torch xpu and onnxruntime with... onednn (or something?) for other projects... in theory.
+I don't have an Intel gpu to test. So there's no instructions here. But it may be just installing torch xpu and onnxruntime with... onednn (or something?) for other projects... in theory.
 Theres official torch xpu packages but i dont think vibe currently takes into account xpu as device so there might need to be 1-2 lines of code changed
 
 </details>
