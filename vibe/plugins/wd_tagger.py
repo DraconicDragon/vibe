@@ -16,7 +16,7 @@ from vibe.plugins.shared.tagger_shared import (
     normalize_output_scores,
     preprocess_tagger_image,
 )
-from vibe.result_processors import CharacterIPMapping, CleanTags
+from vibe.result_processors import CharacterIPMapping, CleanTags, ScoreThresholds
 from vibe.results import OutputType, TagEntry, TagResult
 from vibe.tag_categories import DanbooruTagCategory
 
@@ -31,7 +31,7 @@ class WDTaggerBasePlugin(ModelPlugin):
 
     output_type = OutputType.TAGS
     supported_backends = [Backend.ONNX, Backend.PYTORCH]
-    supported_processors = [CleanTags, CharacterIPMapping]
+    supported_processors = [CleanTags, ScoreThresholds, CharacterIPMapping]
 
     required_files = [
         FileSpec(

@@ -19,7 +19,7 @@ from vibe.plugins.shared.tagger_shared import (
     load_tag_metadata,
     normalize_output_scores,
 )
-from vibe.result_processors import CharacterIPMapping, CleanTags, TagLevelThresholds
+from vibe.result_processors import CharacterIPMapping, CleanTags, ScoreThresholds, TagLevelThresholds
 from vibe.results import OutputType, TagEntry, TagResult
 from vibe.tag_categories import DanbooruTagCategory
 
@@ -34,7 +34,7 @@ class WDV4AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
     output_type = OutputType.TAGS
     supported_backends = [Backend.ONNX, Backend.PYTORCH]
-    supported_processors = [CleanTags, CharacterIPMapping, TagLevelThresholds]
+    supported_processors = [CleanTags, CharacterIPMapping, ScoreThresholds, TagLevelThresholds]
 
     required_files = [
         FileSpec(
