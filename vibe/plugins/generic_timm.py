@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -21,18 +20,21 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
     display_name = "Generic timm"
     family_name = "Generic Timm Models"
     description = "Loads arbitrary models so long as they are in timm format and contain timm config files."
-    supported_backends = [Backend.ONNX, Backend.PYTORCH]
+    supported_backends = (
+        Backend.ONNX,
+        Backend.PYTORCH,
+    )
 
-    required_files = [
+    required_files = (
         FileSpec(
             name="model.onnx",
             role=FileRole.WEIGHTS,
-            backends=[Backend.ONNX],
+            backends=(Backend.ONNX,),
         ),
         FileSpec(
             name="model.safetensors",
             role=FileRole.WEIGHTS,
-            backends=[Backend.PYTORCH],
+            backends=(Backend.PYTORCH,),
         ),
         FileSpec(
             name="config.json",
@@ -43,7 +45,7 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             role=FileRole.CONFIG,
             required=False,
         ),
-    ]
+    )
 
     _labels: list[str] | None = None
 
@@ -130,7 +132,7 @@ class GenericTimmMultiScorerPlugin(GenericTimmBasePlugin):
     """Generic timm model that returns all outputs as a MultiScoreResult."""
 
     model_id = "generic-timm-multi-score"
-    aliases = ["generic-timm-multiscore"]
+    aliases = ("generic-timm-multiscore",)
     display_name = "Generic timm scorer (multi-score)"
     description = "Experimental generic timm loader that returns vector outputs as multi-score results."
     output_type = OutputType.MULTI_SCORE
@@ -140,7 +142,7 @@ class GenericTimmScorerPlugin(GenericTimmBasePlugin):
     """Generic timm model that returns the first output as a ScoreResult."""
 
     model_id = "generic-timm-score"
-    aliases = []
+    aliases = ()
     display_name = "Generic timm scorer"
     description = "Experimental generic timm loader that returns the first output as a scalar score."
     output_type = OutputType.SCORE
@@ -150,7 +152,7 @@ class GenericTimmTaggerPlugin(GenericTimmBasePlugin):
     """Generic timm model that returns outputs as flat tags."""
 
     model_id = "generic-timm-tags"
-    aliases = []
+    aliases = ()
     display_name = "Generic timm tagger"
     description = "Experimental generic timm loader that returns vector outputs as flat tag results."
     output_type = OutputType.TAGS

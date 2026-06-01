@@ -61,7 +61,7 @@ class FileSpec:
     role: FileRole
     key: str | None = None
     required: bool = True
-    backends: list[Backend] = field(default_factory=list)
+    backends: tuple[Backend, ...] = field(default_factory=tuple)
     repo_id: str | None = None
     hf_subdir: str | None = None
 
@@ -82,15 +82,15 @@ class ModelPluginInfo:
     """Typed metadata returned by vibe.describe()."""
 
     model_id: str
-    aliases: list[str]
+    aliases: tuple[str, ...]
     display_name: str
     family_name: str
     description: str
     output_type: OutputType
     default_hf_repo: str | None
-    supported_backends: list[Backend]
-    supported_processors: list[str]
-    required_files: list[FileSpec]
+    supported_backends: tuple[Backend, ...]
+    supported_processors: tuple[str, ...]
+    required_files: tuple[FileSpec, ...]
     input_layout: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -123,16 +123,16 @@ class ModelPlugin(ABC):
     ------------------------------------------------
     model_id : str
         Canonical identifier, e.g. "wd-eva02-large-tagger".
-    aliases : list[str]
-        Alternative names users can pass, e.g. ["wd-eva02", "eva02-tagger"].
+    aliases : tuple[str, ...]
+        Alternative names users can pass, e.g. ("wd-eva02", "eva02-tagger").
     output_type : OutputType
         What kind of result this plugin produces.
-    required_files : list[FileSpec]
+    required_files : tuple[FileSpec, ...]
         Files the plugin needs. Declared at class level so the loader can
         inspect them before instantiating the plugin.
-    supported_backends : list[Backend]
+    supported_backends : tuple[Backend, ...]
         Which inference backends this plugin supports.
-    supported_processors : list[type[ResultProcessor]]
+    supported_processors : tuple[type[ResultProcessor], ...]
         Optional result processors this plugin is designed to work with.
     default_hf_repo : str | None
         The HuggingFace repo ID this plugin uses out-of-the-box.
@@ -147,11 +147,11 @@ class ModelPlugin(ABC):
 
     # --- Subclasses must override these ---
     model_id: str = ""
-    aliases: list[str] = []
+    aliases: tuple[str, ...] = ()
     output_type: OutputType = OutputType.TAGS
-    required_files: list[FileSpec] = []
-    supported_backends: list[Backend] = [Backend.PYTORCH, Backend.ONNX]
-    supported_processors: list[type["ResultProcessor"]] = []
+    required_files: tuple[FileSpec, ...] = ()
+    supported_backends: tuple[Backend, ...] = (Backend.PYTORCH, Backend.ONNX)
+    supported_processors: tuple[type["ResultProcessor"], ...] = ()
     default_hf_repo: str | None = None
     display_name: str = ""
     family_name: str = ""
@@ -237,15 +237,15 @@ class ModelPlugin(ABC):
         family_name = cls.family_name.strip() or cls.display_name.strip() or cls.model_id
         return ModelPluginInfo(
             model_id=cls.model_id,
-            aliases=list(cls.aliases),
+            aliases=cls.aliases,
             display_name=cls.display_name,
             family_name=family_name,
             description=cls.description,
             output_type=cls.output_type,
             default_hf_repo=cls.default_hf_repo,
-            supported_backends=list(cls.supported_backends),
-            supported_processors=[processor.__name__ for processor in cls.supported_processors],
-            required_files=list(cls.required_files),
+            supported_backends=cls.supported_backends,
+            supported_processors=tuple(processor.__name__ for processor in cls.supported_processors),
+            required_files=cls.required_files,
             input_layout=getattr(cls, "INPUT_LAYOUT", None),
         )
 

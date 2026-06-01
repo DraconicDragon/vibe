@@ -21,13 +21,13 @@ def _build_required_files(hf_subdir: str | None) -> list[FileSpec]:
         FileSpec(
             name="model.ckpt",
             role=FileRole.WEIGHTS,
-            backends=[Backend.PYTORCH],
+            backends=(Backend.PYTORCH,),
             hf_subdir=hf_subdir,
         ),
         FileSpec(
             name="model.onnx",
             role=FileRole.WEIGHTS,
-            backends=[Backend.ONNX],
+            backends=(Backend.ONNX,),
             hf_subdir=hf_subdir,
         ),
         FileSpec(
@@ -62,8 +62,14 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
     SCORE_MAX = 1.0
 
     output_type = OutputType.MULTI_SCORE
-    supported_backends = [Backend.PYTORCH, Backend.ONNX]
-    supported_processors = [NormalizedScore, MultiScoreToScore]
+    supported_backends = (
+        Backend.PYTORCH,
+        Backend.ONNX,
+    )
+    supported_processors = (
+        NormalizedScore,
+        MultiScoreToScore,
+    )
 
     required_files = _build_required_files(None)
 
@@ -187,10 +193,10 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
 
 class DGHSAesSwinV2xPlugin(DeepGHSAnimeAesPlugin):
     model_id = "dghs-aes-swinv2pv3-ls0.2-x"
-    aliases = [
+    aliases = (
         "swinv2pv3_v0_448_ls0.2_x",
         "dghs-aes-swinv2pv3-x",
-    ]
+    )
     display_name = "DeepGHS Aesthetic SwinV2 PV3 x"
     description = "Anime image aesthetic scorer."
     default_hf_repo = "deepghs/anime_aesthetic"
@@ -200,10 +206,10 @@ class DGHSAesSwinV2xPlugin(DeepGHSAnimeAesPlugin):
 
 class DGHSAesSwinV2Plugin(DeepGHSAnimeAesPlugin):
     model_id = "dghs-aes-swinv2pv3-ls0.2"
-    aliases = [
+    aliases = (
         "swinv2pv3_v0_448_ls0.2",
         "dghs-aes-swinv2pv3",
-    ]
+    )
     display_name = "DeepGHS Aesthetic SwinV2 PV3"
     description = "Anime image aesthetic scorer."
     default_hf_repo = "deepghs/anime_aesthetic"
@@ -213,10 +219,10 @@ class DGHSAesSwinV2Plugin(DeepGHSAnimeAesPlugin):
 
 class DGHSAesCaformerS36Plugin(DeepGHSAnimeAesPlugin):
     model_id = "dghs-aes-caformer-s36-ls0.2"
-    aliases = [
+    aliases = (
         "caformer_s36_v0_ls0.2",
         "dghs-aes-caformer-s36",
-    ]
+    )
     IMAGE_SIZE = 384
     display_name = "DeepGHS Aesthetic CaFormer S36"
     description = "Anime image aesthetic scorer."

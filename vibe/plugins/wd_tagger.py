@@ -30,26 +30,33 @@ class WDTaggerBasePlugin(ModelPlugin):
     family_name = "SmilingWolf WD Taggers"
 
     output_type = OutputType.TAGS
-    supported_backends = [Backend.ONNX, Backend.PYTORCH]
-    supported_processors = [CleanTags, ScoreThresholds, CharacterIPMapping]
+    supported_backends = (
+        Backend.ONNX,
+        Backend.PYTORCH,
+    )
+    supported_processors = (
+        CleanTags,
+        ScoreThresholds,
+        CharacterIPMapping,
+    )
 
-    required_files = [
+    required_files = (
         FileSpec(
             name="model.onnx",
             role=FileRole.WEIGHTS,
-            backends=[Backend.ONNX],
-        ),
+            backends=(Backend.ONNX,),
+            ),
         FileSpec(
             name="model.safetensors",
             role=FileRole.WEIGHTS,
-            backends=[Backend.PYTORCH],
-        ),
+            backends=(Backend.PYTORCH,),
+            ),
         FileSpec(
             name="selected_tags.csv",
             role=FileRole.TAG_LIST,
-            backends=[],  # empty = needed for all backends
+            backends=(),  # empty = needed for all backends
         ),
-    ]
+    )
 
     # Image input size for this model
     IMAGE_SIZE = 448
@@ -141,7 +148,12 @@ class WDEva02Plugin(WDTaggerBasePlugin):
     """WD Eva02 Large tagger."""
 
     model_id = "wd-eva02-large-v3"
-    aliases = ["eva02-v3", "eva02-tagger-v3", "wd-eva02-v3", "wd-eva02-large-tagger-v3"]
+    aliases = (
+        "eva02-v3",
+        "eva02-tagger-v3",
+        "wd-eva02-v3",
+        "wd-eva02-large-tagger-v3",
+    )
     display_name = "WD Eva02-large Tagger v3"
     description = "Danbooru tag prediction using Eva02 ViT-L architecture."
     default_hf_repo = "SmilingWolf/wd-eva02-large-tagger-v3"
@@ -151,7 +163,11 @@ class WDSwinV2Plugin(WDTaggerBasePlugin):
     """WD SwinV2 tagger."""
 
     model_id = "wd-swinv2-v3"
-    aliases = ["swinv2-v3", "swinv2-tagger-v3", "wd-swinv2-tagger-v3"]
+    aliases = (
+        "swinv2-v3",
+        "swinv2-tagger-v3",
+        "wd-swinv2-tagger-v3",
+    )
     display_name = "WD SwinV2 Tagger v3"
     description = "Danbooru tag prediction using SwinV2 architecture."
     default_hf_repo = "SmilingWolf/wd-swinv2-tagger-v3"
@@ -161,7 +177,12 @@ class WDConvNextPlugin(WDTaggerBasePlugin):
     """WD ConvNeXt tagger."""
 
     model_id = "wd-convnext-v3"
-    aliases = ["convnext-v3", "convnext-tagger-v3", "wd-convnext-tagger-v3", "wd-convnext-tagger-v3"]
+    aliases = (
+        "convnext-v3",
+        "convnext-tagger-v3",
+        "wd-convnext-tagger-v3",
+        "wd-convnext-tagger-v3",
+    )
     display_name = "WD ConvNeXt Tagger v3"
     description = "Danbooru tag prediction using ConvNeXt architecture."
     default_hf_repo = "SmilingWolf/wd-convnext-tagger-v3"
@@ -171,7 +192,10 @@ class WDVitPlugin(WDTaggerBasePlugin):
     """WD ViT tagger (normal version)."""
 
     model_id = "wd-vit-v3"
-    aliases = ["vit-tagger-v3", "wd-vit-tagger-v3"]
+    aliases = (
+        "vit-tagger-v3",
+        "wd-vit-tagger-v3",
+    )
     display_name = "WD ViT Tagger v3"
     description = "Danbooru tag prediction using ViT architecture."
     default_hf_repo = "SmilingWolf/wd-vit-tagger-v3"

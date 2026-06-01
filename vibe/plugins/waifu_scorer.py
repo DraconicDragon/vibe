@@ -24,26 +24,26 @@ class WaifuScorerBasePlugin(ModelPlugin):
     INPUT_SIZE = 768
 
     output_type = OutputType.SCORE
-    supported_backends = [Backend.PYTORCH]
-    supported_processors = [NormalizedScore]
+    supported_backends = (Backend.PYTORCH,)
+    supported_processors = (NormalizedScore,)
 
     MLP_WEIGHTS_KEY = "mlp_weights"
     CLIP_WEIGHTS_KEY = "clip_weights"
     CLIP_CONFIG_KEY = "clip_config"
     CLIP_PREPROCESSOR_KEY = "clip_preprocessor"
 
-    required_files = [
+    required_files = (
         FileSpec(
             name="model.safetensors",
             key=MLP_WEIGHTS_KEY,
             role=FileRole.WEIGHTS,
-            backends=[Backend.PYTORCH],
+            backends=(Backend.PYTORCH,),
         ),
         FileSpec(
             name="model.safetensors",
             key=CLIP_WEIGHTS_KEY,
             role=FileRole.WEIGHTS,
-            backends=[Backend.PYTORCH],
+            backends=(Backend.PYTORCH,),
             repo_id="openai/clip-vit-large-patch14",
         ),
         FileSpec(
@@ -58,7 +58,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
             role=FileRole.CONFIG,
             repo_id="openai/clip-vit-large-patch14",
         ),
-    ]
+    )
 
     _backend: Backend | None = None
     _backend_instance: Any | None = None
@@ -264,7 +264,7 @@ else:  # pragma: no cover - only used when torch is missing entirely
 
 class WaifuScorerV3Plugin(WaifuScorerBasePlugin):
     model_id = "waifu-scorer-v3"
-    aliases = []
+    aliases = ()
     display_name = "Waifu Scorer v3"
     description = "Anime image aesthetic scorer using CLIP ViT-L/14 image encoder and Waifu Scorer v3 MLP head."
     default_hf_repo = "Eugeoter/waifu-scorer-v3"
@@ -272,7 +272,7 @@ class WaifuScorerV3Plugin(WaifuScorerBasePlugin):
 
 class WaifuScorerV4Plugin(WaifuScorerBasePlugin):
     model_id = "waifu-scorer-v4-beta"
-    aliases = []
+    aliases = ()
     display_name = "Waifu Scorer v4 Beta"
     description = "Anime image aesthetic scorer using CLIP ViT-L/14 image encoder and Waifu Scorer v4-beta MLP head."
     default_hf_repo = "Eugeoter/waifu-scorer-v4-beta"
