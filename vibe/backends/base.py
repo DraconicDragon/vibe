@@ -40,7 +40,7 @@ class Backend(str, Enum):
     ONNX = "onnx"
 
 
-@dataclass
+@dataclass(frozen=True)
 class FileSpec:
     """
     Declares one file the plugin needs to operate.
