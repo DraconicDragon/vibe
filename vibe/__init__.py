@@ -59,6 +59,7 @@ from vibe.result_processors import (
     NormalizedScore,
     ProcessorInfo,
     ResultProcessor,
+    ScoreThresholds,
     TagLevelThresholds,
 )
 from vibe.results import (
@@ -415,6 +416,7 @@ __all__ = [
     "ResultProcessor",
     "CleanTags",
     "CharacterIPMapping",
+    "ScoreThresholds",
     "TagLevelThresholds",
     "MultiScoreToScore",
     "NormalizedScore",
