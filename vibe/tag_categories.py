@@ -21,7 +21,7 @@ class DanbooruTagCategory(IntEnum):
 class E621TagCategory(IntEnum):
     """Category IDs used by e621 tags."""
 
-    # NOTE: e621 uses META category for rating tags
+    # NOTE: e621 based models may use META category for rating tags
     
     GENERAL = 0
     ARTIST = 1
