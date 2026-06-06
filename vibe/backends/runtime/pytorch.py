@@ -178,9 +178,19 @@ class PyTorchBackend:
             # NaFlex three-input forward pass.
             # Normalise patches: uint8 [0,255] → compute dtype [-1, 1].
             # patch_coords must be int32; patch_valid stays bool.
-            p = tensor.patches.unsqueeze(0).to(device=self._device, dtype=self._compute_dtype).div(127.5).sub(1.0)
-            pc = tensor.patch_coords.unsqueeze(0).to(device=self._device, dtype=torch.int32)
-            pv = tensor.patch_valid.unsqueeze(0).to(device=self._device)
+            patches = tensor.patches if tensor.patches.ndim == 3 else tensor.patches.unsqueeze(0)
+            patch_coords = tensor.patch_coords if tensor.patch_coords.ndim == 3 else tensor.patch_coords.unsqueeze(0)
+            patch_valid = tensor.patch_valid if tensor.patch_valid.ndim == 2 else tensor.patch_valid.unsqueeze(0)
+            logger.debug(
+                "PyTorch JTP-3 run batch_size=%s patches_shape=%s patch_coords_shape=%s patch_valid_shape=%s",
+                patches.shape[0] if patches.ndim > 0 else None,
+                patches.shape,
+                patch_coords.shape,
+                patch_valid.shape,
+            )
+            p = patches.to(device=self._device, dtype=self._compute_dtype).div(127.5).sub(1.0)
+            pc = patch_coords.to(device=self._device, dtype=torch.int32)
+            pv = patch_valid.to(device=self._device)
             args = (p, pc, pv)
         else:
             if isinstance(tensor, np.ndarray):

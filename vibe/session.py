@@ -582,6 +582,35 @@ class ModelSession:
 
     def _stack_batch(self, chunk: list[Any]) -> Any:
         first = chunk[0]
+        if self._is_structured_jtp3_batch(first):
+            try:
+                import torch
+
+                from vibe.plugins.jtp_3.jtp3_modelplugin import JTP3Batch
+
+                patches = torch.stack([item.patches for item in chunk], dim=0)
+                patch_coords = torch.stack([item.patch_coords for item in chunk], dim=0)
+                patch_valid = torch.stack([item.patch_valid for item in chunk], dim=0)
+                logger.debug(
+                    "Stacked JTP-3 batch batch_size=%d patches_shape=%s patch_coords_shape=%s patch_valid_shape=%s",
+                    len(chunk),
+                    patches.shape,
+                    patch_coords.shape,
+                    patch_valid.shape,
+                )
+                return JTP3Batch(patches, patch_coords, patch_valid)
+            except Exception as exc:
+                logger.error(
+                    "Failed to stack JTP-3 batch for model_id=%s sample_descriptions=%s",
+                    self.model_id,
+                    [self._describe_preprocessed_sample(item) for item in chunk],
+                )
+                raise SessionError(
+                    "Could not build a true JTP-3 batch. This usually means preprocessed "
+                    "patch tensors have incompatible shapes for stacking. "
+                    f"Details: {exc}"
+                ) from exc
+
         if isinstance(first, np.ndarray):
             try:
                 stacked = np.concatenate(chunk, axis=0)
@@ -611,11 +640,41 @@ class ModelSession:
             pass
 
         logger.error(
-            "Unsupported preprocessed batch type for model_id=%s sample_shapes=%s",
+            "Unsupported preprocessed batch type for model_id=%s sample_descriptions=%s",
             self.model_id,
-            [getattr(item, "shape", None) for item in chunk],
+            [self._describe_preprocessed_sample(item) for item in chunk],
         )
         raise SessionError("Unsupported preprocessed tensor type for true batching. Use batch_method='sequential'.")
+
+    def _describe_preprocessed_sample(self, item: Any) -> dict[str, Any]:
+        shape = getattr(item, "shape", None)
+        if shape is not None:
+            return {
+                "type": type(item).__name__,
+                "shape": tuple(shape) if isinstance(shape, tuple) else shape,
+                "dtype": str(getattr(item, "dtype", None)),
+            }
+
+        parts: dict[str, Any] = {"type": type(item).__name__}
+        for field in ("patches", "patch_coords", "patch_valid"):
+            value = getattr(item, field, None)
+            if value is not None:
+                parts[field] = {
+                    "shape": tuple(getattr(value, "shape", ())) if getattr(value, "shape", None) is not None else None,
+                    "dtype": str(getattr(value, "dtype", None)),
+                }
+        return parts
+
+    def _is_structured_jtp3_batch(self, item: Any) -> bool:
+        try:
+            from vibe.plugins.jtp_3.jtp3_modelplugin import JTP3Batch
+        except Exception:
+            JTP3Batch = None  # ty:ignore[invalid-assignment]
+
+        if JTP3Batch is not None and isinstance(item, JTP3Batch):
+            return True
+
+        return all(hasattr(item, field) for field in ("patches", "patch_coords", "patch_valid"))
 
     def _split_batch_output(self, raw_output: Any, expected: int) -> list[Any]:
         shape = getattr(raw_output, "shape", None)
