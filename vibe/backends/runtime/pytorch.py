@@ -122,19 +122,127 @@ class PyTorchBackend:
         """Direct access to the loaded model/state dict for plugins that need it."""
         return self._model
 
-    def run(self, tensor: Any) -> np.ndarray:
-        """
-        Run a forward pass.
+    def attach_model(self, model: Any) -> None:
+        """Attach a pre-built nn.Module to this backend and apply the precision plan.
 
-        tensor should be a torch.Tensor of shape (1, C, H, W).
-        Returns a numpy array of the model's output (after sigmoid if needed —
-        that's the plugin's responsibility in postprocess).
+        The model may already be on the target device and dtype (e.g. loaded by
+        a plugin via load_model), but we still run _apply_precision_plan so that
+        user-requested precision (fp16, bf16, fp32) is honoured consistently.
+        """
+        try:
+            import torch.nn as nn
+        except ImportError as exc:
+            raise RuntimeError("PyTorch is not installed.") from exc
+
+        if not isinstance(model, nn.Module):
+            raise TypeError("attach_model expects a torch.nn.Module instance.")
+
+        self._model = model
+        import torch as torch_module
+
+        self._apply_precision_plan(torch_module)
+
+        logger.debug(
+            "Attached pre-built model class=%s device=%s weight_dtype=%s compute_dtype=%s",
+            model.__class__.__name__,
+            self._device,
+            self._weight_dtype,
+            self._compute_dtype,
+        )
+
+    def run(self, tensor: Any) -> np.ndarray:
+        """Run a forward pass. Returns a numpy array of raw model output.
+
+        Accepts either:
+        - a standard torch.Tensor / ndarray for normal single-input models
+        - a JTP3Batch (NamedTuple with patches/patch_coords/patch_valid) for
+            the NaFlex multi-input forward pass
         """
         try:
             import torch
             import torch.nn as nn
         except ImportError as exc:
             raise RuntimeError("PyTorch is not installed.") from exc
+
+        # Lazy import to avoid circular dependency at module level.
+        from vibe.plugins.jtp_3.jtp3_modelplugin import JTP3Batch
+
+        if not isinstance(self._model, nn.Module):
+            raise RuntimeError(
+                "Model is a state dict, not an nn.Module. "
+                "The plugin must build the architecture and call "
+                "backend.raw to get the state dict, then construct the model itself."
+            )
+
+        if isinstance(tensor, JTP3Batch):
+            # NaFlex three-input forward pass.
+            # Normalise patches: uint8 [0,255] → compute dtype [-1, 1].
+            # patch_coords must be int32; patch_valid stays bool.
+            p = tensor.patches.unsqueeze(0).to(device=self._device, dtype=self._compute_dtype).div(127.5).sub(1.0)
+            pc = tensor.patch_coords.unsqueeze(0).to(device=self._device, dtype=torch.int32)
+            pv = tensor.patch_valid.unsqueeze(0).to(device=self._device)
+            args = (p, pc, pv)
+        else:
+            if isinstance(tensor, np.ndarray):
+                tensor = torch.from_numpy(tensor)
+            elif not isinstance(tensor, torch.Tensor):
+                tensor = torch.as_tensor(tensor)
+            logger.debug("PyTorch run input_shape=%s input_dtype=%s", tensor.shape, tensor.dtype)
+            args = (tensor.to(device=self._device, dtype=self._compute_dtype),)
+
+        with torch.no_grad():
+            try:
+                output = self._model(*args)
+            except Exception:
+                if self._compute_dtype != torch.float32:
+                    logger.warning(
+                        "PyTorch inference failed with compute_dtype=%s on device=%s; retrying with float32 fallback.",
+                        self._compute_dtype,
+                        self._device,
+                    )
+                    self._compute_dtype = torch.float32
+                    self._resolved_precision = "fp32"
+                    self._model.to(device=self._device, dtype=torch.float32)
+                    args = tuple(
+                        a.to(dtype=torch.float32) if isinstance(a, torch.Tensor) and a.dtype.is_floating_point else a
+                        for a in args
+                    )
+                    output = self._model(*args)
+                elif self._weight_dtype not in {None, torch.float32}:
+                    logger.debug(
+                        "FP32 compute with weight_dtype=%s on device=%s; temporarily promoting weights.",
+                        self._weight_dtype,
+                        self._device,
+                    )
+                    original_weight_dtype = self._weight_dtype
+                    self._model.to(device=self._device, dtype=torch.float32)
+                    try:
+                        output = self._model(*args)
+                    finally:
+                        self._model.to(device=self._device, dtype=original_weight_dtype)
+                else:
+                    logger.error(
+                        "PyTorch inference failed args[0].shape=%s device=%s",
+                        getattr(args[0], "shape", None),
+                        self._device,
+                    )
+                    raise
+
+        if isinstance(output, torch.Tensor):
+            logger.debug("PyTorch run output_shape=%s output_dtype=%s", output.shape, output.dtype)
+            out = output.detach().cpu()
+            if out.dtype == torch.bfloat16:
+                out = out.to(torch.float32)
+            return out.numpy()
+        if isinstance(output, (tuple, list)):
+            first = output[0]
+            if isinstance(first, torch.Tensor):
+                first = first.detach().cpu()
+                if first.dtype == torch.bfloat16:
+                    first = first.to(torch.float32)
+                return first.numpy()
+            return np.array(first)
+        return np.array(output)
 
         if isinstance(tensor, np.ndarray):
             tensor = torch.from_numpy(tensor)
