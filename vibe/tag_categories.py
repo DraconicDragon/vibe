@@ -12,6 +12,7 @@ class DanbooruTagCategory(IntEnum):
 
     GENERAL = 0
     ARTIST = 1
+    #INVALID = 2
     COPYRIGHT = 3
     CHARACTER = 4
     META = 5
@@ -29,7 +30,7 @@ class E621TagCategory(IntEnum):
     COPYRIGHT = 3
     CHARACTER = 4
     SPECIES = 5
-    INVALID = 6
+    #INVALID = 6
     META = 7
     LORE = 8
 
