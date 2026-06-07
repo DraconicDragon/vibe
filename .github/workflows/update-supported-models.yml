@@ -1,12 +1,12 @@
 name: Update Supported Models
 
 on:
-  push:
-    paths:
-      - "scripts/**"
-      - "vibe/**"
-      - "SUPPORTED_MODELS.md"
-      - ".github/workflows/update-supported-models.yml"
+  # push:
+  #   paths:
+  #     - "scripts/**"
+  #     - "vibe/**"
+  #     - "SUPPORTED_MODELS.md"
+  #     - ".github/workflows/update-supported-models.yml"
   workflow_dispatch:
 
 jobs:
