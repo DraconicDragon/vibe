@@ -67,6 +67,7 @@ torch-cpu = [
     "timm>=1.0.22",
     "transformers>=5.0.0",
     "safetensors>=0.6.2",
+    "einops"
 ]
 
 # Development

@@ -119,7 +119,7 @@ pip install "git+https://github.com/DraconicDragon/vibe[torch-cpu,onnx-cpu]"
 The pyproject.toml file does not include an extra optional dependency for torch+CUDA.
 
 You can replace cu128 in the --index-url to whatever version you like and that is also supported.  
-RTX 50 series / Blackwell requires at least cu128 and torch 2.7.x seems to be the earliest pytorch version to come with cuda 12.8 builds
+RTX 50 series / Blackwell requires at least cu128 (I think?) and torch 2.7.x seems to be the earliest pytorch version to come with cuda 12.8 builds
 
 ```bash
 pip install git+https://github.com/DraconicDragon/vibe \
@@ -127,6 +127,7 @@ pip install git+https://github.com/DraconicDragon/vibe \
   "safetensors>=0.6.2" \
   "timm>=1.0.22" \
   "transformers>=5.0.0" \
+  "einops" \
   --index-url https://download.pytorch.org/whl/cu128 \
   --extra-index-url https://pypi.org/simple
 ```
