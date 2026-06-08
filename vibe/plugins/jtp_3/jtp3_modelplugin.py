@@ -188,7 +188,7 @@ class JTP3BasePlugin(ModelPlugin):
 
     required_files = (
         FileSpec(
-            name="model.safetensors",
+            name="jtp-3-hydra.safetensors",
             role=FileRole.WEIGHTS,
             backends=(Backend.PYTORCH,),
             hf_subdir="models",
