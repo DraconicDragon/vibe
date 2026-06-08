@@ -152,7 +152,7 @@ pip install "git+https://github.com/DraconicDragon/vibe[onnx-cuda]"
 **Linux + System level CUDA/cuDNN / PyTorch + CUDA**:
 
 This is a bit weird for me but as far as I understood CUDA in relation to linux and onnxruntime:  
-If torch+cuda is installed it should already come with the required nvidia packages and this lib will try to search for those in the same environemnt. Otherwise you will need to install CUDA/cuDNN libraries from your system package manager, *or* through pip packages - info for that further below.
+If torch+cuda is installed it should already come with the required nvidia packages and this lib will try to search for those in the same environemnt (works if torch's cuda version is the one that `onnxruntime` expects, usually cu12x). Otherwise you will need to install CUDA/cuDNN libraries from your system package manager, *or* through pip packages - info for that further below.
 
 ```bash
 pip install "git+https://github.com/DraconicDragon/vibe[onnx-cuda]"
