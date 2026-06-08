@@ -16,6 +16,26 @@ class HFDownloadError(Exception):
     """Raised when a HuggingFace download/cached lookup cannot be satisfied."""
 
 
+def _response_status_code(exc: Exception) -> int | None:
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None)
+
+
+def _format_hf_access_error(repo_id: str, filename: str, exc: Exception) -> str:
+    status_code = _response_status_code(exc)
+    base = f"Failed to access '{filename}' in HuggingFace repo '{repo_id}'"
+    if status_code in {401, 403}:
+        return (
+            f"{base} (HTTP {status_code}): unauthorized or forbidden. "
+            "Check that your HuggingFace token is configured and that you have access to the repo."
+        )
+    if status_code == 404:
+        return f"{base} (HTTP 404): repo or file not found."
+    if status_code is not None:
+        return f"{base} (HTTP {status_code})."
+    return f"{base}."
+
+
 def set_auto_download_default(enabled: bool) -> None:
     """Set global default policy for auto-download behavior."""
     global AUTO_DOWNLOAD_DEFAULT
@@ -142,19 +162,24 @@ def download_or_cached_with_reason(
         if required:
             raise HFDownloadError(f"File '{filename}' not available in local cache for '{repo_id}'.") from None
         return None, reason
-    except RepositoryNotFoundError:
+    except RepositoryNotFoundError as exc:
+        status_code = _response_status_code(exc)
+        if status_code in {401, 403}:
+            reason = f"repo '{repo_id}' is private or gated and access was denied"
+            if not required:
+                return None, reason
+            raise HFDownloadError(
+                f"HuggingFace repo '{repo_id}' is private or gated and access was denied. "
+                "Check your token and repo permissions."
+            ) from None
+
         reason = f"repo '{repo_id}' was not found"
         if not required:
             return None, reason
         raise HFDownloadError(f"HuggingFace repo '{repo_id}' was not found. Check repo ID and connectivity.") from None
     except HfHubHTTPError as exc:
-        response = getattr(exc, "response", None)
-        status_code = getattr(response, "status_code", None)
-        reason = f"HF request failed for '{filename}' in '{repo_id}'"
-        if status_code is not None:
-            reason = f"{reason} (HTTP {status_code})"
-        if status_code in {401, 403}:
-            reason = f"{reason}; unauthorized/forbidden (missing or invalid HF token, or repo access not granted)"
+        status_code = _response_status_code(exc)
+        reason = _format_hf_access_error(repo_id, filename, exc)
         if not required:
             return None, reason
         raise HFDownloadError(reason) from None
