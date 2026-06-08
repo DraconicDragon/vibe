@@ -262,7 +262,7 @@ class JTP3BasePlugin(ModelPlugin):
         cat_info = " ".join(
             f"{label}={len(self._indices_by_category.get(int(cat_id), []))}"
             for cat_id, label in E621_CATEGORY_LABELS.items()
-            if cat_id != E621TagCategory.INVALID
+            #if cat_id != E621TagCategory.INVALID
         )
         logger.info("Loaded JTP-3 tags: total=%d %s", len(self._raw_tag_names), cat_info)
 
@@ -350,7 +350,7 @@ class JTP3BasePlugin(ModelPlugin):
                 usable_count=usable_count,
             )
             for cat_id, name in E621_CATEGORY_LABELS.items()
-            if cat_id != E621TagCategory.INVALID and (indices := self._indices_by_category.get(int(cat_id)))
+            if (indices := self._indices_by_category.get(int(cat_id)))
         }
 
         return TagResult(tags=result_tags)

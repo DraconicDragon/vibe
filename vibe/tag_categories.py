@@ -65,7 +65,7 @@ E621_CATEGORY_LABELS: dict[int, str] = {
     E621TagCategory.COPYRIGHT: "copyright",
     E621TagCategory.CHARACTER: "character",
     E621TagCategory.SPECIES: "species",
-    E621TagCategory.INVALID: "invalid",
+    #E621TagCategory.INVALID: "invalid",
     E621TagCategory.META: "meta",
     E621TagCategory.LORE: "lore",
 }
