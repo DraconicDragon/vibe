@@ -4,7 +4,7 @@ Vibe, or: Vision transformer Inference Backend (very creative name I know, thank
 
 ## TLDR
 
-Personal, vibecoded project. Messy, rough, but works on my machine:tm: for my purposes:registered:  
+Personal, vibecoded project. Messy, rough, but works on my machine™️ for my purposes®️
 Easy to get started with (probably); Check [Quick Start section](#quick-start-examples), [examples folder](./example/) in this repo and/or [SUPPORTED_MODELS.md](./SUPPORTED_MODELS.md) if you want to get started using vibe without reading the garbage below. Don't forget to [install](#installation) onnx and/or pytorch.
 
 ## Info
