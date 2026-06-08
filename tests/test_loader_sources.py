@@ -58,7 +58,6 @@ def test_resolve_local_folder_accepts_hf_style_subdir_for_required_files(tmp_pat
     meta.write_text('{"labels": ["a"]}', encoding="utf-8")
     samples.write_bytes(b"npz")
 
-
     specs = [
         FileSpec(
             name="model.onnx",
@@ -317,8 +316,8 @@ def test_source_string_auto_existing_local_dir_reports_missing_required(
         resolve_from_source_string(str(local_dir), specs, Backend.ONNX, allow_download=False)
 
     message = str(excinfo.value)
-    assert f"Could not resolve source '{local_dir}'" in message
     assert "Required file(s) ['model.onnx']" in message
+    assert "not found in local folder" in message
 
 
 def test_source_string_auto_local_dir_backfills_missing_required_from_fallback_hf(
@@ -450,7 +449,8 @@ def test_source_string_auto_local_dir_error_is_single_path_for_missing_required(
         )
 
     message = str(excinfo.value)
-    assert "Could not resolve source" in message
+    assert "Required file" in message
+    assert "was not found in local folder" in message
     assert "could not be resolved from HuggingFace fallback" in message
     assert "Repo id must be in the form" not in message
 
@@ -483,7 +483,8 @@ def test_source_string_auto_local_dir_optional_reason_includes_hf_fallback_failu
         assert filename == "config.json"
         return (
             None,
-            "HF request failed for 'config.json' in 'animetimm/caformer_b36.dbv4-full' (HTTP 401); unauthorized/forbidden",
+            "Failed to access 'config.json' in HuggingFace repo 'animetimm/caformer_b36.dbv4-full' (HTTP 401): unauthorized or forbidden. "
+            "Check that your HuggingFace token is configured and that you have access to the repo.",
         )
 
     monkeypatch.setattr("vibe.loader.download_or_cached_with_reason", _fake_download_with_reason)
