@@ -394,7 +394,7 @@ def _resolve_local_prefixed(
         hint = ""
         if _looks_like_hf_repo_id(value):
             hint = " It looks like a HuggingFace repo ID; use 'hf:<owner/repo>' instead if that was intended."
-        raise LoaderError(f"Requested local source via 'local:' but failed to resolve '{value}': {exc}.{hint}".rstrip())
+        raise LoaderError(f"Requested local source via 'local:' but failed to resolve '{value}': {exc}{hint}".rstrip()) from None
 
 
 def _resolve_hf_prefixed(
@@ -425,7 +425,7 @@ def _resolve_hf_prefixed(
         hint = ""
         if _looks_like_local_folder(value):
             hint = " It looks like a local folder; use 'local:/path' instead if that was intended."
-        raise LoaderError(f"Requested HF source via 'hf:' but failed to resolve '{value}': {exc}.{hint}".rstrip())
+        raise LoaderError(f"Requested HF source via 'hf:' but failed to resolve '{value}': {exc}{hint}".rstrip()) from None
 
 
 def _resolve_auto_source(
@@ -456,7 +456,7 @@ def _resolve_auto_source(
                     fallback_hf_repo_id=fallback_hf_repo_id,
                 )
             except LoaderError as exc:
-                raise LoaderError(f"Could not resolve source '{source}': {exc}") from None
+                raise LoaderError(str(exc)) from None
         else:
             local_error = f"Local path exists but is not a directory: {local_candidate}"
 
