@@ -100,11 +100,11 @@ def test_tag_level_thresholds_applies_threshold_offset(tmp_path: Path) -> None:
     assert [entry.tag for entry in out.tags["rating"]] == ["safe"]
 
 
-def test_tag_level_thresholds_applies_threshold_multiplier(tmp_path: Path) -> None:
+def test_tag_level_thresholds_applies_threshold_relative_offset(tmp_path: Path) -> None:
     csv_path = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv(csv_path)
 
-    processor = TagLevelThresholds(threshold_multiplier=0.1)
+    processor = TagLevelThresholds(threshold_relative_offset=0.1)
     context = _make_context(csv_path=csv_path)
 
     result = _SimpleTagResult(
@@ -123,11 +123,11 @@ def test_tag_level_thresholds_applies_threshold_multiplier(tmp_path: Path) -> No
     assert out.tags["rating"] == []
 
 
-def test_tag_level_thresholds_rejects_offset_and_multiplier_together() -> None:
+def test_tag_level_thresholds_rejects_offset_and_relative_offset_together() -> None:
     try:
-        TagLevelThresholds(threshold_offset=-0.01, threshold_multiplier=0.1)
+        TagLevelThresholds(threshold_offset=-0.01, threshold_relative_offset=0.1)
     except ValueError as exc:
-        assert "Use only one of threshold_offset or threshold_multiplier" in str(exc)
+        assert "Use only one of threshold_offset or threshold_relative_offset" in str(exc)
     else:
         raise AssertionError("Expected TagLevelThresholds to reject conflicting threshold adjustments.")
 
