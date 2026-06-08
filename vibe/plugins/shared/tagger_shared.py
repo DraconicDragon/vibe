@@ -89,6 +89,7 @@ def preprocess_tagger_image(
     arr = np.asarray(image, dtype=np.float32)
     if rgb_to_bgr:
         arr = arr[:, :, ::-1]
+        arr = np.ascontiguousarray(arr)  # resolve negative strides
 
     if normalize_to_unit:
         arr = arr / 255.0

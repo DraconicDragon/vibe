@@ -1,6 +1,3 @@
-# Todo: make this use timm
-# models come with timm config files but no preprocess but config alone should be sufficient
-
 from __future__ import annotations
 
 import logging
@@ -10,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.tagger_shared import (
     build_entries_for_indices,
     load_tag_metadata,
@@ -23,7 +21,7 @@ from vibe.tag_categories import DanbooruTagCategory
 logger = logging.getLogger(__name__)
 
 
-class WDTaggerBasePlugin(ModelPlugin):
+class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
     """Shared implementation for WaifuDiffusion taggers by SmilingWolf."""
 
     _abstract = True
@@ -45,12 +43,17 @@ class WDTaggerBasePlugin(ModelPlugin):
             name="model.onnx",
             role=FileRole.WEIGHTS,
             backends=(Backend.ONNX,),
-            ),
+        ),
         FileSpec(
             name="model.safetensors",
             role=FileRole.WEIGHTS,
             backends=(Backend.PYTORCH,),
-            ),
+        ),
+        FileSpec(
+            name="config.json",
+            role=FileRole.CONFIG,
+            backends=(Backend.PYTORCH,),
+        ),
         FileSpec(
             name="selected_tags.csv",
             role=FileRole.TAG_LIST,
@@ -58,9 +61,8 @@ class WDTaggerBasePlugin(ModelPlugin):
         ),
     )
 
-    # Image input size for this model
+    # Image input size for this model (most WD models use 448x448)
     IMAGE_SIZE = 448
-    INPUT_LAYOUT = "NHWC"  # Most WD ONNX exports use NHWC
 
     # Internal state loaded by load_ancillary()
     _raw_tag_names: list[str]
@@ -70,7 +72,7 @@ class WDTaggerBasePlugin(ModelPlugin):
     _character_indices: list[int]
 
     def load_ancillary(self, file_map: dict[str, Path]) -> None:
-        """Load tag metadata from selected_tags.csv."""
+        """Load tag metadata from selected_tags.csv and handle PyTorch bootstrapping."""
         csv_path = file_map["selected_tags.csv"]
 
         logger.info("Loading tag list from %s", csv_path)
@@ -90,15 +92,41 @@ class WDTaggerBasePlugin(ModelPlugin):
             len(self._rating_indices),
         )
 
+        # If using PyTorch, reconstruct the timm architecture using the loaded config.json
+        if self._backend == Backend.PYTORCH:
+            config_path = file_map.get("config.json")
+            config = self.read_timm_config_json(config_path) if config_path else {}
+
+            # Reconstruct the PyTorch model architecture and load the state dict
+            self.maybe_prepare_timm_pytorch_model(config=config, num_classes=len(self._raw_tag_names))
+
     def preprocess(self, image: Any) -> np.ndarray:
-        """Convert image to float32 BGR array for ONNX runtime."""
-        return preprocess_tagger_image(
-            image,
-            image_size=self.IMAGE_SIZE,
-            input_layout=self.INPUT_LAYOUT,
-            rgb_to_bgr=True,
-            normalize_to_unit=False,
-        )
+        """Convert image to layout expected by the active backend."""
+        # Under PyTorch, models expect standard (1, C, H, W) NCHW format
+        # Under ONNX, these models expect (1, H, W, C) NHWC format
+        layout = "NCHW" if self._backend == Backend.PYTORCH else "NHWC"
+
+        if self._backend == Backend.PYTORCH:
+            # PyTorch expects BGR normalized to [-1, 1] range: (x - 127.5) / 127.5
+            return preprocess_tagger_image(
+                image,
+                image_size=self.IMAGE_SIZE,
+                input_layout=layout,
+                rgb_to_bgr=True,
+                normalize_to_unit=True,
+                mean=(0.5, 0.5, 0.5),
+                std=(0.5, 0.5, 0.5),
+            )
+        else:
+            # ONNX expects unnormalized, raw BGR [0, 255] float32
+            arr = preprocess_tagger_image(
+                image,
+                image_size=self.IMAGE_SIZE,
+                input_layout=layout,
+                rgb_to_bgr=True,
+                normalize_to_unit=False,
+            )
+            return np.ascontiguousarray(arr)
 
     def postprocess(
         self,
@@ -180,7 +208,6 @@ class WDConvNextPlugin(WDTaggerBasePlugin):
     aliases = (
         "convnext-v3",
         "convnext-tagger-v3",
-        "wd-convnext-tagger-v3",
         "wd-convnext-tagger-v3",
     )
     display_name = "WD ConvNeXt Tagger v3"
