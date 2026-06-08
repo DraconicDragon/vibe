@@ -267,7 +267,7 @@ class JTP3BasePlugin(ModelPlugin):
         logger.info("Loaded JTP-3 tags: total=%d %s", len(self._raw_tag_names), cat_info)
 
         # -- Model weights --
-        weights_path = file_map["model.safetensors"]
+        weights_path = file_map["jtp-3-hydra.safetensors"]
         logger.info("Loading JTP-3 model from %s", weights_path)
 
         if not hasattr(self, "_device"):
