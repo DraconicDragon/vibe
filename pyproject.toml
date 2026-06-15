@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vibe"
-version = "1.0.0-alpha.13"
+version = "1.0.0-alpha.14"
 description = "End-to-end inference library for (mostly small) vision transformers, supporting both pytorch & onnx."
 requires-python = ">=3.11"
 
