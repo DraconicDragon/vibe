@@ -100,7 +100,8 @@ class ModelPluginInfo:
             "description": self.description,
             "output_type": self.output_type.value,
             "supported_backends": [b.value for b in self.supported_backends],
-            "supported_processors": [p.__name__ for p in self.supported_processors],
+            # Safely serialize processor class objects or fallback to string values
+            "supported_processors": [getattr(p, "__name__", str(p)) for p in self.supported_processors],
             "required_files": [
                 {
                     "name": spec.name,
