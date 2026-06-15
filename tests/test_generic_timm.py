@@ -46,7 +46,7 @@ def test_generic_timm_is_registered_and_requires_source() -> None:
 
     info = vibe.describe("generic-timm-multi-score")
     assert info.default_hf_repo is None
-    assert info.supported_backends == [vibe.Backend.ONNX, vibe.Backend.PYTORCH]
+    assert info.supported_backends == (vibe.Backend.ONNX, vibe.Backend.PYTORCH)
     assert vibe.describe("generic-timm-score").output_type == OutputType.SCORE
     assert vibe.describe("generic-timm-tags").output_type == OutputType.TAGS
 

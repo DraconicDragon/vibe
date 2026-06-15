@@ -93,6 +93,7 @@ def test_build_session_pytorch_int8_ov_falls_back_to_auto(monkeypatch, tmp_path:
 
     model_path = tmp_path / "model.safetensors"
     model_path.write_bytes(b"fake")
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
     (tmp_path / "selected_tags.csv").write_text(
         "name,category\nblue_hair,0\ncat_ears,0\nmiku_hatsune,4\nsafe,9\n",
         encoding="utf-8",
