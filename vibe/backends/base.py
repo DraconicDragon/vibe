@@ -98,10 +98,6 @@ class ModelPluginInfo:
         d["required_files"] = [f.to_dict() for f in self.required_files]
         return d
 
-    def __getitem__(self, key: str) -> Any:
-        """Backwards-compatible dict-like access for existing callers."""
-        return self.to_dict()[key]
-
 
 # endregion File Spec
 
