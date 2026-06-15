@@ -8,7 +8,7 @@ Quick start
     import vibe
 
     # Load a registered model (downloads from HF automatically)
-    session = vibe.load("wd-eva02-v3")
+    session = vibe.load("wd-eva02-large-v3")
     result = session.infer(image).first()
     print([entry.tag for entry in result.tags["general"][:5]])
 
@@ -18,7 +18,7 @@ Quick start
         print(f"Input {item.index}: {[entry.tag for entry in item.result.tags['general'][:3]]}")
 
     # Use a local folder instead of HF
-    session = vibe.load("wd-eva02-v3", source="local:/path/to/folder")
+    session = vibe.load("wd-eva02-large-v3", source="local:/path/to/folder")
 
     # Custom: arbitrary source with a chosen plugin
     session = vibe.load_custom(
@@ -28,7 +28,7 @@ Quick start
 
     # Inspect available models
     vibe.list_models()
-    vibe.describe("wd-eva02-v3")
+    vibe.describe("wd-eva02-large-v3")
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ def load(
     Load a model and return a ready-to-use ModelSession.
 
     Args:
-        model:          Model ID (e.g. "wd-eva02-v3").
+        model:          Model ID (e.g. "wd-eva02-large-v3").
                         Run vibe.list_models() to see all options.
                         # todo: check if doc gen will set optional by default through type hints or if i should put it in docstring explicitly, or maybe just in general
         source:         Optional. Where to load files from. String options:

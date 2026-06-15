@@ -5,7 +5,7 @@ This is the object users interact with after calling vibe.load().
 It holds the resolved plugin instance, the active runtime backend,
 and optional result processors. Calling .infer() is the one thing you do with it.
 
-session = vibe.load("wd-eva02-v3")
+session = vibe.load("wd-eva02-large-v3")
 result  = session.infer(image)
 result  = session.infer(image, result_processors=[...])
 """
@@ -137,7 +137,7 @@ class ModelSession:
                 logger.debug("GPU process memory metric unavailable (likely missing NVML/pynvml).")
 
     # region Primary Interface
-# todo: theres 3 entry points when there only need to be one, consider changing infer_batches() to internal function, mind infer_single() too
+    # todo: theres 3 entry points when there only need to be one, consider changing infer_batches() to internal function, mind infer_single() too
     def infer(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
