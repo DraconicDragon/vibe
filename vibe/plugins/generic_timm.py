@@ -132,7 +132,6 @@ class GenericTimmMultiScorerPlugin(GenericTimmBasePlugin):
     """Generic timm model that returns all outputs as a MultiScoreResult."""
 
     model_id = "generic-timm-multi-score"
-    aliases = ("generic-timm-multiscore",)
     display_name = "Generic timm scorer (multi-score)"
     description = "Experimental generic timm loader that returns vector outputs as multi-score results."
     output_type = OutputType.MULTI_SCORE
@@ -142,7 +141,6 @@ class GenericTimmScorerPlugin(GenericTimmBasePlugin):
     """Generic timm model that returns the first output as a ScoreResult."""
 
     model_id = "generic-timm-score"
-    aliases = ()
     display_name = "Generic timm scorer"
     description = "Experimental generic timm loader that returns the first output as a scalar score."
     output_type = OutputType.SCORE
@@ -152,7 +150,6 @@ class GenericTimmTaggerPlugin(GenericTimmBasePlugin):
     """Generic timm model that returns outputs as flat tags."""
 
     model_id = "generic-timm-tags"
-    aliases = ()
     display_name = "Generic timm tagger"
     description = "Experimental generic timm loader that returns vector outputs as flat tag results."
     output_type = OutputType.TAGS

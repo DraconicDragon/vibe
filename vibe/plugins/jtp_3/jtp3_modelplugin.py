@@ -33,7 +33,7 @@ from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
 from vibe.plugins.shared.tagger_shared import build_entries_for_indices
 from vibe.result_processors import CharacterIPMapping, CleanTags
 from vibe.results import OutputType, TagResult
-from vibe.tag_categories import E621TagCategory, E621_CATEGORY_LABELS
+from vibe.tag_categories import E621_CATEGORY_LABELS
 
 logger = logging.getLogger(__name__)
 
@@ -363,7 +363,6 @@ class JTP3Plugin(JTP3BasePlugin):
     """JTP-3 Hydra tagger (e621 tags, SigLIP2-so400m-patch16-naflex backbone)."""
 
     model_id = "jtp-3"
-    aliases = ("jtp-3-hydra",)
     display_name = "JTP-3 Hydra"
     description = "E621 tag prediction using JTP-3 Hydra (NaFlex ViT + HydraPool)."
     default_hf_repo = "RedRocket/JTP-3"

@@ -193,10 +193,6 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
 
 class DGHSAesSwinV2xPlugin(DeepGHSAnimeAesPlugin):
     model_id = "dghs-aes-swinv2pv3-ls0.2-x"
-    aliases = (
-        "swinv2pv3_v0_448_ls0.2_x",
-        "dghs-aes-swinv2pv3-x",
-    )
     display_name = "DeepGHS Aesthetic SwinV2 PV3 x"
     description = "Anime image aesthetic scorer."
     default_hf_repo = "deepghs/anime_aesthetic"
@@ -206,10 +202,6 @@ class DGHSAesSwinV2xPlugin(DeepGHSAnimeAesPlugin):
 
 class DGHSAesSwinV2Plugin(DeepGHSAnimeAesPlugin):
     model_id = "dghs-aes-swinv2pv3-ls0.2"
-    aliases = (
-        "swinv2pv3_v0_448_ls0.2",
-        "dghs-aes-swinv2pv3",
-    )
     display_name = "DeepGHS Aesthetic SwinV2 PV3"
     description = "Anime image aesthetic scorer."
     default_hf_repo = "deepghs/anime_aesthetic"
@@ -219,10 +211,6 @@ class DGHSAesSwinV2Plugin(DeepGHSAnimeAesPlugin):
 
 class DGHSAesCaformerS36Plugin(DeepGHSAnimeAesPlugin):
     model_id = "dghs-aes-caformer-s36-ls0.2"
-    aliases = (
-        "caformer_s36_v0_ls0.2",
-        "dghs-aes-caformer-s36",
-    )
     IMAGE_SIZE = 384
     display_name = "DeepGHS Aesthetic CaFormer S36"
     description = "Anime image aesthetic scorer."

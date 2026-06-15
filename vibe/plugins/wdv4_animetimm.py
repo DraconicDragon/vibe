@@ -172,12 +172,6 @@ class WDV4ConvNextV2HugePlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm ConvNeXtV2 Huge model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-convnextv2-huge-dbv4-full"
-    aliases = (
-        "convnextv2-huge-dbv4-full",
-        "convnextv2_huge.dbv4-full",
-        "animetimm-convnextv2-huge",
-        "wdv4-convnextv2-huge",
-    )
     display_name = "AnimeTimm ConvNeXtV2 Huge"
     description = "Danbooru v4-full tagger using the AnimeTimm ConvNeXtV2 Huge architecture."
     default_hf_repo = "animetimm/convnextv2_huge.dbv4-full"
@@ -209,12 +203,6 @@ class WDV4CaformerB36FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm CaFormer B36 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-caformer-b36-dbv4-full"
-    aliases = (
-        "caformer-b36-dbv4-full",
-        "caformer_b36.dbv4-full",
-        "animetimm-caformer-b36",
-        "wdv4-caformer-b36",
-    )
     display_name = "AnimeTimm CaFormer B36"
     description = "Danbooru v4-full tagger using the AnimeTimm CaFormer B36 architecture."
     default_hf_repo = "animetimm/caformer_b36.dbv4-full"
@@ -224,12 +212,6 @@ class WDV4CaformerM36FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm CaFormer M36 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-caformer-m36-dbv4-full"
-    aliases = (
-        "caformer-m36-dbv4-full",
-        "caformer_m36.dbv4-full",
-        "animetimm-caformer-m36",
-        "wdv4-caformer-m36",
-    )
     display_name = "AnimeTimm CaFormer M36"
     description = "Danbooru v4-full tagger using the AnimeTimm CaFormer M36 architecture."
     default_hf_repo = "animetimm/caformer_m36.dbv4-full"
@@ -239,12 +221,6 @@ class WDV4CaformerS36FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm CaFormer S36 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-caformer-s36-dbv4-full"
-    aliases = (
-        "caformer-s36-dbv4-full",
-        "caformer_s36.dbv4-full",
-        "animetimm-caformer-s36",
-        "wdv4-caformer-s36",
-    )
     display_name = "AnimeTimm CaFormer S36"
     description = "Danbooru v4-full tagger using the AnimeTimm CaFormer S36 architecture."
     default_hf_repo = "animetimm/caformer_s36.dbv4-full"
@@ -254,12 +230,6 @@ class WDV4CaformerS18FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm CaFormer S18 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-caformer-s18-dbv4-full"
-    aliases = (
-        "caformer-s18-dbv4-full",
-        "caformer_s18.dbv4-full",
-        "animetimm-caformer-s18",
-        "wdv4-caformer-s18",
-    )
     display_name = "AnimeTimm CaFormer S18"
     description = "Danbooru v4-full tagger using the AnimeTimm CaFormer S18 architecture."
     default_hf_repo = "animetimm/caformer_s18.dbv4-full"
@@ -269,12 +239,6 @@ class WDV4ConvNextBaseFullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm ConvNeXt Base model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-convnext-base-dbv4-full"
-    aliases = (
-        "convnext-base-dbv4-full",
-        "convnext_base.dbv4-full",
-        "animetimm-convnext-base",
-        "wdv4-convnext-base",
-    )
     display_name = "AnimeTimm ConvNeXt Base"
     description = "Danbooru v4-full tagger using the AnimeTimm ConvNeXt Base architecture."
     default_hf_repo = "animetimm/convnext_base.dbv4-full"
@@ -284,12 +248,6 @@ class WDV4Eva02LargePatch14448FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm Eva02 Large Patch14 448 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-eva02-large-patch14-448-dbv4-full"
-    aliases = (
-        "eva02-large-patch14-448-dbv4-full",
-        "eva02_large_patch14_448.dbv4-full",
-        "animetimm-eva02-large-patch14-448",
-        "wdv4-eva02-large-patch14-448",
-    )
     display_name = "AnimeTimm Eva02 Large Patch14 448"
     description = "Danbooru v4-full tagger using the AnimeTimm Eva02 Large Patch14 448 architecture."
     default_hf_repo = "animetimm/eva02_large_patch14_448.dbv4-full"
@@ -299,12 +257,6 @@ class WDV4MobileNetV3Large100FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm MobileNetV3 Large 100 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-mobilenetv3-large-100-dbv4-full"
-    aliases = (
-        "mobilenetv3-large-100-dbv4-full",
-        "mobilenetv3_large_100.dbv4-full",
-        "animetimm-mobilenetv3-large-100",
-        "wdv4-mobilenetv3-large-100",
-    )
     display_name = "AnimeTimm MobileNetV3 Large 100"
     description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 100 architecture."
     default_hf_repo = "animetimm/mobilenetv3_large_100.dbv4-full"
@@ -314,12 +266,6 @@ class WDV4MobileNetV3Large150dFullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm MobileNetV3 Large 150d model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-mobilenetv3-large-150d-dbv4-full"
-    aliases = (
-        "mobilenetv3-large-150d-dbv4-full",
-        "mobilenetv3_large_150d.dbv4-full",
-        "animetimm-mobilenetv3-large-150d",
-        "wdv4-mobilenetv3-large-150d",
-    )
     display_name = "AnimeTimm MobileNetV3 Large 150d"
     description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 150d architecture."
     default_hf_repo = "animetimm/mobilenetv3_large_150d.dbv4-full"
@@ -329,12 +275,6 @@ class WDV4MobileNetV4ConvAaLargeFullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm MobileNetV4 Conv AA Large model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-mobilenetv4-conv-aa-large-dbv4-full"
-    aliases = (
-        "mobilenetv4-conv-aa-large-dbv4-full",
-        "mobilenetv4_conv_aa_large.dbv4-full",
-        "animetimm-mobilenetv4-conv-aa-large",
-        "wdv4-mobilenetv4-conv-aa-large",
-    )
     display_name = "AnimeTimm MobileNetV4 Conv AA Large"
     description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv AA Large architecture."
     default_hf_repo = "animetimm/mobilenetv4_conv_aa_large.dbv4-full"
@@ -344,12 +284,6 @@ class WDV4MobileNetV4ConvSmallFullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm MobileNetV4 Conv Small model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-mobilenetv4-conv-small-dbv4-full"
-    aliases = (
-        "mobilenetv4-conv-small-dbv4-full",
-        "mobilenetv4_conv_small.dbv4-full",
-        "animetimm-mobilenetv4-conv-small",
-        "wdv4-mobilenetv4-conv-small",
-    )
     display_name = "AnimeTimm MobileNetV4 Conv Small"
     description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small architecture."
     default_hf_repo = "animetimm/mobilenetv4_conv_small.dbv4-full"
@@ -359,12 +293,6 @@ class WDV4MobileNetV4ConvSmall050FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm MobileNetV4 Conv Small 050 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-mobilenetv4-conv-small-050-dbv4-full"
-    aliases = (
-        "mobilenetv4-conv-small-050-dbv4-full",
-        "mobilenetv4_conv_small_050.dbv4-full",
-        "animetimm-mobilenetv4-conv-small-050",
-        "wdv4-mobilenetv4-conv-small-050",
-    )
     display_name = "AnimeTimm MobileNetV4 Conv Small 050"
     description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small 050 architecture."
     default_hf_repo = "animetimm/mobilenetv4_conv_small_050.dbv4-full"
@@ -374,12 +302,6 @@ class WDV4ResNet101FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm ResNet101 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-resnet101-dbv4-full"
-    aliases = (
-        "resnet101-dbv4-full",
-        "resnet101.dbv4-full",
-        "animetimm-resnet101",
-        "wdv4-resnet101",
-    )
     display_name = "AnimeTimm ResNet101"
     description = "Danbooru v4-full tagger using the AnimeTimm ResNet101 architecture."
     default_hf_repo = "animetimm/resnet101.dbv4-full"
@@ -389,12 +311,6 @@ class WDV4ResNet152FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm ResNet152 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-resnet152-dbv4-full"
-    aliases = (
-        "resnet152-dbv4-full",
-        "resnet152.dbv4-full",
-        "animetimm-resnet152",
-        "wdv4-resnet152",
-    )
     display_name = "AnimeTimm ResNet152"
     description = "Danbooru v4-full tagger using the AnimeTimm ResNet152 architecture."
     default_hf_repo = "animetimm/resnet152.dbv4-full"
@@ -404,12 +320,6 @@ class WDV4ResNet18FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm ResNet18 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-resnet18-dbv4-full"
-    aliases = (
-        "resnet18-dbv4-full",
-        "resnet18.dbv4-full",
-        "animetimm-resnet18",
-        "wdv4-resnet18",
-    )
     display_name = "AnimeTimm ResNet18"
     description = "Danbooru v4-full tagger using the AnimeTimm ResNet18 architecture."
     default_hf_repo = "animetimm/resnet18.dbv4-full"
@@ -419,12 +329,6 @@ class WDV4ResNet34FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm ResNet34 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-resnet34-dbv4-full"
-    aliases = (
-        "resnet34-dbv4-full",
-        "resnet34.dbv4-full",
-        "animetimm-resnet34",
-        "wdv4-resnet34",
-    )
     display_name = "AnimeTimm ResNet34"
     description = "Danbooru v4-full tagger using the AnimeTimm ResNet34 architecture."
     default_hf_repo = "animetimm/resnet34.dbv4-full"
@@ -434,12 +338,6 @@ class WDV4ResNet50FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm ResNet50 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-resnet50-dbv4-full"
-    aliases = (
-        "resnet50-dbv4-full",
-        "resnet50.dbv4-full",
-        "animetimm-resnet50",
-        "wdv4-resnet50",
-    )
     display_name = "AnimeTimm ResNet50"
     description = "Danbooru v4-full tagger using the AnimeTimm ResNet50 architecture."
     default_hf_repo = "animetimm/resnet50.dbv4-full"
@@ -449,12 +347,6 @@ class WDV4SwinV2BaseWindow8256FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm SwinV2 Base Window8 256 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-swinv2-base-window8-256-dbv4-full"
-    aliases = (
-        "swinv2-base-window8-256-dbv4-full",
-        "swinv2_base_window8_256.dbv4-full",
-        "animetimm-swinv2-base-window8-256",
-        "wdv4-swinv2-base-window8-256",
-    )
     display_name = "AnimeTimm SwinV2 Base Window8 256"
     description = "Danbooru v4-full tagger using the AnimeTimm SwinV2 Base Window8 256 architecture."
     default_hf_repo = "animetimm/swinv2_base_window8_256.dbv4-full"
@@ -464,12 +356,6 @@ class WDV4SwinV2BaseWindow8256Dbv4aFullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm SwinV2 Base Window8 256 model trained on Danbooru v4a-full tags."""
 
     model_id = "wdv4-swinv2-base-window8-256-dbv4a-full"
-    aliases = (
-        "swinv2-base-window8-256-dbv4a-full",
-        "swinv2_base_window8_256.dbv4a-full",
-        "animetimm-swinv2-base-window8-256-dbv4a",
-        "wdv4-swinv2-base-window8-256-dbv4a",
-    )
     display_name = "AnimeTimm SwinV2 Base Window8 256"
     description = "Danbooru v4a-full tagger using the AnimeTimm SwinV2 Base Window8 256 architecture."
     default_hf_repo = "animetimm/swinv2_base_window8_256.dbv4a-full"
@@ -479,12 +365,6 @@ class WDV4VitBasePatch16224FullPlugin(WDV4AnimeTimmBasePlugin):
     """AnimeTimm ViT Base Patch16 224 model trained on Danbooru v4-full tags."""
 
     model_id = "wdv4-vit-base-patch16-224-dbv4-full"
-    aliases = (
-        "vit-base-patch16-224-dbv4-full",
-        "vit_base_patch16_224.dbv4-full",
-        "animetimm-vit-base-patch16-224",
-        "wdv4-vit-base-patch16-224",
-    )
     display_name = "AnimeTimm ViT Base Patch16 224"
     description = "Danbooru v4-full tagger using the AnimeTimm ViT Base Patch16 224 architecture."
     default_hf_repo = "animetimm/vit_base_patch16_224.dbv4-full"

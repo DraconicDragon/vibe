@@ -264,7 +264,6 @@ else:  # pragma: no cover - only used when torch is missing entirely
 
 class WaifuScorerV3Plugin(WaifuScorerBasePlugin):
     model_id = "waifu-scorer-v3"
-    aliases = ()
     display_name = "Waifu Scorer v3"
     description = "Anime image aesthetic scorer using CLIP ViT-L/14 image encoder and Waifu Scorer v3 MLP head."
     default_hf_repo = "Eugeoter/waifu-scorer-v3"
@@ -272,7 +271,6 @@ class WaifuScorerV3Plugin(WaifuScorerBasePlugin):
 
 class WaifuScorerV4Plugin(WaifuScorerBasePlugin):
     model_id = "waifu-scorer-v4-beta"
-    aliases = ()
     display_name = "Waifu Scorer v4 Beta"
     description = "Anime image aesthetic scorer using CLIP ViT-L/14 image encoder and Waifu Scorer v4-beta MLP head."
     default_hf_repo = "Eugeoter/waifu-scorer-v4-beta"

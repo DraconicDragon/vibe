@@ -82,7 +82,6 @@ class ModelPluginInfo:
     """Typed metadata returned by vibe.describe()."""
 
     model_id: str
-    aliases: tuple[str, ...]
     display_name: str
     family_name: str
     description: str
@@ -123,8 +122,6 @@ class ModelPlugin(ABC):
     ------------------------------------------------
     model_id : str
         Canonical identifier, e.g. "wd-eva02-large-tagger".
-    aliases : tuple[str, ...]
-        Alternative names users can pass, e.g. ("wd-eva02", "eva02-tagger").
     output_type : OutputType
         What kind of result this plugin produces.
     required_files : tuple[FileSpec, ...]
@@ -147,7 +144,6 @@ class ModelPlugin(ABC):
 
     # --- Subclasses must override these ---
     model_id: str = ""
-    aliases: tuple[str, ...] = ()
     output_type: OutputType = OutputType.TAGS
     required_files: tuple[FileSpec, ...] = ()
     supported_backends: tuple[Backend, ...] = (Backend.PYTORCH, Backend.ONNX)
@@ -219,11 +215,6 @@ class ModelPlugin(ABC):
     # --- Introspection helpers ---
 
     @classmethod
-    def all_names(cls) -> list[str]:
-        """model_id + all aliases."""
-        return [cls.model_id] + list(cls.aliases)
-
-    @classmethod
     def files_for_backend(cls, backend: Backend) -> list[FileSpec]:
         """Subset of required_files that are needed for a given backend."""
         return [f for f in cls.required_files if f.needed_for(backend)]
@@ -237,7 +228,6 @@ class ModelPlugin(ABC):
         family_name = cls.family_name.strip() or cls.display_name.strip() or cls.model_id
         return ModelPluginInfo(
             model_id=cls.model_id,
-            aliases=cls.aliases,
             display_name=cls.display_name,
             family_name=family_name,
             description=cls.description,

@@ -134,7 +134,7 @@ def load(
     Load a model and return a ready-to-use ModelSession.
 
     Args:
-        model:          Model ID or alias (e.g. "wd-eva02-v3").
+        model:          Model ID (e.g. "wd-eva02-v3").
                         Run vibe.list_models() to see all options.
                         # todo: check if doc gen will set optional by default through type hints or if i should put it in docstring explicitly, or maybe just in general
         source:         Optional. Where to load files from. String options:
@@ -312,7 +312,7 @@ def list_plugin_classes() -> list[str]:
 
 
 def describe(model: str) -> ModelPluginInfo:
-    """Return typed model metadata for a model ID or alias."""
+    """Return typed model metadata for a model ID."""
     return model_registry.get(model).describe()
 
 

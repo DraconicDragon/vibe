@@ -8,7 +8,7 @@ Plugins are registered in two ways:
   2. Third-party entry points: packages can ship plugins by declaring an
      entry point in their pyproject.toml under the group "vibe.plugins".
 
-After discovery, the registry resolves names/aliases to plugin classes and
+After discovery, the registry resolves names to plugin classes and
 supports override — useful when a user wants to run an arbitrary HF repo
 through an existing plugin's inference code.
 """
@@ -40,8 +40,6 @@ class ModelRegistry:
     def __init__(self) -> None:
         # model_id → plugin class
         self._plugins: dict[str, type[ModelPlugin]] = {}
-        # alias → model_id (for quick resolution)
-        self._aliases: dict[str, str] = {}
 
     # region Registration
 
@@ -70,23 +68,9 @@ class ModelRegistry:
 
         self._plugins[mid] = plugin_cls
 
-        # Index all aliases → model_id
-        for alias in plugin_cls.aliases:
-            if alias in self._aliases and self._aliases[alias] != mid:
-                warnings.warn(
-                    f"Alias '{alias}' from plugin '{mid}' conflicts with "
-                    f"existing alias pointing to '{self._aliases[alias]}'. "
-                    f"The new plugin wins.",
-                    stacklevel=2,
-                )
-            self._aliases[alias] = mid
-
     def unregister(self, model_id: str) -> None:
         """Remove a plugin (mostly useful in tests)."""
-        plugin = self._plugins.pop(model_id, None)
-        if plugin:
-            for alias in plugin.aliases:
-                self._aliases.pop(alias, None)
+        self._plugins.pop(model_id, None)
 
     # endregion Registration
 
@@ -94,17 +78,13 @@ class ModelRegistry:
 
     def get(self, name: str) -> type[ModelPlugin]:
         """
-        Resolve a name (model_id or alias) to a plugin class.
+        Resolve a name (model_id) to a plugin class.
 
         Raises RegistryError with helpful message if not found.
         """
         # Direct model_id match
         if name in self._plugins:
             return self._plugins[name]
-
-        # Alias match
-        if name in self._aliases:
-            return self._plugins[self._aliases[name]]
 
         # Friendly error
         suggestions = self._suggest(name)
@@ -131,7 +111,7 @@ class ModelRegistry:
 
     def is_known(self, name: str) -> bool:
         """Return True if name resolves to a registered plugin."""
-        return name in self._plugins or name in self._aliases
+        return name in self._plugins
 
     # endregion Lookup
 
@@ -216,7 +196,7 @@ class ModelRegistry:
     def _suggest(self, name: str, max_suggestions: int = 3) -> list[str]:
         """Very basic fuzzy suggestion — find names that share a substring."""
         name_lower = name.lower()
-        all_names = list(self._plugins.keys()) + list(self._aliases.keys())
+        all_names = list(self._plugins.keys())
         return [n for n in all_names if name_lower in n.lower() or n.lower() in name_lower][:max_suggestions]
 
 
