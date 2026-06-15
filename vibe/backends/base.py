@@ -86,17 +86,33 @@ class ModelPluginInfo:
     family_name: str
     description: str
     output_type: OutputType
-    default_hf_repo: str | None
     supported_backends: tuple[Backend, ...]
-    supported_processors: tuple[str, ...]
+    supported_processors: tuple[type[ResultProcessor], ...]
     required_files: tuple[FileSpec, ...]
+    default_hf_repo: str | None = None
+    hf_subdir: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["output_type"] = self.output_type.value
-        d["supported_backends"] = [b.value for b in self.supported_backends]
-        d["required_files"] = [f.to_dict() for f in self.required_files]
-        return d
+        return {
+            "model_id": self.model_id,
+            "display_name": self.display_name,
+            "family_name": self.family_name,
+            "description": self.description,
+            "output_type": self.output_type.value,
+            "supported_backends": [b.value for b in self.supported_backends],
+            "supported_processors": [p.__name__ for p in self.supported_processors],
+            "required_files": [
+                {
+                    "name": spec.name,
+                    "role": spec.role.value,
+                    "required": spec.required,
+                    "backends": [b.value for b in spec.backends],
+                }
+                for spec in self.required_files
+            ],
+            "default_hf_repo": self.default_hf_repo,
+            "hf_subdir": self.hf_subdir,
+        }
 
 
 # endregion File Spec

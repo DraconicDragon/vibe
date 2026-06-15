@@ -8,7 +8,7 @@ Consumers should check result.output_type before accessing type-specific fields.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal, TypeGuard
 
@@ -25,8 +25,6 @@ class OutputType(str, Enum):
 
 # region Result Dataclasses
 
-# todo: turn asdicts into manual to_dict, less processing and simpler and fine anyway since these arent expected to change when done
-
 
 @dataclass
 class TagEntry:
@@ -36,7 +34,10 @@ class TagEntry:
     score: float
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "tag": self.tag,
+            "score": self.score,
+        }
 
 
 @dataclass
@@ -82,17 +83,15 @@ class TagResult:
         return scores
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert the result to a dictionary."""
-        d: dict[str, Any] = {
-            "output_type": self.output_type.value,
-        }
-
         tags_dict: dict[str, dict[str, float]] = {}
         for category, entries in self.tags.items():
             sorted_entries = sorted(entries, key=lambda entry: entry.score, reverse=True)
             tags_dict[category] = {entry.tag: entry.score for entry in sorted_entries}
 
-        d["tags"] = tags_dict
+        d: dict[str, Any] = {
+            "output_type": self.output_type.value,
+            "tags": tags_dict,
+        }
 
         if self.character_copyright_mapping is not None:
             d["character_copyright_mapping"] = self.character_copyright_mapping
@@ -121,9 +120,14 @@ class ScoreResult:
     label: str = "score"
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["output_type"] = self.output_type.value
-        return d
+        return {
+            "output_type": self.output_type.value,
+            "score": self.score,
+            "score_min": self.score_min,
+            "score_max": self.score_max,
+            "normalized_score": self.normalized_score,
+            "label": self.label,
+        }
 
 
 @dataclass(slots=True)

@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, cast
 
 _NVML_LOCK = threading.Lock()
@@ -172,7 +172,7 @@ def _read_nvml_device_memory_bytes() -> tuple[int | None, int | None]:
 # region Data Data Models
 
 
-@dataclass
+@dataclass(frozen=True)
 class MemorySnapshot:
     """Point-in-time memory snapshot."""
 
@@ -187,10 +187,20 @@ class MemorySnapshot:
     gpu_device_total_bytes: int | None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "timestamp": self.timestamp,
+            "process_rss_bytes": self.process_rss_bytes,
+            "torch_cuda_allocated_bytes": self.torch_cuda_allocated_bytes,
+            "torch_cuda_reserved_bytes": self.torch_cuda_reserved_bytes,
+            "torch_cuda_max_allocated_bytes": self.torch_cuda_max_allocated_bytes,
+            "torch_cuda_max_reserved_bytes": self.torch_cuda_max_reserved_bytes,
+            "gpu_process_used_bytes": self.gpu_process_used_bytes,
+            "gpu_device_used_bytes": self.gpu_device_used_bytes,
+            "gpu_device_total_bytes": self.gpu_device_total_bytes,
+        }
 
 
-@dataclass
+@dataclass(frozen=True)
 class InferenceMemoryRecord:
     """Memory metrics for a single inference call."""
 
@@ -205,13 +215,20 @@ class InferenceMemoryRecord:
     delta_gpu_process_used_bytes: int | None
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["before"] = self.before.to_dict()
-        d["after"] = self.after.to_dict()
-        return d
+        return {
+            "index": self.index,
+            "operation": self.operation,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "elapsed_ms": self.elapsed_ms,
+            "before": self.before.to_dict(),
+            "after": self.after.to_dict(),
+            "delta_process_rss_bytes": self.delta_process_rss_bytes,
+            "delta_gpu_process_used_bytes": self.delta_gpu_process_used_bytes,
+        }
 
 
-@dataclass
+@dataclass(frozen=True)
 class MemoryTrackerStats:
     """Aggregated memory tracking state."""
 
@@ -224,9 +241,15 @@ class MemoryTrackerStats:
     max_inference_gpu_delta_bytes: int | None
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["last_record"] = self.last_record.to_dict() if self.last_record else None
-        return d
+        return {
+            "enabled": self.enabled,
+            "inference_calls": self.inference_calls,
+            "last_record": self.last_record.to_dict() if self.last_record else None,
+            "peak_process_rss_bytes": self.peak_process_rss_bytes,
+            "peak_gpu_process_used_bytes": self.peak_gpu_process_used_bytes,
+            "max_inference_rss_delta_bytes": self.max_inference_rss_delta_bytes,
+            "max_inference_gpu_delta_bytes": self.max_inference_gpu_delta_bytes,
+        }
 
 
 # endregion Data Models
