@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
 from vibe.plugin_validation import validate_plugin_declaration
-from vibe.results import OutputType, TagEntry, TagResult
+from vibe.results import OutputType, TagResult
 
 
 class _BaseTestPlugin(ModelPlugin):
     model_id = ""
-    aliases: list[str] = []
     output_type = OutputType.TAGS
     required_files: list[FileSpec] = []
     default_hf_repo = None
-    supported_backends: list[Backend] = []
+    supported_backends: tuple[Backend, ...] = ()
     display_name = "test"
     description = "test"
 
@@ -39,7 +36,7 @@ class _DuplicateNameWithKeyPlugin(_BaseTestPlugin):
 
 def test_validate_plugin_declaration_warns_when_supported_backend_has_no_weights() -> None:
     _MissingWeightsPlugin.model_id = "missing-weights"
-    _MissingWeightsPlugin.supported_backends = [Backend.PYTORCH]
+    _MissingWeightsPlugin.supported_backends = (Backend.PYTORCH,)
     _MissingWeightsPlugin.required_files = []
 
     warnings = validate_plugin_declaration(_MissingWeightsPlugin)
@@ -50,13 +47,13 @@ def test_validate_plugin_declaration_warns_when_supported_backend_has_no_weights
 
 def test_validate_plugin_declaration_warns_when_weights_backend_not_supported() -> None:
     _MismatchedWeightsBackendPlugin.model_id = "mismatched-backend"
-    _MismatchedWeightsBackendPlugin.supported_backends = [Backend.ONNX]
+    _MismatchedWeightsBackendPlugin.supported_backends = (Backend.ONNX,)
     _MismatchedWeightsBackendPlugin.required_files = [
         FileSpec(
             name="model.safetensors",
             role=FileRole.WEIGHTS,
             required=True,
-            backends=[Backend.PYTORCH],
+            backends=(Backend.PYTORCH,),
         )
     ]
 
@@ -68,14 +65,14 @@ def test_validate_plugin_declaration_warns_when_weights_backend_not_supported() 
 
 def test_validate_plugin_declaration_allows_duplicate_names_with_unique_keys() -> None:
     _DuplicateNameWithKeyPlugin.model_id = "duplicate-keys-ok"
-    _DuplicateNameWithKeyPlugin.supported_backends = [Backend.PYTORCH]
+    _DuplicateNameWithKeyPlugin.supported_backends = (Backend.PYTORCH,)
     _DuplicateNameWithKeyPlugin.required_files = [
         FileSpec(
             name="model.safetensors",
             key="mlp_weights",
             role=FileRole.WEIGHTS,
             required=True,
-            backends=[Backend.PYTORCH],
+            backends=(Backend.PYTORCH,),
             repo_id="repo/a",
         ),
         FileSpec(
@@ -83,7 +80,7 @@ def test_validate_plugin_declaration_allows_duplicate_names_with_unique_keys() -
             key="clip_weights",
             role=FileRole.WEIGHTS,
             required=True,
-            backends=[Backend.PYTORCH],
+            backends=(Backend.PYTORCH,),
             repo_id="repo/b",
         ),
     ]

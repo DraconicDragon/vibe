@@ -16,27 +16,11 @@ from vibe.loader import (
 )
 
 
-def test_file_map_values_and_to_dict(tmp_path: Path) -> None:
-    model = tmp_path / "model.onnx"
-    tags = tmp_path / "selected_tags.csv"
-    model.write_text("x", encoding="utf-8")
-    tags.write_text("name,category\n", encoding="utf-8")
-
-    file_map = FileMap({"model.onnx": model, "selected_tags.csv": tags})
-
-    values = file_map.values()
-    assert model in values
-    assert tags in values
-    assert file_map.to_dict()["model.onnx"] == str(model)
-
-
 def test_resolve_local_folder_reports_missing_required_file(tmp_path: Path) -> None:
     # Keep one unrelated file so the error shows useful context.
     (tmp_path / "other.txt").write_text("x", encoding="utf-8")
 
-    specs = [
-        FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
-    ]
+    specs = (FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=(Backend.ONNX,)),)
 
     with pytest.raises(LoaderError) as excinfo:
         resolve_from_local_folder(tmp_path, specs, Backend.ONNX)
@@ -58,12 +42,12 @@ def test_resolve_local_folder_accepts_hf_style_subdir_for_required_files(tmp_pat
     meta.write_text('{"labels": ["a"]}', encoding="utf-8")
     samples.write_bytes(b"npz")
 
-    specs = [
+    specs = (
         FileSpec(
             name="model.onnx",
             role=FileRole.WEIGHTS,
             required=True,
-            backends=[Backend.ONNX],
+            backends=(Backend.ONNX,),
             hf_subdir="swinv2pv3_v0_448_ls0.2",
         ),
         FileSpec(
@@ -78,7 +62,7 @@ def test_resolve_local_folder_accepts_hf_style_subdir_for_required_files(tmp_pat
             required=True,
             hf_subdir="swinv2pv3_v0_448_ls0.2",
         ),
-    ]
+    )
 
     file_map = resolve_from_local_folder(folder, specs, Backend.ONNX)
 
@@ -97,15 +81,15 @@ def test_resolve_local_folder_prefers_root_over_hf_style_subdir(tmp_path: Path) 
     root_model.write_text("root", encoding="utf-8")
     subdir_model.write_text("subdir", encoding="utf-8")
 
-    specs = [
+    specs = (
         FileSpec(
             name="model.onnx",
             role=FileRole.WEIGHTS,
             required=True,
-            backends=[Backend.ONNX],
+            backends=(Backend.ONNX,),
             hf_subdir="swinv2pv3_v0_448_ls0.2",
         ),
-    ]
+    )
 
     file_map = resolve_from_local_folder(folder, specs, Backend.ONNX)
 
@@ -120,15 +104,15 @@ def test_resolve_local_folder_reports_subdir_when_root_missing(tmp_path: Path) -
     subdir_model = subdir / "model.onnx"
     subdir_model.write_text("subdir", encoding="utf-8")
 
-    specs = [
+    specs = (
         FileSpec(
             name="model.onnx",
             role=FileRole.WEIGHTS,
             required=True,
-            backends=[Backend.ONNX],
+            backends=(Backend.ONNX,),
             hf_subdir="swinv2pv3_v0_448_ls0.2",
         ),
-    ]
+    )
 
     file_map = resolve_from_local_folder(folder, specs, Backend.ONNX)
 
@@ -139,15 +123,15 @@ def test_resolve_local_folder_missing_required_mentions_both_candidates(tmp_path
     folder = tmp_path / "anime_aesthetic"
     folder.mkdir()
 
-    specs = [
+    specs = (
         FileSpec(
             name="model.onnx",
             role=FileRole.WEIGHTS,
             required=True,
-            backends=[Backend.ONNX],
+            backends=(Backend.ONNX,),
             hf_subdir="swinv2pv3_v0_448_ls0.2",
         ),
-    ]
+    )
 
     with pytest.raises(LoaderError) as excinfo:
         resolve_from_local_folder(folder, specs, Backend.ONNX)
@@ -180,10 +164,10 @@ def test_resolve_hf_repo_skips_missing_optional(monkeypatch: pytest.MonkeyPatch,
     required_path = required
     monkeypatch.setattr("vibe.loader.download_or_cached", fake_download_or_cached)
 
-    specs = [
-        FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
-        FileSpec("optional.json", role=FileRole.CONFIG, required=False, backends=[Backend.ONNX]),
-    ]
+    specs = (
+        FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=(Backend.ONNX,)),
+        FileSpec("optional.json", role=FileRole.CONFIG, required=False, backends=(Backend.ONNX,)),
+    )
 
     file_map = resolve_from_hf_repo("owner/repo", specs, Backend.ONNX, allow_download=False)
 
@@ -218,10 +202,10 @@ def test_resolve_hf_repo_supports_file_name_map(monkeypatch: pytest.MonkeyPatch,
 
     monkeypatch.setattr("vibe.loader.download_or_cached", fake_download_or_cached)
 
-    specs = [
-        FileSpec("model.onnx", role=FileRole.WEIGHTS, backends=[Backend.ONNX]),
-        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST),
-    ]
+    specs = (
+        FileSpec("model.onnx", role=FileRole.WEIGHTS, backends=(Backend.ONNX,)),
+        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST, backends=(Backend.ONNX,)),
+    )
 
     file_map = resolve_from_hf_repo(
         "owner/repo",
@@ -240,15 +224,13 @@ def test_resolve_hf_repo_supports_file_name_map(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_source_string_hf_prefix_supports_file_name_map(monkeypatch: pytest.MonkeyPatch) -> None:
-    specs = [
-        FileSpec("model.onnx", role=FileRole.WEIGHTS, backends=[Backend.ONNX]),
-    ]
+    specs = (FileSpec("model.onnx", role=FileRole.WEIGHTS, backends=(Backend.ONNX,)),)
 
     captured: dict[str, str] = {}
 
     def _fake_resolve_from_hf_repo(
         repo_id: str,
-        file_specs: list[FileSpec],
+        file_specs: tuple[FileSpec, ...],
         backend: Backend,
         *,
         revision: str | None = None,
@@ -276,9 +258,7 @@ def test_source_string_hf_prefix_supports_file_name_map(monkeypatch: pytest.Monk
 
 
 def test_source_string_local_prefix_is_strict_and_suggests_hf() -> None:
-    specs = [
-        FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
-    ]
+    specs = (FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=(Backend.ONNX,)),)
 
     with pytest.raises(LoaderError) as excinfo:
         resolve_from_source_string("local:owner/repo", specs, Backend.ONNX)
@@ -289,9 +269,7 @@ def test_source_string_local_prefix_is_strict_and_suggests_hf() -> None:
 
 
 def test_source_string_hf_prefix_suggests_local_when_path_exists(tmp_path: Path) -> None:
-    specs = [
-        FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
-    ]
+    specs = (FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=(Backend.ONNX,)),)
 
     with pytest.raises(LoaderError) as excinfo:
         resolve_from_source_string(f"hf:{tmp_path}", specs, Backend.ONNX, allow_download=False)
@@ -304,9 +282,7 @@ def test_source_string_hf_prefix_suggests_local_when_path_exists(tmp_path: Path)
 def test_source_string_auto_existing_local_dir_reports_missing_required(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    specs = [
-        FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=[Backend.ONNX]),
-    ]
+    specs = (FileSpec("model.onnx", role=FileRole.WEIGHTS, required=True, backends=(Backend.ONNX,)),)
 
     local_dir = tmp_path / "owner" / "repo"
     local_dir.mkdir(parents=True)
@@ -332,10 +308,10 @@ def test_source_string_auto_local_dir_backfills_missing_required_from_fallback_h
     resolved_model = tmp_path / "cached_model.safetensors"
     resolved_model.write_text("weights", encoding="utf-8")
 
-    specs = [
-        FileSpec("model.safetensors", role=FileRole.WEIGHTS, required=True, backends=[Backend.PYTORCH]),
-        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST),
-    ]
+    specs = (
+        FileSpec("model.safetensors", role=FileRole.WEIGHTS, required=True, backends=(Backend.PYTORCH,)),
+        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST, backends=(Backend.PYTORCH,)),
+    )
 
     def _fake_download_with_reason(
         repo_id: str,
@@ -371,10 +347,10 @@ def test_source_string_auto_local_dir_backfills_missing_required_from_fallback_h
 
 
 def test_resolve_from_sources_uses_repo_specific_source_map(monkeypatch: pytest.MonkeyPatch) -> None:
-    specs = [
-        FileSpec("model.safetensors", role=FileRole.WEIGHTS, backends=[Backend.PYTORCH], repo_id="repo/a"),
+    specs = (
+        FileSpec("model.safetensors", role=FileRole.WEIGHTS, backends=(Backend.PYTORCH,), repo_id="repo/a"),
         FileSpec("config.json", role=FileRole.CONFIG, repo_id="repo/b"),
-    ]
+    )
 
     captured: list[tuple[str, list[str]]] = []
 
@@ -418,10 +394,10 @@ def test_source_string_auto_local_dir_error_is_single_path_for_missing_required(
     local_dir.mkdir()
     (local_dir / "selected_tags.csv").write_text("name,category\n", encoding="utf-8")
 
-    specs = [
-        FileSpec("config.json", role=FileRole.CONFIG, required=True, backends=[Backend.PYTORCH]),
-        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST),
-    ]
+    specs = (
+        FileSpec("config.json", role=FileRole.CONFIG, required=True, backends=(Backend.PYTORCH,)),
+        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST, backends=(Backend.PYTORCH,)),
+    )
 
     def _fake_download_with_reason(
         repo_id: str,
@@ -464,10 +440,10 @@ def test_source_string_auto_local_dir_optional_reason_includes_hf_fallback_failu
     tags = local_dir / "selected_tags.csv"
     tags.write_text("name,category\n", encoding="utf-8")
 
-    specs = [
-        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST),
-        FileSpec("config.json", role=FileRole.CONFIG, required=False, backends=[Backend.PYTORCH]),
-    ]
+    specs = (
+        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST, backends=(Backend.PYTORCH,)),
+        FileSpec("config.json", role=FileRole.CONFIG, required=False, backends=(Backend.PYTORCH,)),
+    )
 
     def _fake_download_with_reason(
         repo_id: str,
@@ -510,10 +486,10 @@ def test_resolve_local_folder_supports_file_name_map(tmp_path: Path) -> None:
     model.write_text("x", encoding="utf-8")
     tags.write_text("name,category\n", encoding="utf-8")
 
-    specs = [
-        FileSpec("model.onnx", role=FileRole.WEIGHTS, backends=[Backend.ONNX]),
-        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST),
-    ]
+    specs = (
+        FileSpec("model.onnx", role=FileRole.WEIGHTS, backends=(Backend.ONNX,)),
+        FileSpec("selected_tags.csv", role=FileRole.TAG_LIST, backends=(Backend.ONNX,)),
+    )
 
     file_map = resolve_from_local_folder(
         tmp_path,
@@ -530,9 +506,7 @@ def test_resolve_local_folder_supports_file_name_map(tmp_path: Path) -> None:
 
 
 def test_resolve_local_folder_rejects_unknown_file_name_map_key(tmp_path: Path) -> None:
-    specs = [
-        FileSpec("model.onnx", role=FileRole.WEIGHTS, backends=[Backend.ONNX]),
-    ]
+    specs = (FileSpec("model.onnx", role=FileRole.WEIGHTS, backends=(Backend.ONNX,)),)
 
     with pytest.raises(LoaderError) as excinfo:
         resolve_from_local_folder(

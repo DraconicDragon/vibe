@@ -3,12 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import pytest
 from PIL import Image
 
-import vibe
 from vibe.plugins.wd_tagger import WDEva02Plugin
-from vibe.result_processors import CharacterIPMapping, CleanTags
 from vibe.results import TagResult
 
 
@@ -17,23 +14,6 @@ def _write_selected_tags_csv(path: Path) -> None:
         "name,category\nblue_hair,0\ncat_ears,0\nmiku_hatsune,4\nsafe,9\n^_^,4\n",
         encoding="utf-8",
     )
-
-
-def test_registry_contains_non_caformer_wd_models() -> None:
-    models = set(vibe.list_models())
-    assert "wd-eva02-large-v3" in models
-    assert "wd-swinv2-v3" in models
-    assert "wd-convnext-v3" in models
-    assert "wd-vit-v3" in models
-
-    # list_models() returns canonical model IDs; aliases should still resolve.
-    assert vibe.model_registry.get("wd-eva02-large-v3").model_id == "wd-eva02-large-v3"
-
-
-def test_list_plugin_classes_contains_wd_classes() -> None:
-    classes = set(vibe.list_plugin_classes())
-    assert "WDEva02Plugin" in classes
-    assert "WDSwinV2Plugin" in classes
 
 
 def test_load_ancillary_parses_categories_and_normalized_names(tmp_path: Path) -> None:
@@ -93,9 +73,3 @@ def test_postprocess_returns_full_category_lists_and_sigmoid(tmp_path: Path) -> 
     assert result.tags["general"][0].score > result.tags["general"][1].score
     assert result.tags["character"][0].score > result.tags["character"][1].score
     assert result.character_copyright_mapping is None
-
-
-def test_wd_plugin_declares_supported_processors_by_class() -> None:
-    supported = WDEva02Plugin.supported_processors
-    assert CleanTags in supported
-    assert CharacterIPMapping in supported

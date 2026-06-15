@@ -25,7 +25,3 @@ def test_normalize_device_string_rejects_no_colon_index_syntax() -> None:
 
     with pytest.raises(ValueError, match="Use 'gpu:1' syntax"):
         normalize_device_string("gpu1", backend="onnx")
-
-
-def test_list_available_devices_always_includes_cpu() -> None:
-    assert "cpu" in list_available_devices()

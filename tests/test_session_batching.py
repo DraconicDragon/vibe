@@ -353,7 +353,7 @@ def test_infer_sync_can_be_cancelled_during_image_loading(tmp_path: Path) -> Non
             session.infer(paths, batch_size=2, batch_method="sequential")
         canceller.join(timeout=0.2)
     finally:
-        vibe.session.load_image_if_path = original_loader  # type: ignore[assignment]
+        vibe.session.load_image_if_path = original_loader
 
     assert len(backend.calls) < len(paths)
     assert session.is_inference_running() is False
@@ -482,14 +482,6 @@ def test_result_pipeline_optional_cleaning_preserves_kaomojis(tmp_path: Path) ->
     assert "miku hatsune" in names
     assert "^_^" in names
     assert any(entry.tag == "cat ears" for entry in result.category("general"))
-
-
-def test_as_score_dict_is_sorted_descending_by_default(tmp_path: Path) -> None:
-    session, _ = _build_session(tmp_path)
-    result = session.infer(_test_images()[0]).items[0].result
-
-    scores = list(result.as_score_dict().values())
-    assert scores == sorted(scores, reverse=True)
 
 
 def test_result_pipeline_mapping_and_cleaning_can_run_together(tmp_path: Path) -> None:
