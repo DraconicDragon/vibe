@@ -76,7 +76,7 @@ def test_build_session_rejects_invalid_precision(monkeypatch, tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    plugin_cls = __import__("vibe").model_registry.get("wd-eva02-v3")
+    plugin_cls = __import__("vibe").model_registry.get("wd-eva02-large-v3")
 
     with pytest.raises(SessionError, match="Unsupported precision"):
         build_session(
@@ -98,7 +98,7 @@ def test_build_session_pytorch_int8_ov_falls_back_to_auto(monkeypatch, tmp_path:
         encoding="utf-8",
     )
 
-    plugin_cls = __import__("vibe").model_registry.get("wd-eva02-v3")
+    plugin_cls = __import__("vibe").model_registry.get("wd-eva02-large-v3")
 
     session = build_session(
         plugin_cls=plugin_cls,
@@ -118,7 +118,7 @@ def test_build_session_onnx_precision_warning_only_after_success(monkeypatch, tm
     monkeypatch.setattr("vibe.backends.runtime.pytorch.PyTorchBackend", _DummyPyTorchBackend)
     monkeypatch.setattr("vibe.session_factory._auto_select_backend", lambda *args, **kwargs: Backend.ONNX)
 
-    plugin_cls = __import__("vibe").model_registry.get("wd-eva02-v3")
+    plugin_cls = __import__("vibe").model_registry.get("wd-eva02-large-v3")
     monkeypatch.setattr(plugin_cls, "load_ancillary", lambda self, file_map: None)
 
     weights = tmp_path / "model.onnx"

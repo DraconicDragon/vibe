@@ -24,7 +24,7 @@ def _env_list(name: str) -> list[str]:
 
 def _repo_to_model_id(repo_id: str) -> str:
     suffix = repo_id.split("/", 1)[-1]
-    return f"wdv4-{suffix.replace('_', '-').replace('.', '-')}"
+    return f"at-{suffix.replace('_', '-').replace('.', '-')}"
 
 
 def _backend_available(backend: str) -> bool:

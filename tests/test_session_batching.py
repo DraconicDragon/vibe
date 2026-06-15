@@ -63,7 +63,7 @@ def _build_session(
     tmp_path: Path,
     providers: list[str] | None = None,
 ) -> tuple[ModelSession, _DummyBackend]:
-    plugin = vibe.model_registry.get("wd-eva02-v3")()
+    plugin = vibe.model_registry.get("wd-eva02-large-v3")()
     tags = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv(tags)
     plugin.configure(auto_download=False)
@@ -570,7 +570,7 @@ def test_real_world_smoke_batch_modes() -> None:
     images = [Image.open(path).convert("RGB") for path in REAL_WORLD_IMAGE_PATHS]
 
     session = vibe.load(
-        "wd-eva02-v3",
+        "wd-eva02-large-v3",
         source=REAL_WORLD_MODEL_SOURCE,
         backend="onnx",
         auto_download=False,

@@ -31,6 +31,6 @@ def test_describe_exposes_image_spec_metadata() -> None:
     assert wd_info.input_layout == "NHWC"
     assert wd_info.supported_backends
 
-    animetimm_info = vibe.describe("wdv4-convnextv2-huge-dbv4-full")
+    animetimm_info = vibe.describe("at-convnextv2-huge-dbv4-full")
     assert animetimm_info.input_layout is None
     assert animetimm_info.supported_backends

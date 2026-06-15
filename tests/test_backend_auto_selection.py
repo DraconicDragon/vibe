@@ -74,7 +74,7 @@ def _local_file_map(tmp_path: Path) -> FileMap:
 
 
 def test_build_session_auto_backend_falls_back_when_primary_files_missing(monkeypatch, tmp_path: Path) -> None:
-    plugin_cls = vibe.model_registry.get("wd-eva02-v3")
+    plugin_cls = vibe.model_registry.get("wd-eva02-large-v3")
 
     monkeypatch.setattr("vibe.backends.runtime.onnx.ONNXBackend", _DummyONNXBackend)
     monkeypatch.setattr("vibe.backends.runtime.pytorch.PyTorchBackend", _DummyPyTorchBackend)
@@ -107,7 +107,7 @@ def test_build_session_auto_backend_falls_back_when_primary_files_missing(monkey
 
 
 def test_build_session_explicit_backend_does_not_fallback_on_missing_files(monkeypatch, tmp_path: Path) -> None:
-    plugin_cls = vibe.model_registry.get("wd-eva02-v3")
+    plugin_cls = vibe.model_registry.get("wd-eva02-large-v3")
 
     monkeypatch.setattr("vibe.backends.runtime.onnx.ONNXBackend", _DummyONNXBackend)
     monkeypatch.setattr("vibe.backends.runtime.pytorch.PyTorchBackend", _DummyPyTorchBackend)
@@ -135,7 +135,7 @@ def test_build_session_explicit_backend_does_not_fallback_on_missing_files(monke
 
 
 def test_build_session_auto_local_checks_all_backends_before_hf_fallback(monkeypatch, tmp_path: Path) -> None:
-    plugin_cls = vibe.model_registry.get("wd-eva02-v3")
+    plugin_cls = vibe.model_registry.get("wd-eva02-large-v3")
 
     monkeypatch.setattr("vibe.backends.runtime.onnx.ONNXBackend", _DummyONNXBackend)
     monkeypatch.setattr("vibe.backends.runtime.pytorch.PyTorchBackend", _DummyPyTorchBackend)
@@ -192,7 +192,7 @@ def test_build_session_auto_local_checks_all_backends_before_hf_fallback(monkeyp
 
 
 def test_build_session_auto_logs_concise_fallback_and_selection(monkeypatch, tmp_path: Path, caplog) -> None:
-    plugin_cls = vibe.model_registry.get("wd-eva02-v3")
+    plugin_cls = vibe.model_registry.get("wd-eva02-large-v3")
 
     monkeypatch.setattr("vibe.backends.runtime.onnx.ONNXBackend", _DummyONNXBackend)
     monkeypatch.setattr("vibe.backends.runtime.pytorch.PyTorchBackend", _DummyPyTorchBackend)

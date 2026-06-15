@@ -9,7 +9,7 @@ from PIL import Image
 import vibe
 from tests.common.animetimm_selected_repos import ANIMETIMM_V4_SELECTED_REPOS
 from vibe.plugins.wdv4_animetimm import (
-    WDV4CaformerB36FullPlugin,
+    ATCaformerB36Plugin,
 )
 from vibe.results import TagResult
 
@@ -83,7 +83,7 @@ def _write_preprocess_json(path: Path, *, pad_size: int = 512, final_size: int =
 
 def _repo_to_model_id(repo_id: str) -> str:
     suffix = repo_id.split("/", 1)[-1]
-    return f"wdv4-{suffix.replace('_', '-').replace('.', '-')}"
+    return f"at-{suffix.replace('_', '-').replace('.', '-')}"
 
 
 @pytest.mark.parametrize("repo_id", ANIMETIMM_V4_SELECTED_REPOS)
@@ -93,8 +93,7 @@ def test_registry_contains_all_selected_wdv4_models(repo_id: str) -> None:
     expected_model_id = _repo_to_model_id(repo_id)
     assert expected_model_id in models
 
-    alias = repo_id.split("/", 1)[-1]
-    resolved = vibe.model_registry.get(alias)
+    resolved = vibe.model_registry.get(expected_model_id)
     assert resolved.model_id == expected_model_id
 
 
@@ -106,7 +105,7 @@ def test_load_ancillary_parses_animetimm_categories_and_thresholds(tmp_path: Pat
     _write_config_json(config_path, image_size=384)
     _write_preprocess_json(preprocess_path, pad_size=512, final_size=384)
 
-    plugin = WDV4CaformerB36FullPlugin()
+    plugin = ATCaformerB36Plugin()
     plugin.load_ancillary(
         {
             "selected_tags.csv": csv_path,
@@ -130,7 +129,7 @@ def test_preprocess_outputs_nchw_rgb_normalized_float32(tmp_path: Path) -> None:
     _write_config_json(config_path, image_size=4)
     _write_preprocess_json(preprocess_path, pad_size=4, final_size=4)
 
-    plugin = WDV4CaformerB36FullPlugin()
+    plugin = ATCaformerB36Plugin()
     plugin.load_ancillary(
         {
             "selected_tags.csv": csv_path,
@@ -161,7 +160,7 @@ def test_postprocess_returns_raw_artist_and_category_entries(tmp_path: Path) -> 
     _write_config_json(config_path, image_size=384)
     _write_preprocess_json(preprocess_path, pad_size=512, final_size=384)
 
-    plugin = WDV4CaformerB36FullPlugin()
+    plugin = ATCaformerB36Plugin()
     plugin.load_ancillary(
         {
             "selected_tags.csv": csv_path,
@@ -191,7 +190,7 @@ def test_pytorch_preprocess_uses_config_image_size_when_available(tmp_path: Path
     _write_config_json(config_path, image_size=6)
     _write_preprocess_json(preprocess_path, pad_size=6, final_size=6)
 
-    plugin = WDV4CaformerB36FullPlugin()
+    plugin = ATCaformerB36Plugin()
     plugin.configure(backend=vibe.Backend.PYTORCH)
     plugin.load_ancillary(
         {
@@ -212,7 +211,7 @@ def test_load_ancillary_requires_config_and_preprocess(tmp_path: Path) -> None:
     csv_path = tmp_path / "selected_tags.csv"
     _write_selected_tags_csv(csv_path)
 
-    plugin = WDV4CaformerB36FullPlugin()
+    plugin = ATCaformerB36Plugin()
     with pytest.raises(KeyError):
         plugin.load_ancillary({"selected_tags.csv": csv_path})
 
@@ -225,7 +224,7 @@ def test_pytorch_preprocess_uses_preprocess_json_over_config(tmp_path: Path) -> 
     _write_config_json(config_path, image_size=6)
     _write_preprocess_json(preprocess_path, pad_size=8, final_size=4)
 
-    plugin = WDV4CaformerB36FullPlugin()
+    plugin = ATCaformerB36Plugin()
     plugin.configure(backend=vibe.Backend.PYTORCH)
     plugin.load_ancillary(
         {
@@ -250,7 +249,7 @@ def test_preprocess_json_invalid_raises_runtime_error(tmp_path: Path) -> None:
     _write_config_json(config_path, image_size=6)
     preprocess_path.write_text("{}", encoding="utf-8")
 
-    plugin = WDV4CaformerB36FullPlugin()
+    plugin = ATCaformerB36Plugin()
     plugin.configure(backend=vibe.Backend.PYTORCH)
     with pytest.raises(RuntimeError):
         plugin.load_ancillary(
