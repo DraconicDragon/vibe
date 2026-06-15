@@ -90,7 +90,6 @@ class ModelPluginInfo:
     supported_backends: tuple[Backend, ...]
     supported_processors: tuple[str, ...]
     required_files: tuple[FileSpec, ...]
-    input_layout: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -236,7 +235,6 @@ class ModelPlugin(ABC):
             supported_backends=cls.supported_backends,
             supported_processors=tuple(processor.__name__ for processor in cls.supported_processors),
             required_files=cls.required_files,
-            input_layout=getattr(cls, "INPUT_LAYOUT", None),
         )
 
     @classmethod
