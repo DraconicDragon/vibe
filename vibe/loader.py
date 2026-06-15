@@ -106,7 +106,7 @@ def _local_candidate_names(spec: FileSpec, normalized_file_name_map: Mapping[str
 
 def resolve_from_hf_repo(
     repo_id: str,
-    file_specs: list[FileSpec],
+    file_specs: tuple[FileSpec, ...],
     backend: Backend,
     *,
     revision: str | None = None,
@@ -192,7 +192,7 @@ def resolve_from_hf_repo(
 
 def resolve_from_local_folder(
     folder: Path,
-    file_specs: list[FileSpec],
+    file_specs: tuple[FileSpec, ...],
     backend: Backend,
     *,
     file_name_map: Mapping[str, str] | None = None,
@@ -258,7 +258,7 @@ def resolve_from_local_folder(
 
 def resolve_from_source_string(
     source: str,
-    file_specs: list[FileSpec],
+    file_specs: tuple[FileSpec, ...],
     backend: Backend,
     *,
     revision: str | None = None,
@@ -311,7 +311,7 @@ def resolve_from_source_string(
 
 def resolve_from_sources(
     source: str,
-    file_specs: list[FileSpec],
+    file_specs: tuple[FileSpec, ...],
     backend: Backend,
     *,
     revision: str | None = None,
@@ -356,7 +356,7 @@ def resolve_from_sources(
         group_file_name_map = {key: value for key, value in normalized_file_name_map.items() if key in group_keys}
         file_map = resolve_from_source_string(
             group_source,
-            group_specs,
+            tuple(group_specs),
             backend,
             revision=revision,
             cache_dir=cache_dir,
@@ -378,7 +378,7 @@ def resolve_from_sources(
 
 def _resolve_local_prefixed(
     raw_value: str,
-    file_specs: list[FileSpec],
+    file_specs: tuple[FileSpec, ...],
     backend: Backend,
     *,
     file_name_map: Mapping[str, str] | None,
@@ -399,7 +399,7 @@ def _resolve_local_prefixed(
 
 def _resolve_hf_prefixed(
     raw_value: str,
-    file_specs: list[FileSpec],
+    file_specs: tuple[FileSpec, ...],
     backend: Backend,
     *,
     revision: str | None,
@@ -430,7 +430,7 @@ def _resolve_hf_prefixed(
 
 def _resolve_auto_source(
     source: str,
-    file_specs: list[FileSpec],
+    file_specs: tuple[FileSpec, ...],
     backend: Backend,
     *,
     revision: str | None,
@@ -484,7 +484,7 @@ def _resolve_auto_source(
 
 def _resolve_local_then_hf_missing(
     folder: Path,
-    file_specs: list[FileSpec],
+    file_specs: tuple[FileSpec, ...],
     backend: Backend,
     *,
     revision: str | None,
@@ -628,7 +628,7 @@ def _looks_like_local_folder(value: str) -> bool:
 
 def _normalize_file_name_map(
     file_name_map: Mapping[str, str] | None,
-    file_specs: list[FileSpec],
+    file_specs: tuple[FileSpec, ...],
 ) -> dict[str, str]:
     if not file_name_map:
         return {}
