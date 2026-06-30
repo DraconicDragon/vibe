@@ -128,7 +128,7 @@ def load(
     onnx_providers: list[str] | None = None,
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
-    memory_tracking: bool = True,
+    memory_tracking: bool = False,
 ) -> ModelSession:
     """
     Load a model and return a ready-to-use ModelSession.
@@ -229,7 +229,7 @@ def load_custom(
     onnx_providers: list[str] | None = None,
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
-    memory_tracking: bool = True,
+    memory_tracking: bool = False,
 ) -> ModelSession:
     """
     Load a model by specifying the plugin class explicitly.

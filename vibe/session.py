@@ -103,7 +103,7 @@ class ModelSession:
         file_map: FileMap,
         source: str,
         auto_download: bool = True,
-        memory_tracking: bool = True,
+        memory_tracking: bool = False,
         backend_release: Callable[[], None] | None = None,
     ) -> None:
         self._plugin = plugin

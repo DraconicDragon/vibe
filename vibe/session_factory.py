@@ -32,7 +32,7 @@ def build_session(
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
     source_map: Mapping[str, str] | None = None,
-    memory_tracking: bool = True,
+    memory_tracking: bool = False,
 ) -> ModelSession:
     """
     Build a ModelSession from a plugin class and a file source.
