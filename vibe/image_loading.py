@@ -22,7 +22,9 @@ except ImportError:
     _HAS_PILLOW_JXL = False
 
 try:
-    import pillow_heif  # noqa: F401
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
 
     _HAS_PILLOW_HEIF = True
 except ImportError:
