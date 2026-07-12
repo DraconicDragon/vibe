@@ -155,7 +155,7 @@ class PyTorchBackend:
 
         Accepts either:
         - a standard torch.Tensor / ndarray for normal single-input models
-        - a JTP3Batch (NamedTuple with patches/patch_coords/patch_valid) for
+        - a JTPHydraBatch (NamedTuple with patches/sizes) for
             the NaFlex multi-input forward pass
         """
         try:
@@ -165,7 +165,7 @@ class PyTorchBackend:
             raise RuntimeError("PyTorch is not installed.") from exc
 
         # Lazy import to avoid circular dependency at module level.
-        from vibe.plugins.jtp_3.jtp3_modelplugin import JTP3Batch
+        from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
 
         if not isinstance(self._model, nn.Module):
             raise RuntimeError(
@@ -174,24 +174,19 @@ class PyTorchBackend:
                 "backend.raw to get the state dict, then construct the model itself."
             )
 
-        if isinstance(tensor, JTP3Batch):
+        if isinstance(tensor, JTPHydraBatch):
             # NaFlex three-input forward pass.
-            # Normalise patches: uint8 [0,255] → compute dtype [-1, 1].
-            # patch_coords must be int32; patch_valid stays bool.
             patches = tensor.patches if tensor.patches.ndim == 3 else tensor.patches.unsqueeze(0)
-            patch_coords = tensor.patch_coords if tensor.patch_coords.ndim == 3 else tensor.patch_coords.unsqueeze(0)
-            patch_valid = tensor.patch_valid if tensor.patch_valid.ndim == 2 else tensor.patch_valid.unsqueeze(0)
+            sizes = tensor.sizes if tensor.sizes.ndim == 2 else tensor.sizes.unsqueeze(0)
             logger.debug(
-                "PyTorch JTP-3 run batch_size=%s patches_shape=%s patch_coords_shape=%s patch_valid_shape=%s",
+                "PyTorch JTP-3 / Hydra run batch_size=%s patches_shape=%s sizes_shape=%s",
                 patches.shape[0] if patches.ndim > 0 else None,
                 patches.shape,
-                patch_coords.shape,
-                patch_valid.shape,
+                sizes.shape,
             )
             p = patches.to(device=self._device, dtype=self._compute_dtype).div(127.5).sub(1.0)
-            pc = patch_coords.to(device=self._device, dtype=torch.int32)
-            pv = patch_valid.to(device=self._device)
-            args = (p, pc, pv)
+            sz = sizes.to(device=self._device, dtype=torch.int32)
+            args = (p, sz)
         else:
             if isinstance(tensor, np.ndarray):
                 tensor = torch.from_numpy(tensor)

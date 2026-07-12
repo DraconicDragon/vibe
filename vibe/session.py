@@ -586,27 +586,25 @@ class ModelSession:
             try:
                 import torch
 
-                from vibe.plugins.jtp_3.jtp3_modelplugin import JTP3Batch
+                from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
 
                 patches = torch.stack([item.patches for item in chunk], dim=0)
-                patch_coords = torch.stack([item.patch_coords for item in chunk], dim=0)
-                patch_valid = torch.stack([item.patch_valid for item in chunk], dim=0)
+                sizes = torch.stack([item.sizes for item in chunk], dim=0)
                 logger.debug(
-                    "Stacked JTP-3 batch batch_size=%d patches_shape=%s patch_coords_shape=%s patch_valid_shape=%s",
+                    "Stacked JTP-3 / Hydra batch batch_size=%d patches_shape=%s sizes_shape=%s",
                     len(chunk),
                     patches.shape,
-                    patch_coords.shape,
-                    patch_valid.shape,
+                    sizes.shape,
                 )
-                return JTP3Batch(patches, patch_coords, patch_valid)
+                return JTPHydraBatch(patches, sizes)
             except Exception as exc:
                 logger.error(
-                    "Failed to stack JTP-3 batch for model_id=%s sample_descriptions=%s",
+                    "Failed to stack JTP-3 / Hydra batch for model_id=%s sample_descriptions=%s",
                     self.model_id,
                     [self._describe_preprocessed_sample(item) for item in chunk],
                 )
                 raise SessionError(
-                    "Could not build a true JTP-3 batch. This usually means preprocessed "
+                    "Could not build a true JTP-3 / Hydra batch. This usually means preprocessed "
                     "patch tensors have incompatible shapes for stacking. "
                     f"Details: {exc}"
                 ) from exc
@@ -656,7 +654,7 @@ class ModelSession:
             }
 
         parts: dict[str, Any] = {"type": type(item).__name__}
-        for field in ("patches", "patch_coords", "patch_valid"):
+        for field in ("patches", "sizes"):
             value = getattr(item, field, None)
             if value is not None:
                 parts[field] = {
@@ -667,14 +665,14 @@ class ModelSession:
 
     def _is_structured_jtp3_batch(self, item: Any) -> bool:
         try:
-            from vibe.plugins.jtp_3.jtp3_modelplugin import JTP3Batch
+            from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
         except Exception:
-            JTP3Batch = None  # ty:ignore[invalid-assignment]
+            JTPHydraBatch = None  # ty:ignore[invalid-assignment]
 
-        if JTP3Batch is not None and isinstance(item, JTP3Batch):
+        if JTPHydraBatch is not None and isinstance(item, JTPHydraBatch):
             return True
 
-        return all(hasattr(item, field) for field in ("patches", "patch_coords", "patch_valid"))
+        return all(hasattr(item, field) for field in ("patches", "sizes"))
 
     def _split_batch_output(self, raw_output: Any, expected: int) -> list[Any]:
         shape = getattr(raw_output, "shape", None)
