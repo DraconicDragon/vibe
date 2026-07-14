@@ -12,6 +12,7 @@ import torch
 from PIL import Image
 from torch import Tensor
 
+from vibe import ScoreThresholds
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
 from vibe.plugins.shared.tagger_shared import build_entries_for_indices
 from vibe.result_processors import CharacterIPMapping, CleanTags
@@ -86,6 +87,7 @@ class JTPHydraBasePlugin(ModelPlugin):
     supported_processors = (
         CleanTags,
         CharacterIPMapping,
+        ScoreThresholds,
     )
 
     _raw_tag_names: list[str]

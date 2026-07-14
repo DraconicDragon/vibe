@@ -5,6 +5,7 @@ Uses an unpadded, aspect-ratio preserving approach.
 """
 
 from __future__ import annotations
+from vibe import ScoreThresholds
 
 import json
 import logging
@@ -45,6 +46,7 @@ class TaggerinePlugin(ModelPlugin):
     supported_processors = (
         CleanTags,
         CharacterIPMapping,
+        ScoreThresholds,
     )
 
     required_files = (
