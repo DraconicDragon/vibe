@@ -203,13 +203,25 @@ class DINOv3Tagger(nn.Module):
         self.backbone = DINOv3ViTH()
         self.head: nn.Module | None = None
 
-    def apply_precision(self, device: str, dtype: torch.dtype) -> None:
-        """TEMPORARY HARDCODE: Backbone is always bf16, head is always fp32."""
-        # Force the backbone to bfloat16 and the head to float32
-        backbone_dtype = torch.bfloat16
-        head_dtype = torch.float32
+    def apply_precision(
+        self,
+        device: str,
+        dtype: torch.dtype,
+        requested: str = "auto",
+        bf16_supported: bool = False,
+    ) -> None:
+        if requested == "auto":
+            if device == "cpu":
+                backbone_dtype = torch.float32
+            elif bf16_supported:
+                backbone_dtype = torch.bfloat16
+            else:
+                backbone_dtype = torch.float16
+            head_dtype = torch.float32
+        else:
+            backbone_dtype = dtype
+            head_dtype = dtype
 
-        # Apply hardcoded precision directly to target device
         self.backbone.to(device=device, dtype=backbone_dtype)
         if self.head is not None:
             self.head.to(device=device, dtype=head_dtype)

@@ -312,7 +312,12 @@ class PyTorchBackend:
 
         if hasattr(self._model, "apply_precision"):
             logger.debug("Delegating precision casting to model custom apply_precision hook")
-            self._model.apply_precision(device=self._device, dtype=target_dtype)
+            self._model.apply_precision(
+                device=self._device,
+                dtype=target_dtype,
+                requested=self._requested_precision,
+                bf16_supported=bf16_supported,
+            )
         else:
             self._model.to(device=self._device, dtype=target_dtype)
         self._resolved_precision = resolved
