@@ -98,12 +98,20 @@ class TaggerinePlugin(ModelPlugin):
         if not weights_path:
             raise RuntimeError("Weights .safetensors file not resolved in file_map.")
 
-        from safetensors.torch import load_file
-
         from .model import DINOv3Tagger, _build_head_from_checkpoint, split_and_clean_state_dict
 
-        logger.info("Loading Taggerine weights from %s", weights_path)
-        sd = load_file(weights_path, device="cpu")
+        # Reuse the state dict the backend already loaded to CPU, instead of
+        # re-reading the same safetensors file from disk a second time.
+        backend = getattr(self, "_backend_instance", None)
+        sd = getattr(backend, "raw", None)
+        if not isinstance(sd, dict):
+            from safetensors.torch import load_file
+
+            logger.info("Loading Taggerine weights from %s", weights_path)
+            sd = load_file(weights_path, device="cpu")
+        else:
+            logger.info("Reusing Taggerine weights already loaded in CPU RAM")
+
         backbone_sd, head_sd = split_and_clean_state_dict(sd)
 
         if not head_sd:

@@ -75,12 +75,16 @@ class PyTorchBackend:
                 raise RuntimeError(
                     "safetensors is required to load .safetensors weights. Install it with: pip install safetensors"
                 ) from exc
-            state = load_file(str(weights_path), device=device)
+            # Always load raw state dicts to CPU, not the target device. 
+            # A bare dict is never run directly
+            # the plugin builds the architecture and casts/moves it later,
+            # Loading to GPU directly would cause VRAM spikes if dtype has to be casted
+            state = load_file(str(weights_path), device="cpu")
             # We just store the state dict here; the plugin is responsible
             # for building the architecture and calling load_state_dict.
             # See note in ModelPlugin.load_ancillary.
             self._model = state
-            logger.debug("Loaded safetensors state dict device=%s", device)
+            logger.debug("Loaded safetensors state dict to CPU (target device=%s)", device)
         else:
             # .pt / .pth — attempt full model load first
             self._model = torch.load(
