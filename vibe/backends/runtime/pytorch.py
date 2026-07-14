@@ -75,7 +75,7 @@ class PyTorchBackend:
                 raise RuntimeError(
                     "safetensors is required to load .safetensors weights. Install it with: pip install safetensors"
                 ) from exc
-            # Always load raw state dicts to CPU, not the target device. 
+            # Always load raw state dicts to CPU, not the target device.
             # A bare dict is never run directly
             # the plugin builds the architecture and casts/moves it later,
             # Loading to GPU directly would cause VRAM spikes if dtype has to be casted
@@ -250,83 +250,6 @@ class PyTorchBackend:
                 if first.dtype == torch.bfloat16:
                     first = first.to(torch.float32)
                 return first.numpy()
-            return np.array(first)
-        return np.array(output)
-
-        if isinstance(tensor, np.ndarray):
-            tensor = torch.from_numpy(tensor)
-        elif not isinstance(tensor, torch.Tensor):
-            tensor = torch.as_tensor(tensor)
-
-        if not isinstance(self._model, nn.Module):
-            raise RuntimeError(
-                "Model is a state dict, not an nn.Module. "
-                "The plugin must build the architecture and call "
-                "backend.raw to get the state dict, then construct "
-                "the model itself."
-            )
-
-        with torch.no_grad():
-            logger.debug("PyTorch run input_shape=%s input_dtype=%s", getattr(tensor, "shape", None), tensor.dtype)
-            try:
-                model_input = tensor.to(device=self._device, dtype=self._compute_dtype)
-                output = self._model(model_input)
-            except Exception:
-                if self._compute_dtype == torch.float32 and self._weight_dtype not in {None, torch.float32}:
-                    logger.debug(
-                        "FP32 compute with weight_dtype=%s on device=%s needed a temporary fp32 weight promotion for this inference. "
-                        "This is expected when using fp16/bf16 weights with fp32 compute; weights are restored to %s after the forward pass.",
-                        self._weight_dtype,
-                        self._device,
-                        self._weight_dtype,
-                    )
-                    original_weight_dtype = self._weight_dtype
-                    self._model.to(device=self._device, dtype=torch.float32)
-                    try:
-                        model_input = tensor.to(device=self._device, dtype=torch.float32)
-                        output = self._model(model_input)
-                    finally:
-                        # Keep resident weights in the requested precision between inferences.
-                        self._model.to(device=self._device, dtype=original_weight_dtype)
-                elif self._compute_dtype != torch.float32:
-                    logger.warning(
-                        "PyTorch inference failed with compute_dtype=%s on device=%s; retrying with float32 fallback.",
-                        self._compute_dtype,
-                        self._device,
-                    )
-                    self._compute_dtype = torch.float32
-                    self._resolved_precision = "fp32"
-                    self._model.to(device=self._device, dtype=torch.float32)
-                    model_input = tensor.to(device=self._device, dtype=torch.float32)
-                    output = self._model(model_input)
-                else:
-                    logger.error(
-                        "PyTorch inference failed input_shape=%s device=%s",
-                        getattr(tensor, "shape", None),
-                        self._device,
-                    )
-                    raise
-
-        if isinstance(output, torch.Tensor):
-            logger.debug("PyTorch run output_shape=%s output_dtype=%s", output.shape, output.dtype)
-            output_cpu = output.detach().cpu()
-            if output_cpu.dtype == torch.bfloat16:
-                # NumPy does not support bfloat16 tensors from PyTorch directly.
-                output_cpu = output_cpu.to(dtype=torch.float32)
-            return output_cpu.numpy()
-        # Some models return tuples/lists
-        if isinstance(output, (tuple, list)):
-            logger.debug(
-                "PyTorch run output tuple/list first_shape=%s first_dtype=%s",
-                getattr(output[0], "shape", None),
-                getattr(output[0], "dtype", None),
-            )
-            first = output[0]
-            if isinstance(first, torch.Tensor):
-                first_cpu = first.detach().cpu()
-                if first_cpu.dtype == torch.bfloat16:
-                    first_cpu = first_cpu.to(dtype=torch.float32)
-                return first_cpu.numpy()
             return np.array(first)
         return np.array(output)
 
