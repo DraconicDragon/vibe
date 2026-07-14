@@ -132,8 +132,6 @@ class JTPHydraBasePlugin(ModelPlugin):
 
         from .model import load_model
 
-        load_dtype = torch.float32 if self._device == "cpu" else torch.bfloat16
-
         # Load the architecture natively using the official loader
         model = load_model(
             str(weights_path),
@@ -153,9 +151,6 @@ class JTPHydraBasePlugin(ModelPlugin):
         for idx, label in enumerate(model.labels):
             cat_id = cat_to_id.get(label.category, -1)
             self._indices_by_category.setdefault(cat_id, []).append(idx)
-
-        # Move the fully initialized model to the target device and type
-        model = model.to(device=self._device, dtype=load_dtype)
 
         # Safely activate pool inference mode
         if hasattr(model, "attn_pool") and hasattr(model.attn_pool, "inference"):
