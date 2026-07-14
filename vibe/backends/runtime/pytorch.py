@@ -278,7 +278,6 @@ class PyTorchBackend:
         if requested == "int8_ov":
             requested = "auto"
 
-        gpu_like_device = self._device.startswith(("cuda", "gpu", "mps"))
         has_cuda = bool(getattr(torch_module.cuda, "is_available", lambda: False)())
         bf16_supported = False
         if has_cuda and callable(getattr(torch_module.cuda, "is_bf16_supported", None)):
@@ -288,20 +287,14 @@ class PyTorchBackend:
                 bf16_supported = False
 
         resolved = "fp32" if requested == "auto" else requested
-        if resolved == "bf16" and gpu_like_device and self._device.startswith(("cuda", "gpu")) and not bf16_supported:
-            has_fp16_gpu = has_cuda
-            if has_fp16_gpu:
-                logger.warning(
-                    "Requested bf16 on device=%s but CUDA bf16 is unavailable; falling back to fp16.",
-                    self._device,
-                )
-                resolved = "fp16"
-            else:
-                logger.warning(
-                    "Requested bf16 on device=%s but accelerator bf16/fp16 support is unavailable; falling back to fp32.",
-                    self._device,
-                )
-                resolved = "fp32"
+
+        # If bf16 is requested on a CUDA/GPU device but not supported, fall back to fp16
+        if resolved == "bf16" and self._device.startswith(("cuda", "gpu")) and not bf16_supported:
+            logger.warning(
+                "Requested bf16 on device=%s but CUDA bf16 is unavailable; falling back to fp16.",
+                self._device,
+            )
+            resolved = "fp16"
 
         dtype_map = {
             "fp32": torch_module.float32,
