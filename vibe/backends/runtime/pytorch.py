@@ -89,7 +89,7 @@ class PyTorchBackend:
             # .pt / .pth — attempt full model load first
             self._model = torch.load(
                 weights_path,
-                map_location=device,
+                map_location="cpu",
                 weights_only=False,
             )
             logger.debug("Loaded torch checkpoint device=%s", device)
