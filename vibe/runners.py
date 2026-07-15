@@ -8,9 +8,16 @@ from vibe.exceptions import InferenceCancelled, SessionError
 from vibe.processor_pipeline import ProcessorPipeline
 from vibe.result_processors import ResultProcessor
 from vibe.results import ModelResult
-from vibe.session import _fmt_dtype, _fmt_shape
 
 logger = logging.getLogger(__name__)
+
+
+def _fmt_shape(value: Any) -> Any:
+    return getattr(value, "shape", None)
+
+
+def _fmt_dtype(value: Any) -> Any:
+    return getattr(value, "dtype", None)
 
 
 class SessionRunnerState:

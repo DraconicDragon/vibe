@@ -31,14 +31,6 @@ from vibe.runners import BatchRunner, InferenceEngine, SessionRunnerState
 logger = logging.getLogger(__name__)
 
 
-def _fmt_shape(value: Any) -> Any:
-    return getattr(value, "shape", None)
-
-
-def _fmt_dtype(value: Any) -> Any:
-    return getattr(value, "dtype", None)
-
-
 _has_pillow_jxl: bool
 try:
     import pillow_jxl as _pjxl  # noqa: F401
