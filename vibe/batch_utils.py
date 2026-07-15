@@ -3,6 +3,8 @@ from typing import Any
 
 import numpy as np
 
+from vibe.exceptions import SessionError
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,7 +63,7 @@ def stack_batch(chunk: list[Any], model_id: str) -> Any:
                 model_id,
                 [_describe_preprocessed_sample(item) for item in chunk],
             )
-            raise ValueError(
+            raise SessionError(
                 "Could not build a true JTP-3 / Hydra batch. This usually means preprocessed "
                 f"patch tensors have incompatible shapes for stacking. Details: {exc}"
             ) from exc
@@ -77,7 +79,7 @@ def stack_batch(chunk: list[Any], model_id: str) -> Any:
                 model_id,
                 [getattr(item, "shape", None) for item in chunk],
             )
-            raise ValueError(
+            raise SessionError(
                 "Could not build a true batch tensor. This usually means preprocessed "
                 f"samples have incompatible shapes for concatenation. Details: {exc}"
             ) from exc
@@ -98,7 +100,7 @@ def stack_batch(chunk: list[Any], model_id: str) -> Any:
         model_id,
         [_describe_preprocessed_sample(item) for item in chunk],
     )
-    raise ValueError("Unsupported preprocessed tensor type for true batching. Use batch_method='sequential'.")
+    raise SessionError("Unsupported preprocessed tensor type for true batching. Use batch_method='sequential'.")
 
 
 def split_batch_output(raw_output: Any, expected: int, model_id: str) -> list[Any]:
@@ -117,7 +119,7 @@ def split_batch_output(raw_output: Any, expected: int, model_id: str) -> list[An
     try:
         arr = np.asarray(raw_output)
     except Exception as exc:
-        raise ValueError(
+        raise SessionError(
             f"Backend output batch dimension mismatch: expected {expected}, got unknown output type."
         ) from exc
 
@@ -132,4 +134,4 @@ def split_batch_output(raw_output: Any, expected: int, model_id: str) -> list[An
         expected,
         arr.shape,
     )
-    raise ValueError(f"Backend output batch dimension mismatch: expected {expected}, got {arr.shape}.")
+    raise SessionError(f"Backend output batch dimension mismatch: expected {expected}, got {arr.shape}.")
