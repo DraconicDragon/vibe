@@ -342,6 +342,8 @@ class ModelSession:
                 break
             if isinstance(payload, Exception):
                 raise payload
+
+            assert isinstance(payload, InferenceResult)
             yield payload
 
     def cancel_current_inference(self) -> bool:
