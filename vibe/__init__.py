@@ -40,6 +40,7 @@ from typing import Mapping
 
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin, ModelPluginInfo
 from vibe.devices import list_available_devices
+from vibe.exceptions import ProcessorError, SessionError
 from vibe.hf_downloader import (
     get_auto_download_default,
     set_auto_download_default,
@@ -75,7 +76,7 @@ from vibe.results import (
     is_score_result,
     is_tag_result,
 )
-from vibe.session import ModelSession, ProcessorError, SessionError
+from vibe.session import ModelSession
 from vibe.session_factory import build_session
 
 logger = logging.getLogger(__name__)

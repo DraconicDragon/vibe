@@ -7,7 +7,6 @@ and optional result processors. Calling .infer() is the one thing you do with it
 """
 
 from __future__ import annotations
-from vibe.runners import SessionRunnerState, InferenceEngine, BatchRunner
 
 import logging
 import threading
@@ -15,6 +14,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterator, Literal
 
 from vibe.backends.base import Backend, ModelPlugin
+from vibe.exceptions import InferenceCancelled, SessionError
 from vibe.image_loading import (
     iter_loaded_image_chunks,
     load_image_if_path,
@@ -26,6 +26,7 @@ from vibe.memory_stats import MemoryTracker
 from vibe.processor_pipeline import ProcessorPipeline
 from vibe.result_processors import ResultProcessor, ResultProcessorContext
 from vibe.results import InferenceResult, InferenceResultItem
+from vibe.runners import BatchRunner, InferenceEngine, SessionRunnerState
 
 logger = logging.getLogger(__name__)
 
@@ -58,19 +59,6 @@ except ImportError:
 
 
 _ASYNC_INFER_DONE = object()
-
-
-class SessionError(Exception):
-    """Raised when session setup or inference fails."""
-
-
-class ProcessorError(SessionError):
-    """Raised specifically when a result processor fails inside the pipeline."""
-
-
-class InferenceCancelled(SessionError):
-    """Raised when an in-flight inference run is cancelled by user request."""
-
 
 # region ModelSession
 

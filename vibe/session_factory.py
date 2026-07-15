@@ -9,10 +9,11 @@ from typing import Any, Callable, Mapping
 
 from vibe.backends.base import Backend, ModelPlugin
 from vibe.devices import normalize_device_string
+from vibe.exceptions import SessionError
 from vibe.hf_downloader import get_auto_download_default
 from vibe.loader import FileMap, resolve_from_sources
 from vibe.precision import normalize_precision_string
-from vibe.session import ModelSession, SessionError
+from vibe.session import ModelSession
 
 logger = logging.getLogger(__name__)
 

@@ -4,10 +4,11 @@ from typing import Any, Literal
 
 from vibe.backends.base import Backend, ModelPlugin
 from vibe.batch_utils import split_batch_output, stack_batch
+from vibe.exceptions import InferenceCancelled, SessionError
 from vibe.processor_pipeline import ProcessorPipeline
 from vibe.result_processors import ResultProcessor
 from vibe.results import ModelResult
-from vibe.session import InferenceCancelled, SessionError, _fmt_dtype, _fmt_shape
+from vibe.session import _fmt_dtype, _fmt_shape
 
 logger = logging.getLogger(__name__)
 

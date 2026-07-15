@@ -1,8 +1,8 @@
 from typing import Sequence
 
+from vibe.exceptions import ProcessorError
 from vibe.result_processors import CleanTags, ResultProcessor, ResultProcessorContext
 from vibe.results import ModelResult
-from vibe.session import ProcessorError
 
 
 class ProcessorPipeline:
