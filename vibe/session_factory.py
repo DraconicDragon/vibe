@@ -91,140 +91,29 @@ def build_session(
         resolve_plan.append((effective_auto_download, True))
 
     for allow_download_for_attempt, allow_hf_fallback in resolve_plan:
-        for backend in backend_candidates:
-            try:
-                normalized_device = normalize_device_string(
-                    device,
-                    backend="pytorch" if backend == Backend.PYTORCH else "onnx",
-                )
-            except ValueError as exc:
-                raise SessionError(str(exc)) from exc
-
-            if backend == Backend.PYTORCH and normalized_device == "auto":
-                normalized_device = _auto_select_pytorch_device()
-                logger.info("PyTorch device auto-selected: %s", normalized_device)
-
-            try:
-                normalized_precision = normalize_precision_string(precision)
-            except ValueError as exc:
-                raise SessionError(str(exc)) from exc
-
-            if backend == Backend.PYTORCH and normalized_precision == "int8_ov":
-                logger.warning(
-                    "Precision 'int8_ov'/'ov' is ONNX/OpenVINO-oriented and is not supported by PyTorch backend; falling back to auto.",
-                )
-                normalized_precision = "auto"
-
-            if not backend_was_explicit and backend != selected_backend:
-                logger.info(
-                    "Auto backend selected %s for model_id=%s after %s was unavailable.",
-                    backend.value,
-                    plugin_cls.model_id,
-                    selected_backend.value,
-                )
-
-            logger.debug(
-                "Session backend selected model_id=%s backend=%s device=%s precision=%s",
-                plugin_cls.model_id,
-                backend.value,
-                normalized_device,
-                normalized_precision,
+        for candidate_backend in backend_candidates:
+            session = _attempt_session_build(
+                plugin_cls=plugin_cls,
+                source=source,
+                candidate_backend=candidate_backend,
+                selected_backend=selected_backend,
+                backend_was_explicit=backend_was_explicit,
+                device=device,
+                precision=precision,
+                onnx_providers=onnx_providers,
+                hf_revision=hf_revision,
+                hf_cache_dir=hf_cache_dir,
+                auto_download_attempt=allow_download_for_attempt,
+                allow_hf_fallback=allow_hf_fallback,
+                effective_auto_download=effective_auto_download,
+                file_name_map=file_name_map,
+                source_map=source_map,
+                memory_tracking=memory_tracking,
+                backend_candidates=backend_candidates,
+                auto_resolution_failures=auto_resolution_failures,
             )
-
-            try:
-                file_map = resolve_from_sources(
-                    source,
-                    plugin_cls.required_files,
-                    backend,
-                    revision=hf_revision,
-                    cache_dir=hf_cache_dir,
-                    allow_download=allow_download_for_attempt,
-                    file_name_map=file_name_map,
-                    fallback_hf_repo_id=plugin_cls.default_hf_repo if allow_hf_fallback else None,
-                    source_map=source_map,
-                )
-            except Exception as exc:
-                if backend_was_explicit or len(backend_candidates) == 1:
-                    raise SessionError(str(exc)) from exc
-
-                next_backend = _next_backend_candidate(backend_candidates, backend)
-                if next_backend is None:
-                    continue
-                if allow_hf_fallback:
-                    logger.info(
-                        "Auto backend '%s' unavailable for model_id=%s; trying %s next.",
-                        backend.value,
-                        plugin_cls.model_id,
-                        next_backend.value,
-                    )
-                else:
-                    logger.info(
-                        "Auto backend '%s' unavailable locally for model_id=%s; trying %s next.",
-                        backend.value,
-                        plugin_cls.model_id,
-                        next_backend.value,
-                    )
-                auto_resolution_failures.append((backend, str(exc)))
-                continue
-
-            _warn_local_subdir_mismatch(plugin_cls, source, file_map)
-
-            weights_path = _find_weights(plugin_cls, file_map, backend)
-            logger.debug("Resolved model weights for model_id=%s path=%s", plugin_cls.model_id, weights_path)
-
-            pool_key = _make_backend_pool_key(
-                backend=backend,
-                weights_path=weights_path,
-                device=normalized_device,
-                providers=onnx_providers,
-                precision=normalized_precision,
-            )
-            rt, release_backend = _acquire_backend(
-                key=pool_key,
-                backend=backend,
-                weights_path=weights_path,
-                device=normalized_device,
-                providers=onnx_providers,
-                precision=normalized_precision,
-                pytorch_cls=PyTorchBackend,
-                onnx_cls=ONNXBackend,
-            )
-
-            try:
-                plugin = plugin_cls()
-                plugin.configure(
-                    auto_download=effective_auto_download,
-                    backend=backend,
-                    backend_instance=rt,
-                    device=normalized_device,
-                    precision=normalized_precision,
-                    source=source,
-                    optional_missing_files=file_map.optional_missing_reasons(),
-                )
-                plugin.load_ancillary(file_map.as_path_dict())
-                if backend == Backend.ONNX and normalized_precision in {"fp16", "bf16"}:
-                    logger.warning(
-                        "Precision '%s' requested while running ONNX backend; runtime casting is provider/model dependent. "
-                        "The model's graph precision will generally be used.",
-                        normalized_precision,
-                    )
-                logger.debug("Session ready model_id=%s", plugin_cls.model_id)
-                return ModelSession(
-                    plugin=plugin,
-                    backend_instance=rt,
-                    backend=backend,
-                    file_map=file_map,
-                    source=source,
-                    auto_download=effective_auto_download,
-                    memory_tracking=memory_tracking,
-                    backend_release=release_backend,
-                )
-            except SessionError:
-                release_backend()
-                raise
-            except Exception as exc:
-                release_backend()
-                raise SessionError(f"Plugin '{plugin_cls.model_id}' failed to load ancillary files: {exc}") from exc
+            if session is not None:
+                return session
 
         if source_is_unprefixed_local_dir and not allow_hf_fallback:
             logger.info(
@@ -257,6 +146,154 @@ def _local_source_path(source: str) -> Path | None:
         return None
     candidate = Path(normalized).expanduser()
     return candidate if candidate.is_dir() else None
+
+
+def _attempt_session_build(
+    plugin_cls: type[ModelPlugin],
+    source: str,
+    candidate_backend: Backend,
+    selected_backend: Backend,
+    backend_was_explicit: bool,
+    device: str,
+    precision: str,
+    onnx_providers: list[str] | None,
+    hf_revision: str | None,
+    hf_cache_dir: str | None,
+    auto_download_attempt: bool,
+    allow_hf_fallback: bool,
+    effective_auto_download: bool,
+    file_name_map: Mapping[str, str] | None,
+    source_map: Mapping[str, str] | None,
+    memory_tracking: bool,
+    backend_candidates: list[Backend],
+    auto_resolution_failures: list[tuple[Backend, str]],
+) -> ModelSession | None:
+    from vibe.backends.runtime.onnx import ONNXBackend
+    from vibe.backends.runtime.pytorch import PyTorchBackend
+
+    try:
+        normalized_device = normalize_device_string(
+            device, backend="pytorch" if candidate_backend == Backend.PYTORCH else "onnx"
+        )
+    except ValueError as exc:
+        raise SessionError(str(exc)) from exc
+
+    if candidate_backend == Backend.PYTORCH and normalized_device == "auto":
+        normalized_device = _auto_select_pytorch_device()
+        logger.info("PyTorch device auto-selected: %s", normalized_device)
+
+    try:
+        normalized_precision = normalize_precision_string(precision)
+    except ValueError as exc:
+        raise SessionError(str(exc)) from exc
+
+    if candidate_backend == Backend.PYTORCH and normalized_precision == "int8_ov":
+        logger.warning(
+            "Precision 'int8_ov'/'ov' is ONNX/OpenVINO-oriented and is not supported by PyTorch backend; falling back to auto."
+        )
+        normalized_precision = "auto"
+
+    if not backend_was_explicit and candidate_backend != selected_backend:
+        logger.info(
+            "Auto backend selected %s for model_id=%s after %s was unavailable.",
+            candidate_backend.value,
+            plugin_cls.model_id,
+            selected_backend.value,
+        )
+
+    logger.debug(
+        "Session backend selected model_id=%s backend=%s device=%s precision=%s",
+        plugin_cls.model_id,
+        candidate_backend.value,
+        normalized_device,
+        normalized_precision,
+    )
+
+    try:
+        file_map = resolve_from_sources(
+            source,
+            plugin_cls.required_files,
+            candidate_backend,
+            revision=hf_revision,
+            cache_dir=hf_cache_dir,
+            allow_download=auto_download_attempt,
+            file_name_map=file_name_map,
+            fallback_hf_repo_id=plugin_cls.default_hf_repo if allow_hf_fallback else None,
+            source_map=source_map,
+        )
+    except Exception as exc:
+        if backend_was_explicit or len(backend_candidates) == 1:
+            raise SessionError(str(exc)) from exc
+
+        next_backend = _next_backend_candidate(backend_candidates, candidate_backend)
+        if next_backend is not None:
+            logger.info(
+                "Auto backend '%s' unavailable %s for model_id=%s; trying %s next.",
+                candidate_backend.value,
+                "locally" if not allow_hf_fallback else "",
+                plugin_cls.model_id,
+                next_backend.value,
+            )
+        auto_resolution_failures.append((candidate_backend, str(exc)))
+        return None
+
+    _warn_local_subdir_mismatch(plugin_cls, source, file_map)
+    weights_path = _find_weights(plugin_cls, file_map, candidate_backend)
+    logger.debug("Resolved model weights for model_id=%s path=%s", plugin_cls.model_id, weights_path)
+
+    pool_key = _make_backend_pool_key(
+        backend=candidate_backend,
+        weights_path=weights_path,
+        device=normalized_device,
+        providers=onnx_providers,
+        precision=normalized_precision,
+    )
+    rt, release_backend = _acquire_backend(
+        key=pool_key,
+        backend=candidate_backend,
+        weights_path=weights_path,
+        device=normalized_device,
+        providers=onnx_providers,
+        precision=normalized_precision,
+        pytorch_cls=PyTorchBackend,
+        onnx_cls=ONNXBackend,
+    )
+
+    try:
+        plugin = plugin_cls()
+        plugin.configure(
+            auto_download=effective_auto_download,
+            backend=candidate_backend,
+            backend_instance=rt,
+            device=normalized_device,
+            precision=normalized_precision,
+            source=source,
+            optional_missing_files=file_map.optional_missing_reasons(),
+        )
+        plugin.load_ancillary(file_map.as_path_dict())
+        if candidate_backend == Backend.ONNX and normalized_precision in {"fp16", "bf16"}:
+            logger.warning(
+                "Precision '%s' requested while running ONNX backend; runtime casting is provider/model dependent.",
+                normalized_precision,
+            )
+
+        logger.debug("Session ready model_id=%s", plugin_cls.model_id)
+        return ModelSession(
+            plugin=plugin,
+            backend_instance=rt,
+            backend=candidate_backend,
+            file_map=file_map,
+            source=source,
+            auto_download=effective_auto_download,
+            memory_tracking=memory_tracking,
+            backend_release=release_backend,
+        )
+    except SessionError:
+        release_backend()
+        raise
+    except Exception as exc:
+        release_backend()
+        raise SessionError(f"Plugin '{plugin_cls.model_id}' failed to load ancillary files: {exc}") from exc
 
 
 def _warn_local_subdir_mismatch(
