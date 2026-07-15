@@ -235,7 +235,6 @@ class ModelSession:
                         has_pillow_heif=_has_pillow_heif,
                     )
 
-                index = 0
                 for start, chunk_images in iter_loaded_image_chunks(
                     values,
                     chunk_size=batch_size if method != "sequential" else 1,
@@ -248,22 +247,31 @@ class ModelSession:
 
                     if method == "sequential":
                         chunk_items = []
-                        for img in chunk_images:
+                        for i, img in enumerate(chunk_images):
                             self._state.check_cancelled()
                             result = self._engine.execute_single(img, processors=result_processors)
-                            chunk_items.append(InferenceResultItem(index=index, input_ref=refs[index], result=result))
-                            index += 1
-                        logger.debug("Completed sequential chunk, current index=%s/%s", index, total_inputs)
+                            global_idx = start + i
+                            chunk_items.append(
+                                InferenceResultItem(index=global_idx, input_ref=refs[global_idx], result=result)
+                            )
+                        logger.debug(
+                            "Completed sequential chunk, current index=%s/%s", start + len(chunk_images), total_inputs
+                        )
                     else:
                         chunk_results = self._runner.execute_chunk(
                             chunk_images, processors=result_processors, fallback_to_sequential=(batch_method == "auto")
                         )
                         chunk_items = []
-                        for result in chunk_results:
-                            chunk_items.append(InferenceResultItem(index=index, input_ref=refs[index], result=result))
-                            index += 1
+                        for i, result in enumerate(chunk_results):
+                            global_idx = start + i
+                            chunk_items.append(
+                                InferenceResultItem(index=global_idx, input_ref=refs[global_idx], result=result)
+                            )
                         logger.debug(
-                            "Completed inference batch model_id=%s done=%s/%s", self.model_id, index, total_inputs
+                            "Completed inference batch model_id=%s done=%s/%s",
+                            self.model_id,
+                            start + len(chunk_images),
+                            total_inputs,
                         )
 
                     yield InferenceResult(total_inputs=total_inputs, items=chunk_items)
@@ -340,12 +348,7 @@ class ModelSession:
         """
         Request cooperative cancellation of the currently running inference.
         """
-        with self._state.run_state_lock:
-            if not self._state.run_active:
-                return False
-        self._state.cancel_event.set()
-        logger.warning("Cancellation requested for model_id=%s", self.model_id)
-        return True
+        return self._state.cancel()
 
     def is_inference_running(self) -> bool:
         """Return whether an inference run is currently active."""
