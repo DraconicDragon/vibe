@@ -75,7 +75,7 @@ from vibe.results import (
     is_score_result,
     is_tag_result,
 )
-from vibe.session import ModelSession, SessionError
+from vibe.session import ModelSession, ProcessorError, SessionError
 from vibe.session_factory import build_session
 
 logger = logging.getLogger(__name__)
@@ -447,6 +447,7 @@ __all__ = [
     "model_registry",
     "RegistryError",
     "SessionError",
+    "ProcessorError",
     # API
     "__version__",
     "__author__",
