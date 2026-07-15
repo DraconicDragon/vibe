@@ -37,7 +37,7 @@ def _snap(x: int, m: int) -> int:
 
 class TaggerinePlugin(ModelPlugin):
     model_id = "taggerine"
-    display_name = "Taggerine (DINOv3)"
+    display_name = "Taggerine"
     description = "E621 + Danbooru tagger by Lodestone."
     default_hf_repo = "lodestones/taggerine"
 
