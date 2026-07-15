@@ -39,8 +39,6 @@ def build_session(
 
     This is called by vibe.load() - you don't usually call this directly.
     """
-    from vibe.backends.runtime.onnx import ONNXBackend
-    from vibe.backends.runtime.pytorch import PyTorchBackend
 
     logger.debug(
         "Building session model_id=%s requested_backend=%s requested_device=%s requested_precision=%s source=%s",
@@ -480,9 +478,14 @@ def _onnx_runtime_capabilities() -> tuple[bool, bool]:
         return False, False
 
     try:
-        available = {str(provider) for provider in ort.get_available_providers()}
+        get_providers = getattr(ort, "get_available_providers", None)
+        if callable(get_providers):
+            available = {str(provider) for provider in get_providers()}
+        else:
+            available = set()
     except Exception:
         available = set()
+
     has_accelerator = any(provider != "CPUExecutionProvider" for provider in available)
     return True, has_accelerator
 
