@@ -40,6 +40,7 @@ from typing import Mapping
 
 from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin, ModelPluginInfo
 from vibe.devices import list_available_devices
+from vibe.exceptions import ProcessorError, SessionError
 from vibe.hf_downloader import (
     get_auto_download_default,
     set_auto_download_default,
@@ -75,7 +76,7 @@ from vibe.results import (
     is_score_result,
     is_tag_result,
 )
-from vibe.session import ModelSession, SessionError
+from vibe.session import ModelSession
 from vibe.session_factory import build_session
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,65 @@ model_registry.discover_all()
 
 
 # region API
+
+
+def _load_internal(
+    plugin_cls: type[ModelPlugin],
+    source: str | None,
+    source_map: Mapping[str, str] | None,
+    backend: str | Backend | None,
+    device: str,
+    precision: str,
+    hf_revision: str | None,
+    hf_cache_dir: str | None,
+    onnx_providers: list[str] | None,
+    auto_download: bool | None,
+    file_name_map: Mapping[str, str] | None,
+    memory_tracking: bool,
+    is_custom: bool,
+) -> ModelSession:
+    effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
+    normalized_precision = normalize_precision_string(precision)
+    resolved_source = _resolve_source(source, plugin_cls)
+
+    if is_custom:
+        logger.info("Loading custom plugin '%s' from '%s'", plugin_cls.__name__, resolved_source)
+        logger.debug(
+            "Load custom options source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
+            resolved_source,
+            backend.value if isinstance(backend, Backend) else backend or "auto",
+            device,
+            effective_auto_download,
+            memory_tracking,
+        )
+    else:
+        logger.info("Loading model '%s' from '%s'", plugin_cls.model_id, resolved_source)
+        logger.debug(
+            "Load options plugin=%s source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
+            plugin_cls.__name__,
+            resolved_source,
+            backend.value if isinstance(backend, Backend) else backend or "auto",
+            device,
+            effective_auto_download,
+            memory_tracking,
+        )
+
+    logger.debug("Load precision request=%s normalized=%s", precision, normalized_precision)
+
+    return build_session(
+        plugin_cls=plugin_cls,
+        source=resolved_source,
+        source_map=source_map,
+        backend=backend,
+        device=device,
+        precision=normalized_precision,
+        onnx_providers=onnx_providers,
+        hf_revision=hf_revision,
+        hf_cache_dir=hf_cache_dir,
+        auto_download=effective_auto_download,
+        file_name_map=file_name_map,
+        memory_tracking=memory_tracking,
+    )
 
 
 def load(
@@ -180,39 +240,20 @@ def load(
         SessionError:   If loading fails (missing files, bad backend, etc.).
     """
     plugin_cls = model_registry.get(model)
-    effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
-    normalized_precision = normalize_precision_string(precision)
-
-    resolved_source = _resolve_source(
-        source,
-        plugin_cls,
-    )
-
-    logger.info("Loading model '%s' from '%s'", model, resolved_source)
-    logger.debug(
-        "Load options plugin=%s source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
-        plugin_cls.__name__,
-        resolved_source,
-        backend.value if isinstance(backend, Backend) else backend or "auto",
-        device,
-        effective_auto_download,
-        memory_tracking,
-    )
-    logger.debug("Load precision request=%s normalized=%s", precision, normalized_precision)
-
-    return build_session(
+    return _load_internal(
         plugin_cls=plugin_cls,
-        source=resolved_source,
+        source=source,
         source_map=source_map,
         backend=backend,
         device=device,
-        precision=normalized_precision,
-        onnx_providers=onnx_providers,
+        precision=precision,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
-        auto_download=effective_auto_download,
+        onnx_providers=onnx_providers,
+        auto_download=auto_download,
         file_name_map=file_name_map,
         memory_tracking=memory_tracking,
+        is_custom=False,
     )
 
 
@@ -267,37 +308,20 @@ def load_custom(
         )
     """
     plugin_cls = model_registry.get_by_class_name(plugin)
-    effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
-    normalized_precision = normalize_precision_string(precision)
-    resolved_source = _resolve_source(
-        source,
-        plugin_cls,
-    )
-
-    logger.info("Loading custom plugin '%s' from '%s'", plugin_cls.__name__, resolved_source)
-    logger.debug(
-        "Load custom options source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
-        resolved_source,
-        backend.value if isinstance(backend, Backend) else backend or "auto",
-        device,
-        effective_auto_download,
-        memory_tracking,
-    )
-    logger.debug("Load custom precision request=%s normalized=%s", precision, normalized_precision)
-
-    return build_session(
+    return _load_internal(
         plugin_cls=plugin_cls,
-        source=resolved_source,
+        source=source,
         source_map=source_map,
         backend=backend,
         device=device,
-        precision=normalized_precision,
-        onnx_providers=onnx_providers,
+        precision=precision,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
-        auto_download=effective_auto_download,
+        onnx_providers=onnx_providers,
+        auto_download=auto_download,
         file_name_map=file_name_map,
         memory_tracking=memory_tracking,
+        is_custom=True,
     )
 
 
@@ -424,6 +448,7 @@ __all__ = [
     "model_registry",
     "RegistryError",
     "SessionError",
+    "ProcessorError",
     # API
     "__version__",
     "__author__",
