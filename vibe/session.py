@@ -88,11 +88,6 @@ class ModelSession:
 
         self._state = SessionRunnerState(plugin.model_id)
 
-        # Lock and Event aliases for backwards-compatibility with unmodified methods
-        self._inference_lock = self._state.lock
-        self._run_state_lock = self._state.run_state_lock
-        self._cancel_event = self._state.cancel_event
-
         self._processor_context = ResultProcessorContext(
             file_map=file_map,
             source=source,
@@ -195,7 +190,8 @@ class ModelSession:
                     logger.warning("No input images provided for model_id=%s", self.model_id)
                     return
 
-                self._notify_result_processors_infer_start(result_processors)
+                # Delegated to the processor pipeline
+                self._pipeline.notify_infer_start(result_processors)
 
                 total_inputs = len(values)
                 path_inputs = sum(1 for value in values if isinstance(value, (str, Path)))
@@ -359,18 +355,6 @@ class ModelSession:
     def is_cancellation_requested(self) -> bool:
         """Return whether cancellation has been requested for the active run."""
         return self._state.is_cancellation_requested
-
-    def _notify_result_processors_infer_start(self, result_processors: list[ResultProcessor] | None) -> None:
-        if not result_processors:
-            return
-        for result_processor in result_processors:
-            try:
-                result_processor.on_infer_start(context=self._processor_context)
-            except Exception as exc:
-                raise SessionError(
-                    f"Result processor '{result_processor.__class__.__name__}' failed during infer startup "
-                    f"for model '{self.model_id}': {exc}"
-                ) from exc
 
     def _last_memory_record_dict(self, *, operation: str, min_call_index: int) -> dict[str, Any] | None:
         if not self._memory_tracker.enabled:

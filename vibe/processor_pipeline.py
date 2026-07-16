@@ -47,3 +47,15 @@ class ProcessorPipeline:
                     f"Result processor '{processor.__class__.__name__}' failed for model '{self.model_id}': {exc}"
                 ) from exc
         return current
+
+    def notify_infer_start(self, processors: list[ResultProcessor] | None) -> None:
+        if not processors:
+            return
+        for processor in processors:
+            try:
+                processor.on_infer_start(context=self.processor_context)
+            except Exception as exc:
+                raise ProcessorError(
+                    f"Result processor '{processor.__class__.__name__}' failed during infer startup "
+                    f"for model '{self.model_id}': {exc}"
+                ) from exc
