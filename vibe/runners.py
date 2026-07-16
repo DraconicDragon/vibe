@@ -77,6 +77,9 @@ class InferenceEngine:
         except Exception as exc:
             raise SessionError(f"Preprocessing failed for model '{self.model_id}': {exc}") from exc
 
+        return self.execute_tensor(tensor, processors)
+
+    def execute_tensor(self, tensor: Any, processors: list[ResultProcessor] | None) -> ModelResult:
         try:
             raw_output = self.backend_instance.run(tensor)
             logger.debug("Raw backend output shape=%s dtype=%s", _fmt_shape(raw_output), _fmt_dtype(raw_output))
@@ -143,7 +146,11 @@ class BatchRunner:
             batch_tensor = stack_batch(chunk_tensors, self.engine.model_id)
         except SessionError:
             if fallback_to_sequential:
-                return [self.engine.execute_single(img, processors) for img in chunk_images]
+                results = []
+                for tensor in chunk_tensors:
+                    self.state.check_cancelled()
+                    results.append(self.engine.execute_tensor(tensor, processors))
+                return results
             raise
 
         try:
