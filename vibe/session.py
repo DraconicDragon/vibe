@@ -354,8 +354,7 @@ class ModelSession:
 
     def is_inference_running(self) -> bool:
         """Return whether an inference run is currently active."""
-        with self._state.run_state_lock:
-            return self._state.run_active
+        return self._state.is_running
 
     def is_cancellation_requested(self) -> bool:
         """Return whether cancellation has been requested for the active run."""
