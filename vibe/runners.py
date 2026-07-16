@@ -58,6 +58,10 @@ class SessionRunnerState:
         with self.run_state_lock:
             return self.run_active
 
+    @property
+    def is_cancellation_requested(self) -> bool:
+        return self.cancel_event.is_set()
+
 
 class InferenceEngine:
     def __init__(self, plugin: ModelPlugin, backend_instance: Any, pipeline: ProcessorPipeline):

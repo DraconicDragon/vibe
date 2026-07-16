@@ -358,7 +358,7 @@ class ModelSession:
 
     def is_cancellation_requested(self) -> bool:
         """Return whether cancellation has been requested for the active run."""
-        return self._state.cancel_event.is_set()
+        return self._state.is_cancellation_requested
 
     def _notify_result_processors_infer_start(self, result_processors: list[ResultProcessor] | None) -> None:
         if not result_processors:
