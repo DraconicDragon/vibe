@@ -8,12 +8,13 @@ from vibe.exceptions import SessionError
 logger = logging.getLogger(__name__)
 
 
-def _is_structured_jtp3_batch(item: Any) -> bool:
-    try:
-        from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
-    except Exception:
-        JTPHydraBatch = None  # type: ignore[assignment]
+try:
+    from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
+except ImportError:
+    JTPHydraBatch = None  # type: ignore[assignment]
 
+
+def _is_structured_jtp3_batch(item: Any) -> bool:
     if JTPHydraBatch is not None and isinstance(item, JTPHydraBatch):
         return True
 
@@ -45,8 +46,6 @@ def stack_batch(chunk: list[Any], model_id: str) -> Any:
     if _is_structured_jtp3_batch(first):
         try:
             import torch
-
-            from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
 
             patches = torch.stack([item.patches for item in chunk], dim=0)
             sizes = torch.stack([item.sizes for item in chunk], dim=0)
