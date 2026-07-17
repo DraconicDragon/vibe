@@ -95,29 +95,55 @@ class AutoResolver(SourceResolver):
     def __init__(
         self, source_string: str, fallback_repo_id: str | None, file_name_map: Mapping[str, str] | None = None
     ):
-        self.source = source_string
+        self.source = Path(source_string).expanduser()
         self.fallback_repo_id = fallback_repo_id
-        self.file_name_map = file_name_map
+        self.file_name_map = file_name_map or {}
 
     def resolve(self, variant: ModelVariant, **kwargs) -> ArtifactMap:
-        local_candidate = Path(self.source).expanduser()
+        paths: dict[str, Path] = {}
+        optional_missing: dict[str, str] = {}
 
-        if local_candidate.is_dir():
+        is_local_dir = self.source.is_dir()
+
+        for spec in variant.artifacts:
+            # 1. Resolve names and target repos
+            mapped_name = self.file_name_map.get(spec.id, spec.name)
+            target_repo = spec.repo_id or self.fallback_repo_id
+
+            # 2. Check local folder first (if applicable)
+            local_candidate = self.source / mapped_name if is_local_dir else None
+            if local_candidate and local_candidate.is_file():
+                paths[spec.id] = local_candidate
+                continue  # Found it locally, skip HF download
+
+            # 3. Fallback to HF
+            if not target_repo:
+                if spec.required:
+                    raise LoaderError(
+                        f"Missing required artifact '{spec.id}' locally, and no fallback HF repo is defined."
+                    )
+                optional_missing[spec.id] = "Missing locally, no HF fallback."
+                continue
+
+            hf_mapped_name = f"{spec.hf_subdir.rstrip('/')}/{mapped_name}" if spec.hf_subdir else mapped_name
+
             try:
-                # Try strictly local first
-                return LocalResolver(local_candidate, self.file_name_map).resolve(variant, **kwargs)
-            except LoaderError as local_exc:
-                if not self.fallback_repo_id:
-                    raise LoaderError(f"Local resolution failed and no HF fallback configured: {local_exc}")
-                logger.info(f"Local resolution incomplete, falling back to HF repo '{self.fallback_repo_id}'")
+                hf_path, reason = download_or_cached_with_reason(
+                    repo_id=target_repo,
+                    filename=hf_mapped_name,
+                    revision=kwargs.get("revision"),
+                    cache_dir=kwargs.get("cache_dir"),
+                    allow_download=kwargs.get("allow_download", True),
+                    required=spec.required,
+                )
+                if hf_path:
+                    paths[spec.id] = Path(hf_path)
+                elif not spec.required and reason:
+                    optional_missing[spec.id] = f"Missing locally. HF fallback reason: {reason}"
+            except HFDownloadError as exc:
+                raise LoaderError(f"Artifact '{spec.id}' missing locally and failed HF fallback: {exc}") from None
 
-                # If local failed, fallback to HF entirely.
-                # (Mixed local/HF merging is intentionally removed here for predictability.
-                # Caching handles reuse automatically.)
-                return HFResolver(self.fallback_repo_id, self.file_name_map).resolve(variant, **kwargs)
-
-        # Treat source as HF repo
-        return HFResolver(self.source, self.file_name_map).resolve(variant, **kwargs)
+        return ArtifactMap(paths, optional_missing)
 
 
 def resolve_variant_artifacts(

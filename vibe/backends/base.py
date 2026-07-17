@@ -37,6 +37,8 @@ class ArtifactSpec:
     name: str  # Default download/lookup filename
     role: FileRole
     required: bool = True
+    repo_id: str | None = None
+    hf_subdir: str | None = None
 
 
 @dataclass(frozen=True)
