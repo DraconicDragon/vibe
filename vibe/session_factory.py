@@ -7,11 +7,11 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from vibe.backends.base import Backend, ModelPlugin
+from vibe.backends.base import ArtifactMap, Backend, FileRole, ModelPlugin, ModelVariant
 from vibe.devices import normalize_device_string
 from vibe.exceptions import SessionError
 from vibe.hf_downloader import get_auto_download_default
-from vibe.loader import FileMap, resolve_from_sources
+from vibe.loader import resolve_variant_artifacts
 from vibe.precision import normalize_precision_string
 from vibe.session import ModelSession
 
@@ -40,10 +40,12 @@ def build_session(
 
     This is called by vibe.load() - you don't usually call this directly.
     """
+    model_id = plugin_cls.identity.model_id
+    supported_backends = [v.backend for v in plugin_cls.variants]
 
     logger.debug(
         "Building session model_id=%s requested_backend=%s requested_device=%s requested_precision=%s source=%s",
-        plugin_cls.model_id,
+        model_id,
         backend.value if isinstance(backend, Backend) else backend or "auto",
         device,
         precision,
@@ -61,15 +63,15 @@ def build_session(
     else:
         selected_backend = backend
 
-    if selected_backend not in plugin_cls.supported_backends:
+    if selected_backend not in supported_backends:
         raise SessionError(
-            f"Model '{plugin_cls.model_id}' does not support backend '{selected_backend.value}'. "
-            f"Supported: {[b.value for b in plugin_cls.supported_backends]}"
+            f"Model '{model_id}' does not support backend '{selected_backend.value}'. "
+            f"Supported: {[b.value for b in supported_backends]}"
         )
 
     backend_candidates = [selected_backend]
     if not backend_was_explicit:
-        backend_candidates.extend([b for b in plugin_cls.supported_backends if b != selected_backend])
+        backend_candidates.extend([b for b in supported_backends if b != selected_backend])
 
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
     logger.debug("Session auto_download=%s", effective_auto_download)
@@ -117,16 +119,14 @@ def build_session(
         if source_is_unprefixed_local_dir and not allow_hf_fallback:
             logger.info(
                 "No local backend files resolved for model_id=%s; trying HuggingFace fallback for auto backend mode.",
-                plugin_cls.model_id,
+                model_id,
             )
 
     if auto_resolution_failures:
         attempts = "; ".join([f"{candidate.value}: {reason}" for candidate, reason in auto_resolution_failures])
-        raise SessionError(
-            f"Could not resolve files for model '{plugin_cls.model_id}' in auto backend mode. Attempts: {attempts}"
-        )
+        raise SessionError(f"Could not resolve files for model '{model_id}' in auto backend mode. Attempts: {attempts}")
 
-    raise SessionError(f"Failed to build session for model '{plugin_cls.model_id}'.")
+    raise SessionError(f"Failed to build session for model '{model_id}'.")
 
 
 def _is_unprefixed_local_dir_source(source: str) -> bool:
@@ -134,17 +134,6 @@ def _is_unprefixed_local_dir_source(source: str) -> bool:
     if normalized.startswith("local:") or normalized.startswith("hf:"):
         return False
     return Path(normalized).expanduser().is_dir()
-
-
-def _local_source_path(source: str) -> Path | None:
-    normalized = str(source).strip()
-    if normalized.startswith("local:"):
-        candidate = Path(normalized[6:]).expanduser()
-        return candidate if candidate.is_dir() else None
-    if normalized.startswith("hf:"):
-        return None
-    candidate = Path(normalized).expanduser()
-    return candidate if candidate.is_dir() else None
 
 
 def _attempt_session_build(
@@ -169,6 +158,8 @@ def _attempt_session_build(
 ) -> ModelSession | None:
     from vibe.backends.runtime.onnx import ONNXBackend
     from vibe.backends.runtime.pytorch import PyTorchBackend
+
+    model_id = plugin_cls.identity.model_id
 
     try:
         normalized_device = normalize_device_string(
@@ -196,28 +187,33 @@ def _attempt_session_build(
         logger.info(
             "Auto backend selected %s for model_id=%s after %s was unavailable.",
             candidate_backend.value,
-            plugin_cls.model_id,
+            model_id,
             selected_backend.value,
         )
 
     logger.debug(
         "Session backend selected model_id=%s backend=%s device=%s precision=%s",
-        plugin_cls.model_id,
+        model_id,
         candidate_backend.value,
         normalized_device,
         normalized_precision,
     )
 
+    variant = next((v for v in plugin_cls.variants if v.backend == candidate_backend), None)
+    if variant is None:
+        return None
+
+    fallback_repo_id = getattr(plugin_cls, "default_repo_id", None) or variant.repo_id if allow_hf_fallback else None
+
     try:
-        file_map = resolve_from_sources(
-            source,
-            plugin_cls.required_files,
-            candidate_backend,
+        file_map = resolve_variant_artifacts(
+            source=source,
+            variant=variant,
             revision=hf_revision,
             cache_dir=hf_cache_dir,
             allow_download=auto_download_attempt,
             file_name_map=file_name_map,
-            fallback_hf_repo_id=plugin_cls.default_hf_repo if allow_hf_fallback else None,
+            fallback_hf_repo_id=fallback_repo_id,
             source_map=source_map,
         )
     except Exception as exc:
@@ -230,15 +226,14 @@ def _attempt_session_build(
                 "Auto backend '%s' unavailable %s for model_id=%s; trying %s next.",
                 candidate_backend.value,
                 "locally" if not allow_hf_fallback else "",
-                plugin_cls.model_id,
+                model_id,
                 next_backend.value,
             )
         auto_resolution_failures.append((candidate_backend, str(exc)))
         return None
 
-    _warn_local_subdir_mismatch(plugin_cls, source, file_map)
-    weights_path = _find_weights(plugin_cls, file_map, candidate_backend)
-    logger.debug("Resolved model weights for model_id=%s path=%s", plugin_cls.model_id, weights_path)
+    weights_path = _find_weights(plugin_cls, variant, file_map)
+    logger.debug("Resolved model weights for model_id=%s path=%s", model_id, weights_path)
 
     pool_key = _make_backend_pool_key(
         backend=candidate_backend,
@@ -267,16 +262,16 @@ def _attempt_session_build(
             device=normalized_device,
             precision=normalized_precision,
             source=source,
-            optional_missing_files=file_map.optional_missing_reasons(),
+            optional_missing_files=file_map._optional_missing,
         )
-        plugin.load_ancillary(file_map.as_path_dict())
+        plugin.load_ancillary(file_map)
         if candidate_backend == Backend.ONNX and normalized_precision in {"fp16", "bf16"}:
             logger.warning(
                 "Precision '%s' requested while running ONNX backend; runtime casting is provider/model dependent.",
                 normalized_precision,
             )
 
-        logger.debug("Session ready model_id=%s", plugin_cls.model_id)
+        logger.debug("Session ready model_id=%s", model_id)
         return ModelSession(
             plugin=plugin,
             backend_instance=rt,
@@ -292,50 +287,7 @@ def _attempt_session_build(
         raise
     except Exception as exc:
         release_backend()
-        raise SessionError(f"Plugin '{plugin_cls.model_id}' failed to load ancillary files: {exc}") from exc
-
-
-def _warn_local_subdir_mismatch(
-    plugin_cls: type[ModelPlugin],
-    source: str,
-    file_map: FileMap,
-) -> None:
-    hf_subdir = getattr(plugin_cls, "hf_subdir", None)
-    if not hf_subdir:
-        return
-
-    source_path = _local_source_path(source)
-    if source_path is None:
-        return
-
-    try:
-        source_resolved = source_path.resolve()
-    except OSError:
-        return
-
-    if source_resolved.name == hf_subdir:
-        return
-
-    paths = file_map.values()
-    if not paths:
-        return
-
-    try:
-        all_in_root = all(path.parent.resolve() == source_resolved for path in paths)
-    except OSError:
-        return
-
-    if not all_in_root:
-        return
-
-    logger.warning(
-        "Local source '%s' matched files in the folder root, but '%s' also supports HF-style subfolder layouts. "
-        "This is a warning because the folder may contain another model with the same filenames, and the loader can "
-        "otherwise pick the wrong one without noticing. HF would use subfolder '%s'.",
-        source_resolved,
-        plugin_cls.model_id,
-        hf_subdir,
-    )
+        raise SessionError(f"Plugin '{model_id}' failed to load ancillary files: {exc}") from exc
 
 
 def _next_backend_candidate(candidates: list[Backend], current: Backend) -> Backend | None:
@@ -434,7 +386,8 @@ def _release_backend(key: tuple[Any, ...]) -> None:
 
 def _auto_select_backend(plugin_cls: type[ModelPlugin], *, requested_device: str = "auto") -> Backend:
     """Select backend using runtime availability + accelerator preference."""
-    supported = plugin_cls.supported_backends
+    supported = [v.backend for v in plugin_cls.variants]
+    model_id = plugin_cls.identity.model_id
 
     onnx_runtime_ok, onnx_has_accel = _onnx_runtime_capabilities()
     torch_runtime_ok, torch_has_accel = _pytorch_runtime_capabilities()
@@ -444,7 +397,6 @@ def _auto_select_backend(plugin_cls: type[ModelPlugin], *, requested_device: str
 
     if onnx_candidate and torch_candidate:
         requested = str(requested_device or "auto").strip().lower()
-        # Backend-specific selectors should be respected early.
         if requested in {"mps"}:
             logger.info("Backend auto-selection chose PyTorch due to requested device '%s'.", requested)
             return Backend.PYTORCH
@@ -469,12 +421,12 @@ def _auto_select_backend(plugin_cls: type[ModelPlugin], *, requested_device: str
         logger.info("Backend auto-selection chose PyTorch (runtime available).")
         return Backend.PYTORCH
 
-    raise SessionError(f"No supported backend available for '{plugin_cls.model_id}'. Install onnxruntime or torch.")
+    raise SessionError(f"No supported backend available for '{model_id}'. Install onnxruntime or torch.")
 
 
 def _onnx_runtime_capabilities() -> tuple[bool, bool]:
     try:
-        import onnxruntime as ort
+        import onnxruntime as ort  # ty:ignore[unresolved-import]
     except ImportError:
         return False, False
 
@@ -525,21 +477,18 @@ def _auto_select_pytorch_device() -> str:
 
 def _find_weights(
     plugin_cls: type[ModelPlugin],
-    file_map: FileMap,
-    backend: Backend,
+    variant: ModelVariant,
+    file_map: ArtifactMap,
 ) -> Path:
-    """Find the weights file from the resolved file map for the selected backend."""
-    from vibe.backends.base import FileRole
-
-    for spec in plugin_cls.required_files:
-        if spec.role == FileRole.WEIGHTS and spec.needed_for(backend):
-            spec_key = spec.key or spec.name
-            path = file_map.get(spec_key)
+    """Find the weights file from the resolved ArtifactMap for the selected variant."""
+    for spec in variant.artifacts:
+        if spec.role == FileRole.WEIGHTS:
+            path = file_map.get_optional(spec.id)
             if path is not None:
                 return path
 
     raise SessionError(
-        f"No weights file found for model '{plugin_cls.model_id}' "
-        f"with backend '{backend.value}'. "
-        f"Check the plugin's required_files declaration."
+        f"No weights file found for model '{plugin_cls.identity.model_id}' "
+        f"with backend '{variant.backend.value}'. "
+        f"Check the plugin's artifacts declaration."
     )
