@@ -7,7 +7,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -82,124 +82,19 @@ def should_prefetch_image_loading(*, path_inputs: int) -> bool:
     return path_inputs > 1
 
 
-def load_image_if_path(
-    value: Any | str,
-    index: int,
-    cancel_check: CancelCheck | None = None,
-    error_cls: type[Exception] = ValueError,
-    has_pillow_jxl: bool | None = None,
-    has_pillow_heif: bool | None = None,
-) -> Any:
-    if cancel_check is not None:
-        cancel_check()
+def load_image_if_path(value: Any | str, index: int, error_cls: type[Exception] = ValueError) -> Any:
     if not isinstance(value, (str, Path)):
         return value
 
     from PIL import Image
 
     path = Path(value)
-    logger.debug("Loading image index=%s path=%s", index, path)
+
     try:
         with Image.open(path) as img:
-            loaded = img.copy()
+            return img.copy()
     except Exception as exc:
-        suffix = Path(path).suffix.lower()
-        hint = ""
-        pillow_jxl_available = _HAS_PILLOW_JXL if has_pillow_jxl is None else has_pillow_jxl
-        pillow_heif_available = _HAS_PILLOW_HEIF if has_pillow_heif is None else has_pillow_heif
-        if suffix == ".jxl" and not pillow_jxl_available:
-            hint = " Install 'pillow-jxl-plugin' to enable JPEG XL support: pip install pillow-jxl-plugin"
-        elif suffix in {".heif", ".heic"} and not pillow_heif_available:
-            hint = " Install 'pillow-heif' to enable HEIF/HEIC support: pip install pillow-heif"
-        raise error_cls(f"Failed to load image at index {index} from path '{path}': {exc}.{hint}") from exc
-
-    if cancel_check is not None:
-        cancel_check()
-    logger.debug("Loaded image index=%s path=%s", index, path)
-    return loaded
-
-
-def load_images(
-    values: Sequence[Any | str],
-    *,
-    start_index: int = 0,
-    load_image_fn: Callable[[Any | str, int], Any] | None = None,
-    cancel_check: CancelCheck | None = None,
-) -> list[Any]:
-    normalized_images: list[Any] = []
-    for offset, value in enumerate(values):
-        if cancel_check is not None:
-            cancel_check()
-        loader = load_image_fn or load_image_if_path
-        normalized_images.append(loader(value, start_index + offset))
-    if cancel_check is not None:
-        cancel_check()
-    return normalized_images
-
-
-def iter_loaded_image_chunks(
-    values: Sequence[Any | str],
-    *,
-    chunk_size: int,
-    use_prefetch: bool,
-    load_image_fn: Callable[[Any | str, int], Any] | None = None,
-    cancel_check: CancelCheck | None = None,
-) -> Iterator[tuple[int, list[Any]]]:
-    if not values:
-        return
-
-    if not use_prefetch:
-        for start in range(0, len(values), chunk_size):
-            if cancel_check is not None:
-                cancel_check()
-            chunk_values = values[start : start + chunk_size]
-            yield (
-                start,
-                load_images(
-                    chunk_values,
-                    start_index=start,
-                    load_image_fn=load_image_fn,
-                    cancel_check=cancel_check,
-                ),
-            )
-        return
-
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vibe-image-loader")
-    fast_shutdown = False
-    try:
-        start = 0
-        future: Future[list[Any]] = executor.submit(
-            load_images,
-            values[start : start + chunk_size],
-            start_index=start,
-            load_image_fn=load_image_fn,
-            cancel_check=cancel_check,
-        )
-
-        while True:
-            loaded_images = _await_loaded_chunk(future, cancel_check=cancel_check)
-            next_start = start + chunk_size
-            next_future: Future[list[Any]] | None = None
-            if next_start < len(values):
-                next_future = executor.submit(
-                    load_images,
-                    values[next_start : next_start + chunk_size],
-                    start_index=next_start,
-                    load_image_fn=load_image_fn,
-                    cancel_check=cancel_check,
-                )
-
-            yield start, loaded_images
-
-            if next_future is None:
-                break
-            start = next_start
-            future = next_future
-    except Exception:
-        fast_shutdown = True
-        raise
-    finally:
-        executor.shutdown(wait=not fast_shutdown, cancel_futures=True)
+        raise error_cls(f"Failed to load image at index {index} from path '{path}': {exc}") from exc
 
 
 def iter_load_images(
@@ -209,43 +104,59 @@ def iter_load_images(
     prefetch: bool | None = None,
     cancel_check: CancelCheck | None = None,
     error_cls: type[Exception] = ValueError,
-    has_pillow_jxl: bool | None = None,
-    has_pillow_heif: bool | None = None,
 ) -> Iterator[ImageChunk]:
-    """Yield image batches loaded from the input list.
+    """Yield image batches loaded from the input list, efficiently flattening the loading pipeline."""
 
-    The input can be bare images/paths or (image_or_path, ref) tuples.
-    Each yielded chunk keeps the original refs aligned with the loaded images.
-    """
     values, refs = normalize_input_format(images, error_cls=error_cls)
     if not values:
         return
 
     path_inputs = sum(1 for value in values if isinstance(value, (str, Path)))
-    use_prefetch = should_prefetch_image_loading(path_inputs=path_inputs) if prefetch is None else bool(prefetch)
+    use_prefetch = (path_inputs > 1) if prefetch is None else bool(prefetch)
 
-    def _loader(value: Any | str, index: int) -> Any:
-        return load_image_if_path(
-            value,
-            index=index,
-            cancel_check=cancel_check,
-            error_cls=error_cls,
-            has_pillow_jxl=has_pillow_jxl,
-            has_pillow_heif=has_pillow_heif,
-        )
+    def _load_batch(start_idx: int, end_idx: int) -> list[Any]:
+        batch = []
+        for i in range(start_idx, end_idx):
+            if cancel_check:
+                cancel_check()
+            batch.append(load_image_if_path(values[i], index=i, error_cls=error_cls))
+        return batch
 
-    for start, chunk_images in iter_loaded_image_chunks(
-        values,
-        chunk_size=batch_size,
-        use_prefetch=use_prefetch,
-        load_image_fn=_loader,
-        cancel_check=cancel_check,
-    ):
-        yield ImageChunk(
-            start_index=start,
-            images=chunk_images,
-            refs=refs[start : start + len(chunk_images)],
-        )
+    total = len(values)
+
+    if not use_prefetch:
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
+            yield ImageChunk(start_index=start, images=_load_batch(start, end), refs=refs[start:end])
+        return
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="vibe-image-loader") as executor:
+        start = 0
+        end = min(batch_size, total)
+        future = executor.submit(_load_batch, start, end)
+
+        while start < total:
+            if cancel_check:
+                cancel_check()
+
+            # Await current chunk
+            while True:
+                try:
+                    loaded_images = future.result(timeout=0.05)
+                    break
+                except FutureTimeoutError:
+                    if cancel_check:
+                        cancel_check()
+
+            # Dispatch next chunk while yielding the current one
+            next_start = start + batch_size
+            next_end = min(next_start + batch_size, total)
+
+            if next_start < total:
+                future = executor.submit(_load_batch, next_start, next_end)
+
+            yield ImageChunk(start_index=start, images=loaded_images, refs=refs[start:end])
+            start = next_start
 
 
 def _await_loaded_chunk(
