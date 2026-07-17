@@ -1,20 +1,12 @@
 """
-ModelPlugin — the abstract base class every plugin must implement.
-
-A plugin is responsible for:
-  - declaring what files it needs (required_files)
-  - preprocessing an image into a tensor/array
-  - postprocessing raw model output into a typed result
-  - optionally loading ancillary files (tag lists, mappings, etc.)
-
-The inference engine (session.py) handles the actual forward pass —
-plugins don't call the model directly.
+ModelPlugin — core abstraction and metadata definitions.
 """
 
 from __future__ import annotations
 
+import inspect
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -25,14 +17,11 @@ if TYPE_CHECKING:
     from vibe.result_processors import ResultProcessor
 
 
-# region File Spec
-
-
 class FileRole(str, Enum):
-    WEIGHTS = "weights"  # model weights (.pt, .safetensors, .onnx, …)
-    TAG_LIST = "tag_list"  # tag list/CSV
-    MAPPING = "mapping"  # e.g. character→copyright mapping JSON
-    CONFIG = "config"  # model config JSON
+    WEIGHTS = "weights"
+    TAG_LIST = "tag_list"
+    MAPPING = "mapping"
+    CONFIG = "config"
 
 
 class Backend(str, Enum):
@@ -41,218 +30,89 @@ class Backend(str, Enum):
 
 
 @dataclass(frozen=True)
-class FileSpec:
-    """
-    Declares one file the plugin needs to operate.
+class ArtifactSpec:
+    """A logical file required by the model. Identity is driven by 'id', not 'name'."""
 
-    Attributes:
-        name:       The filename as it appears in the HF repo / local folder.
-        role:       What kind of file this is.
-        key:        Optional logical key for this file. When set, this is the
-                    lookup key used by FileMap and file_name_map. Defaults to name.
-        required:   If False the plugin can run without it (feature degrades).
-        backends:   Which backends need this file. Empty list = all backends.
-                    Use this to declare .onnx files only for Backend.ONNX, etc.
-        repo_id:    Optional HuggingFace repo override for this file.
-        hf_subdir:  Optional HF-only subfolder (e.g. "foo/bar").
-    """
-
-    name: str
+    id: str
+    name: str  # Default download/lookup filename
     role: FileRole
-    key: str | None = None
     required: bool = True
-    backends: tuple[Backend, ...] = field(default_factory=tuple)
-    repo_id: str | None = None
-    hf_subdir: str | None = None
-
-    def needed_for(self, backend: Backend) -> bool:
-        if not self.backends:
-            return True
-        return backend in self.backends
-
-    def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["role"] = self.role.value
-        d["backends"] = [b.value for b in self.backends]
-        return d
 
 
 @dataclass(frozen=True)
-class ModelPluginInfo:
-    """Typed metadata returned by vibe.describe()."""
+class ModelVariant:
+    """Groups artifacts required for a specific backend and execution environment."""
 
-    model_id: str
-    display_name: str
-    family_name: str
-    description: str
-    output_type: OutputType
-    supported_backends: tuple[Backend, ...]
-    supported_processors: tuple[type[ResultProcessor], ...]
-    required_files: tuple[FileSpec, ...]
-    default_hf_repo: str | None = None
+    backend: Backend
+    artifacts: tuple[ArtifactSpec, ...]
+    repo_id: str | None = None
     hf_subdir: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "model_id": self.model_id,
-            "display_name": self.display_name,
-            "family_name": self.family_name,
-            "description": self.description,
-            "output_type": self.output_type.value,
-            "supported_backends": [b.value for b in self.supported_backends],
-            # Safely serialize processor class objects or fallback to string values
-            "supported_processors": [getattr(p, "__name__", str(p)) for p in self.supported_processors],
-            "required_files": [
-                {
-                    "name": spec.name,
-                    "role": spec.role.value,
-                    "required": spec.required,
-                    "backends": [b.value for b in spec.backends],
-                }
-                for spec in self.required_files
-            ],
-            "default_hf_repo": self.default_hf_repo,
-            "hf_subdir": self.hf_subdir,
-        }
+
+@dataclass(frozen=True)
+class ModelIdentity:
+    model_id: str
+    display_name: str
+    family_name: str = ""
+    description: str = ""
 
 
-# endregion File Spec
+@dataclass(frozen=True)
+class ModelCapabilities:
+    output_type: OutputType = OutputType.TAGS
+    supported_processors: tuple[type["ResultProcessor"], ...] = ()
 
 
-# region ModelPlugin API
+class ArtifactMap:
+    """A strictly ID-keyed mapping of resolved paths. Plugins never index by filename."""
+
+    def __init__(self, paths_by_id: dict[str, Path], optional_missing: dict[str, str] | None = None):
+        self._paths = paths_by_id
+        self._optional_missing = optional_missing or {}
+
+    def get(self, artifact_id: str) -> Path:
+        if artifact_id not in self._paths:
+            raise KeyError(f"Artifact '{artifact_id}' was not resolved. Available: {list(self._paths)}")
+        return self._paths[artifact_id]
+
+    def get_optional(self, artifact_id: str) -> Path | None:
+        return self._paths.get(artifact_id)
+
+    def as_path_dict(self) -> dict[str, Path]:
+        return dict(self._paths)
 
 
 class ModelPlugin(ABC):
     """
     Abstract base class for all vibe model plugins.
-
-    Subclasses must set class-level attributes and implement the abstract
-    methods. The registry uses the class attributes for discovery and the
-    loader uses required_files to know what to fetch.
-
-    Class-level attributes to set in every subclass
-    ------------------------------------------------
-    model_id : str
-        Canonical identifier, e.g. "wd-eva02-large-tagger".
-    output_type : OutputType
-        What kind of result this plugin produces.
-    required_files : tuple[FileSpec, ...]
-        Files the plugin needs. Declared at class level so the loader can
-        inspect them before instantiating the plugin.
-    supported_backends : tuple[Backend, ...]
-        Which inference backends this plugin supports.
-    supported_processors : tuple[type[ResultProcessor], ...]
-        Optional result processors this plugin is designed to work with.
-    default_hf_repo : str | None
-        The HuggingFace repo ID this plugin uses out-of-the-box.
-        None means there is no canonical upstream repo.
-    display_name : str
-        Human-readable name for GUIs and listings.
-    family_name : str
-        Short group label used for listings and generated docs.
-    description : str
-        One-line description.
+    Concrete subclasses MUST define `identity`, `capabilities`, and `variants`.
     """
 
-    # --- Subclasses must override these ---
-    model_id: str = ""
-    output_type: OutputType = OutputType.TAGS
-    required_files: tuple[FileSpec, ...] = ()
-    supported_backends: tuple[Backend, ...] = (Backend.PYTORCH, Backend.ONNX)
-    supported_processors: tuple[type["ResultProcessor"], ...] = ()
-    default_hf_repo: str | None = None
-    display_name: str = ""
-    family_name: str = ""
-    description: str = ""
+    identity: ModelIdentity
+    capabilities: ModelCapabilities
+    variants: tuple[ModelVariant, ...]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        # Skip validation on intermediate base classes (mixins, helpers)
-        if not getattr(cls, "_abstract", False) and cls.model_id:
-            if not cls.required_files and cls.output_type == OutputType.TAGS:
-                import warnings
-
-                warnings.warn(
-                    f"Plugin '{cls.model_id}' has no required_files declared.",
-                    stacklevel=2,
-                )
-
-    # --- Called by the loader after files are resolved ---
+        # Automatically skip validation for abstract classes
+        if not inspect.isabstract(cls):
+            if not hasattr(cls, "identity") or not cls.identity.model_id:
+                raise ValueError(f"Concrete plugin {cls.__name__} must define 'identity' with a valid model_id.")
+            if not hasattr(cls, "variants") or not cls.variants:
+                raise ValueError(f"Concrete plugin {cls.__name__} must define at least one ModelVariant.")
 
     def configure(self, **kwargs: Any) -> None:
-        """
-        Optional per-session plugin configuration hook.
+        """Optional per-session configuration hook."""
+        pass
 
-        The session builder calls this before load_ancillary(). Plugins can use
-        it for options such as download policy overrides, explicit mapping
-        paths, or other runtime behavior flags.
-        """
-
-    def load_ancillary(self, file_map: dict[str, Path]) -> None:
-        """
-        Load tag lists, mappings, configs, etc. from resolved file paths.
-
-        Called once after the plugin is instantiated and before inference.
-        file_map keys are FileSpec.name values; values are resolved Paths.
-
-        Default implementation does nothing — override in plugins that need it.
-        """
-
-    # --- Implement these in every concrete plugin ---
+    def load_ancillary(self, artifacts: ArtifactMap) -> None:
+        """Load tag lists, mappings, etc., using strict artifact IDs."""
+        pass
 
     @abstractmethod
     def preprocess(self, image: Any) -> Any:
-        """
-        Transform a PIL Image (or numpy array) into a model-ready tensor/array.
-
-        Returns whatever the chosen backend expects:
-          - PyTorch: torch.Tensor with shape (1, C, H, W)
-          - ONNX: numpy ndarray with shape (1, C, H, W)
-
-        The inference engine passes this directly to the model.
-        """
+        pass
 
     @abstractmethod
-    def postprocess(
-        self,
-        raw_output: Any,
-    ) -> ModelResult:
-        """
-        Convert raw model output into a typed result.
-
-        raw_output is whatever the model/backend returns (torch.Tensor,
-        numpy ndarray, etc.).
-        """
-
-    # --- Introspection helpers ---
-
-    @classmethod
-    def files_for_backend(cls, backend: Backend) -> list[FileSpec]:
-        """Subset of required_files that are needed for a given backend."""
-        return [f for f in cls.required_files if f.needed_for(backend)]
-
-    @classmethod
-    def required_file_names(cls, backend: Backend) -> list[str]:
-        return [f.name for f in cls.files_for_backend(backend) if f.required]
-
-    @classmethod
-    def describe(cls) -> ModelPluginInfo:
-        family_name = cls.family_name.strip() or cls.display_name.strip() or cls.model_id
-        return ModelPluginInfo(
-            model_id=cls.model_id,
-            display_name=cls.display_name,
-            family_name=family_name,
-            description=cls.description,
-            output_type=cls.output_type,
-            default_hf_repo=cls.default_hf_repo,
-            supported_backends=cls.supported_backends,
-            supported_processors=tuple(processor.__name__ for processor in cls.supported_processors),
-            required_files=cls.required_files,
-        )
-
-    @classmethod
-    def to_dict(cls) -> dict[str, Any]:
-        return cls.describe().to_dict()
-
-
-# endregion ModelPlugin API
+    def postprocess(self, raw_output: Any) -> ModelResult:
+        pass
