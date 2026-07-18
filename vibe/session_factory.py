@@ -203,7 +203,7 @@ def _attempt_session_build(
     if variant is None:
         return None
 
-    fallback_repo_id = getattr(plugin_cls, "default_repo_id", None) or variant.repo_id if allow_hf_fallback else None
+    fallback_repo_id = plugin_cls.default_repo_id if allow_hf_fallback else None
 
     try:
         file_map = resolve_variant_artifacts(

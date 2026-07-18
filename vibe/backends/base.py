@@ -107,6 +107,7 @@ class ModelPlugin(ABC):
     identity: ModelIdentity
     capabilities: ModelCapabilities
     variants: tuple[ModelVariant, ...]
+    default_repo_id: str
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -116,6 +117,8 @@ class ModelPlugin(ABC):
                 raise ValueError(f"Concrete plugin {cls.__name__} must define 'identity' with a valid model_id.")
             if not hasattr(cls, "variants") or not cls.variants:
                 raise ValueError(f"Concrete plugin {cls.__name__} must define at least one ModelVariant.")
+            if not getattr(cls, "default_repo_id", None):
+                raise ValueError(f"Concrete plugin {cls.__name__} must define a valid 'default_repo_id' string.")
 
             from vibe.registry import model_registry
 
@@ -158,7 +161,7 @@ class ModelPlugin(ABC):
             variants=tuple(
                 {
                     "backend": v.backend.value,
-                    "repo_id": v.repo_id or getattr(cls, "default_repo_id", None),
+                    "repo_id": v.repo_id or cls.default_repo_id,
                     "hf_subdir": v.hf_subdir,
                     "artifacts": [
                         {

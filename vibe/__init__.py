@@ -346,17 +346,7 @@ def _resolve_source(
     plugin_cls: type[ModelPlugin],
 ) -> str:
     if source is None:
-        # Check class level default, fallback to checking if any variant defines a repo_id
-        default_repo = getattr(plugin_cls, "default_repo_id", None) or next(
-            (v.repo_id for v in plugin_cls.variants if v.repo_id), None
-        )
-        if default_repo is None:
-            raise SessionError(
-                f"Model '{plugin_cls.identity.model_id}' has no default HF repo. "
-                f"Provide a source explicitly: "
-                f"vibe.load('{plugin_cls.identity.model_id}', source=...)"
-            )
-        return f"hf:{default_repo}"
+        return f"hf:{plugin_cls.default_repo_id}"
 
     normalized = source.strip()
     if not normalized:
