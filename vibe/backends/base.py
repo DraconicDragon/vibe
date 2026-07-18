@@ -117,6 +117,15 @@ class ModelPlugin(ABC):
             if not hasattr(cls, "variants") or not cls.variants:
                 raise ValueError(f"Concrete plugin {cls.__name__} must define at least one ModelVariant.")
 
+            from vibe.registry import model_registry
+
+            try:
+                model_registry.register(cls)
+            except ValueError as exc:
+                import warnings
+
+                warnings.warn(str(exc), stacklevel=2)
+
     def configure(self, **kwargs: Any) -> None:
         """Optional per-session configuration hook."""
         pass

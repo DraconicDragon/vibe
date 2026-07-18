@@ -139,18 +139,4 @@ class ModelRegistry:
         return [n for n in all_names if name_lower in n.lower() or n.lower() in name_lower][:max_suggestions]
 
 
-def _make_auto_register_hook(registry: ModelRegistry):
-    """Generates the subclassing hook used to auto-index defined plugin classes."""
-
-    def auto_register(cls: type[ModelPlugin]) -> None:
-        if inspect.isabstract(cls):
-            return
-
-        identity = getattr(cls, "identity", None)
-        if identity and identity.model_id:
-            try:
-                registry.register(cls)
-            except ValueError as exc:
-                warnings.warn(str(exc), stacklevel=3)
-
-    return auto_register
+model_registry = ModelRegistry()

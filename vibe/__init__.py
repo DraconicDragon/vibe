@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
-from typing import Any, Mapping
+from typing import Mapping
 
 from vibe.backends.base import (
     ArtifactSpec,
@@ -58,7 +58,7 @@ from vibe.memory_stats import (
     MemoryTrackerStats,
 )
 from vibe.precision import normalize_precision_string
-from vibe.registry import ModelRegistry, RegistryError, _make_auto_register_hook
+from vibe.registry import RegistryError, model_registry
 from vibe.result_processors import (
     CharacterIPMapping,
     CleanTags,
@@ -98,23 +98,6 @@ __license__ = "MIT"
 
 # region Global Registry
 
-model_registry: ModelRegistry = ModelRegistry()
-
-# Wire up auto-registration: whenever a ModelPlugin subclass is defined
-# (i.e. when a plugin module is imported), it registers itself.
-_auto_register = _make_auto_register_hook(model_registry)
-_original_init_subclass = ModelPlugin.__init_subclass__.__func__
-
-
-def _patched_init_subclass(cls: type[ModelPlugin], **kwargs: Any) -> None:
-    _original_init_subclass(cls, **kwargs)
-    _auto_register(cls)
-
-
-# Bypasses static assignment constraints cleanly
-setattr(ModelPlugin, "__init_subclass__", classmethod(_patched_init_subclass))
-
-# Discover and register all built-in plugins
 model_registry.discover_all()
 
 # endregion
