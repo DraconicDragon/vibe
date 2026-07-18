@@ -36,9 +36,15 @@ from __future__ import annotations
 import logging
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
-from typing import Mapping
+from typing import Any, Mapping
 
-from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin, ModelPluginInfo
+from vibe.backends.base import (
+    ArtifactSpec,
+    Backend,
+    FileRole,
+    ModelDescriptor,
+    ModelPlugin,
+)
 from vibe.devices import list_available_devices
 from vibe.exceptions import ProcessorError, SessionError
 from vibe.hf_downloader import (
@@ -100,17 +106,18 @@ _auto_register = _make_auto_register_hook(model_registry)
 _original_init_subclass = ModelPlugin.__init_subclass__.__func__
 
 
-def _patched_init_subclass(cls, **kwargs):
+def _patched_init_subclass(cls: type[ModelPlugin], **kwargs: Any) -> None:
     _original_init_subclass(cls, **kwargs)
     _auto_register(cls)
 
 
-ModelPlugin.__init_subclass__ = classmethod(_patched_init_subclass)  # type: ignore[assignment]
+# Bypasses static assignment constraints cleanly
+setattr(ModelPlugin, "__init_subclass__", classmethod(_patched_init_subclass))
 
 # Discover and register all built-in plugins
 model_registry.discover_all()
 
-# endregion Global Registry
+# endregion
 
 
 # region API
@@ -146,7 +153,7 @@ def _load_internal(
             memory_tracking,
         )
     else:
-        logger.info("Loading model '%s' from '%s'", plugin_cls.model_id, resolved_source)
+        logger.info("Loading model '%s' from '%s'", plugin_cls.identity.model_id, resolved_source)
         logger.debug(
             "Load options plugin=%s source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
             plugin_cls.__name__,
@@ -335,12 +342,12 @@ def list_plugin_classes() -> list[str]:
     return model_registry.list_plugin_classes()
 
 
-def describe(model: str) -> ModelPluginInfo:
+def describe(model: str) -> ModelDescriptor:
     """Return typed model metadata for a model ID."""
     return model_registry.get(model).describe()
 
 
-def describe_all() -> list[ModelPluginInfo]:
+def describe_all() -> list[ModelDescriptor]:
     """Return typed metadata objects for all registered models."""
     return model_registry.list_all()
 
@@ -356,13 +363,17 @@ def _resolve_source(
     plugin_cls: type[ModelPlugin],
 ) -> str:
     if source is None:
-        if plugin_cls.default_hf_repo is None:
+        # Check class level default, fallback to checking if any variant defines a repo_id
+        default_repo = getattr(plugin_cls, "default_repo_id", None) or next(
+            (v.repo_id for v in plugin_cls.variants if v.repo_id), None
+        )
+        if default_repo is None:
             raise SessionError(
-                f"Model '{plugin_cls.model_id}' has no default HF repo. "
+                f"Model '{plugin_cls.identity.model_id}' has no default HF repo. "
                 f"Provide a source explicitly: "
-                f"vibe.load('{plugin_cls.model_id}', source=...)"
+                f"vibe.load('{plugin_cls.identity.model_id}', source=...)"
             )
-        return f"hf:{plugin_cls.default_hf_repo}"
+        return f"hf:{default_repo}"
 
     normalized = source.strip()
     if not normalized:
@@ -415,10 +426,10 @@ __all__ = [
     # Core objects
     "ModelSession",
     "ModelPlugin",
-    "FileSpec",
+    "ArtifactSpec",
     "FileRole",
     "Backend",
-    "ModelPluginInfo",
+    "ModelDescriptor",
     "MemorySnapshot",
     "InferenceMemoryRecord",
     "MemoryTrackerStats",

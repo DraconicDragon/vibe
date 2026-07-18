@@ -68,7 +68,7 @@ class InferenceEngine:
         self.plugin = plugin
         self.backend_instance = backend_instance
         self.pipeline = pipeline
-        self.model_id = plugin.model_id
+        self.model_id = plugin.identity.model_id
 
     def execute_single(self, image: Any, processors: list[ResultProcessor] | None) -> ModelResult:
         try:

@@ -13,15 +13,13 @@ import threading
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterator, Literal
 
-from vibe.backends.base import Backend, ModelPlugin
+from vibe.backends.base import ArtifactMap, Backend, ModelPlugin
 from vibe.exceptions import InferenceCancelled, SessionError
 from vibe.image_loading import (
-    iter_loaded_image_chunks,
-    load_image_if_path,
+    iter_load_images,
     normalize_input_format,
     should_prefetch_image_loading,
 )
-from vibe.loader import FileMap
 from vibe.memory_stats import MemoryTracker
 from vibe.processor_pipeline import ProcessorPipeline
 from vibe.result_processors import ResultProcessor, ResultProcessorContext
@@ -58,12 +56,6 @@ _ASYNC_INFER_DONE = object()
 class ModelSession:
     """
     A loaded model instance, ready for inference.
-
-    Attributes:
-        plugin:     The plugin instance (holds ancillary data like tag lists).
-        backend:    Which runtime backend is active ("pytorch" or "onnx").
-        model_id:   Canonical model ID from the plugin.
-        source:     Where the files came from (for debugging/display).
     """
 
     def __init__(
@@ -71,7 +63,7 @@ class ModelSession:
         plugin: ModelPlugin,
         backend_instance: Any,
         backend: Backend,
-        file_map: FileMap,
+        file_map: ArtifactMap,  # Changed from FileMap
         source: str,
         auto_download: bool = True,
         memory_tracking: bool = False,
@@ -86,14 +78,16 @@ class ModelSession:
         self._backend_release = backend_release
         self._memory_tracker = MemoryTracker(enabled=memory_tracking)
 
-        self._state = SessionRunnerState(plugin.model_id)
+        self._state = SessionRunnerState(plugin.identity.model_id)
 
         self._processor_context = ResultProcessorContext(
             file_map=file_map,
             source=source,
             auto_download=auto_download,
         )
-        self._pipeline = ProcessorPipeline(plugin.model_id, self._processor_context, plugin.supported_processors)
+        self._pipeline = ProcessorPipeline(
+            plugin.identity.model_id, self._processor_context, plugin.capabilities.supported_processors
+        )
         self._engine = InferenceEngine(plugin, backend_instance, self._pipeline)
         self._runner = BatchRunner(self._engine, self._state, backend)
 
@@ -221,25 +215,20 @@ class ModelSession:
                     if prefetch_images:
                         logger.debug("Image prefetch enabled model_id=%s", self.model_id)
 
-                def _loader(value: Any | str, index: int) -> Any:
-                    return load_image_if_path(
-                        value,
-                        index=index,
-                        cancel_check=self._state.check_cancelled,
-                        error_cls=SessionError,
-                        has_pillow_jxl=_has_pillow_jxl,
-                        has_pillow_heif=_has_pillow_heif,
-                    )
-
-                for start, chunk_images in iter_loaded_image_chunks(
-                    values,
-                    chunk_size=batch_size if method != "sequential" else 1,
-                    use_prefetch=prefetch_images,
-                    load_image_fn=_loader,
+                for chunk in iter_load_images(
+                    images=images,
+                    batch_size=batch_size if method != "sequential" else 1,
+                    prefetch=prefetch_images,
                     cancel_check=self._state.check_cancelled,
+                    error_cls=SessionError,
                 ):
-                    chunk_values = values[start : start + len(chunk_images)]
-                    loaded_path_inputs += sum(1 for value in chunk_values if isinstance(value, (str, Path)))
+                    start = chunk.start_index
+                    chunk_images = chunk.images
+                    chunk_refs = chunk.refs
+
+                    loaded_path_inputs += sum(
+                        1 for i in range(start, start + len(chunk_images)) if isinstance(values[i], (str, Path))
+                    )
 
                     if method == "sequential":
                         chunk_items = []
@@ -248,7 +237,7 @@ class ModelSession:
                             result = self._engine.execute_single(img, processors=result_processors)
                             global_idx = start + i
                             chunk_items.append(
-                                InferenceResultItem(index=global_idx, input_ref=refs[global_idx], result=result)
+                                InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
                             )
                         logger.debug(
                             "Completed sequential chunk, current index=%s/%s", start + len(chunk_images), total_inputs
@@ -261,7 +250,7 @@ class ModelSession:
                         for i, result in enumerate(chunk_results):
                             global_idx = start + i
                             chunk_items.append(
-                                InferenceResultItem(index=global_idx, input_ref=refs[global_idx], result=result)
+                                InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
                             )
                         logger.debug(
                             "Completed inference batch model_id=%s done=%s/%s",
@@ -375,7 +364,7 @@ class ModelSession:
 
     @property
     def model_id(self) -> str:
-        return self._plugin.model_id
+        return self._plugin.identity.model_id
 
     @property
     def plugin(self) -> ModelPlugin:
@@ -389,16 +378,7 @@ class ModelSession:
     def source(self) -> str:
         return self._source
 
-    def describe(self) -> dict[str, Any]:
-        # todo: rename this func?
-        """Full description of this session (model_id, display_name, backend, source, output_type)."""
-        return {
-            "model_id": self.model_id,
-            "display_name": self._plugin.display_name,
-            "backend": self._backend.value,
-            "source": self._source,
-            "output_type": self._plugin.output_type.value,
-        }
+    # todo: describe/session info func for the session?
 
     def close(self) -> None:
         """Release runtime resources for this session."""
