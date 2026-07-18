@@ -399,7 +399,11 @@ __all__ = [
     # Core objects
     "ModelSession",
     "ModelPlugin",
+    "ModelIdentity",
+    "ModelCapabilities",
+    "ModelVariant",
     "ArtifactSpec",
+    "ArtifactMap",
     "FileRole",
     "Backend",
     "ModelDescriptor",
@@ -448,6 +452,5 @@ __all__ = [
     "get_auto_download_default",
     "normalize_precision_string",
 ]
-
 
 # endregion Public re-Exports
