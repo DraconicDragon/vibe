@@ -30,6 +30,20 @@ class Backend(str, Enum):
 
 
 @dataclass(frozen=True)
+class ModelDescriptor:
+    """Consolidated metadata description for consumption by external UIs and APIs."""
+
+    model_id: str
+    display_name: str
+    family_name: str
+    description: str
+    output_type: OutputType
+    supported_backends: tuple[Backend, ...]
+    supported_processors: tuple[str, ...]
+    variants: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
 class ArtifactSpec:
     """A logical file required by the model. Identity is driven by 'id', not 'name'."""
 
@@ -118,3 +132,35 @@ class ModelPlugin(ABC):
     @abstractmethod
     def postprocess(self, raw_output: Any) -> ModelResult:
         pass
+
+    @classmethod
+    def describe(cls) -> ModelDescriptor:
+        """Assembles a structured descriptor of the model plugin's metadata."""
+        family = getattr(cls, "family_name", "") or cls.identity.family_name or cls.identity.display_name
+
+        return ModelDescriptor(
+            model_id=cls.identity.model_id,
+            display_name=cls.identity.display_name,
+            family_name=family,
+            description=cls.identity.description,
+            output_type=cls.capabilities.output_type,
+            supported_backends=tuple(v.backend for v in cls.variants),
+            supported_processors=tuple(p.__name__ for p in cls.capabilities.supported_processors),
+            variants=tuple(
+                {
+                    "backend": v.backend.value,
+                    "repo_id": v.repo_id or getattr(cls, "default_repo_id", None),
+                    "hf_subdir": v.hf_subdir,
+                    "artifacts": [
+                        {
+                            "id": a.id,
+                            "name": a.name,
+                            "role": a.role.value,
+                            "required": a.required,
+                        }
+                        for a in v.artifacts
+                    ],
+                }
+                for v in cls.variants
+            ),
+        )
