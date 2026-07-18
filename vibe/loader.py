@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Mapping
 
-from vibe.backends.base import ArtifactMap, ModelVariant
+from vibe.backends.base import ArtifactMap, ArtifactSpec, ModelVariant
 from vibe.hf_downloader import HFDownloadError, download_or_cached_with_reason
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,8 @@ class HFResolver(SourceResolver):
 
         # The variant provides the baseline repo_id, but the user string can override it.
         base_repo = self.repo_id or variant.repo_id
+        if not base_repo:
+            raise LoaderError("No repository ID defined for HF resolution.")
 
         for spec in variant.artifacts:
             mapped_name = self.file_name_map.get(spec.id, spec.name)
