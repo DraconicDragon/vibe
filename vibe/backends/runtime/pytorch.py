@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from vibe.precision import normalize_precision_string
+from vibe.precision import parse_precision
 
 if TYPE_CHECKING:
     pass
@@ -65,7 +65,7 @@ class PyTorchBackend:
             logger.debug("cuDNN enabled (VIBE_DISABLE_CUDNN not set or false)")
 
         self._device = device
-        self._requested_precision = normalize_precision_string(precision)
+        self._requested_precision = parse_precision(precision).value
         suffix = weights_path.suffix.lower()
 
         if suffix == ".safetensors":

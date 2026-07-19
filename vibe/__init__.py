@@ -57,7 +57,7 @@ from vibe.memory_stats import (
     MemorySnapshot,
     MemoryTrackerStats,
 )
-from vibe.precision import normalize_precision_string
+from vibe.precision import parse_precision
 from vibe.registry import RegistryError, model_registry
 from vibe.result_processors import (
     CharacterIPMapping,
@@ -122,7 +122,7 @@ def _load_internal(
     is_custom: bool,
 ) -> ModelSession:
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
-    normalized_precision = normalize_precision_string(precision)
+    normalized_precision = parse_precision(precision).value
     resolved_source = _resolve_source(source, plugin_cls)
 
     if is_custom:
@@ -450,7 +450,7 @@ __all__ = [
     "describe_all",
     "set_auto_download_default",
     "get_auto_download_default",
-    "normalize_precision_string",
+    "parse_precision",
 ]
 
 # endregion Public re-Exports

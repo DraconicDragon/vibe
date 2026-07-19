@@ -1,24 +1,31 @@
+"""Runtime precision definitions and parsing."""
+
 from __future__ import annotations
 
-from typing import Final
-
-_VALID_PRECISIONS: Final[set[str]] = {"auto", "fp32", "fp16", "bf16", "int8_ov"}
+from enum import Enum
 
 
-def normalize_precision_string(precision: str | None) -> str:
-    """Normalize user precision selector into a canonical value."""
-    value = str("auto" if precision is None else precision).strip().lower()
+class Precision(str, Enum):
+    """Supported computation and weight precisions."""
+
+    AUTO = "auto"
+    FP32 = "fp32"
+    FP16 = "fp16"
+    BF16 = "bf16"
+    # INT8_OV = "int8_ov"
+
+
+def parse_precision(precision: str | Precision | None) -> Precision:
+    """Normalize user precision selector into a canonical Precision enum."""
+    if isinstance(precision, Precision):
+        return precision
+
+    value = str(precision or "auto").strip().lower()
     if not value:
-        return "auto"
+        return Precision.AUTO
 
-    aliases = {
-        "float32": "fp32",
-        "float16": "fp16",
-        "bfloat16": "bf16",
-        "ov": "int8_ov",
-    }
-    value = aliases.get(value, value)
-
-    if value not in _VALID_PRECISIONS:
-        raise ValueError(f"Unsupported precision '{precision}'. Choose from: {sorted(_VALID_PRECISIONS)}")
-    return value
+    try:
+        return Precision(value)
+    except ValueError:
+        valid = [p.value for p in Precision]
+        raise ValueError(f"Unsupported precision '{precision}'. Choose from: {valid}") from None

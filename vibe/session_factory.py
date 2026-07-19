@@ -1,6 +1,7 @@
 """Session construction and backend pooling utilities."""
 
 from __future__ import annotations
+from vibe.precision import parse_precision
 
 import logging
 import threading
@@ -12,7 +13,6 @@ from vibe.devices import normalize_device_string
 from vibe.exceptions import SessionError
 from vibe.hf_downloader import get_auto_download_default
 from vibe.loader import resolve_variant_artifacts
-from vibe.precision import normalize_precision_string
 from vibe.session import ModelSession
 
 logger = logging.getLogger(__name__)
@@ -173,7 +173,7 @@ def _attempt_session_build(
         logger.info("PyTorch device auto-selected: %s", normalized_device)
 
     try:
-        normalized_precision = normalize_precision_string(precision)
+        normalized_precision = parse_precision(precision).value
     except ValueError as exc:
         raise SessionError(str(exc)) from exc
 
