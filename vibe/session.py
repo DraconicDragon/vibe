@@ -81,7 +81,7 @@ class ModelSession:
         self._state = SessionRunnerState(plugin.identity.model_id)
 
         self._processor_context = ResultProcessorContext(
-            file_map=file_map, # todo: change after result processor redesign is done
+            file_map=file_map,  # todo: change after result processor redesign is done
             source=source,
             auto_download=auto_download,
         )
@@ -321,15 +321,18 @@ class ModelSession:
         thread = threading.Thread(target=_worker, name="vibe-infer-async", daemon=True)
         thread.start()
 
-        while True:
-            payload = await queue.get()
-            if payload is _ASYNC_INFER_DONE:
-                break
-            if isinstance(payload, Exception):
-                raise payload
+        try:
+            while True:
+                payload = await queue.get()
+                if payload is _ASYNC_INFER_DONE:
+                    break
+                if isinstance(payload, Exception):
+                    raise payload
 
-            assert isinstance(payload, InferenceResult)
-            yield payload
+                assert isinstance(payload, InferenceResult)
+                yield payload
+        finally:
+            self.cancel_current_inference()
 
     def cancel_current_inference(self) -> bool:
         """
