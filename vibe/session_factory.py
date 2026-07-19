@@ -1,7 +1,6 @@
 """Session construction and backend pooling utilities."""
 
 from __future__ import annotations
-from vibe.precision import parse_precision
 
 import logging
 import threading
@@ -13,6 +12,7 @@ from vibe.devices import normalize_device_string
 from vibe.exceptions import SessionError
 from vibe.hf_downloader import get_auto_download_default
 from vibe.loader import resolve_variant_artifacts
+from vibe.precision import parse_precision
 from vibe.session import ModelSession
 
 logger = logging.getLogger(__name__)
@@ -162,9 +162,7 @@ def _attempt_session_build(
     model_id = plugin_cls.identity.model_id
 
     try:
-        normalized_device = normalize_device_string(
-            device, backend="pytorch" if candidate_backend == Backend.PYTORCH else "onnx"
-        )
+        normalized_device = normalize_device_string(device, backend=candidate_backend)
     except ValueError as exc:
         raise SessionError(str(exc)) from exc
 
@@ -232,12 +230,12 @@ def _attempt_session_build(
         auto_resolution_failures.append((candidate_backend, str(exc)))
         return None
 
-    weights_path = _find_weights(plugin_cls, variant, file_map)
-    logger.debug("Resolved model weights for model_id=%s path=%s", model_id, weights_path)
+    weight_paths = _get_weight_paths(variant, file_map)
+    logger.debug("Resolved model weights for model_id=%s paths=%s", model_id, weight_paths)
 
     pool_key = _make_backend_pool_key(
         backend=candidate_backend,
-        weights_path=weights_path,
+        weight_paths=weight_paths,
         device=normalized_device,
         providers=onnx_providers,
         precision=normalized_precision,
@@ -245,7 +243,7 @@ def _attempt_session_build(
     rt, release_backend = _acquire_backend(
         key=pool_key,
         backend=candidate_backend,
-        weights_path=weights_path,
+        weight_paths=weight_paths,
         device=normalized_device,
         providers=onnx_providers,
         precision=normalized_precision,
@@ -299,26 +297,43 @@ def _next_backend_candidate(candidates: list[Backend], current: Backend) -> Back
     return candidates[index + 1]
 
 
+def _get_weight_paths(variant: ModelVariant, file_map: ArtifactMap) -> tuple[Path, ...]:
+    """Return all resolved paths for artifacts designated as weights."""
+    paths = []
+    for spec in variant.artifacts:
+        if spec.role == FileRole.WEIGHTS:
+            path = file_map.get_optional(spec.id)
+            if path is not None:
+                paths.append(path)
+
+    if not paths:
+        raise SessionError(
+            f"No weights files found for backend '{variant.backend.value}'. Check the plugin's artifacts declaration."
+        )
+    return tuple(paths)
+
+
 def _make_backend_pool_key(
     *,
     backend: Backend,
-    weights_path: Path,
+    weight_paths: tuple[Path, ...],
     device: str,
     providers: list[str] | None,
     precision: str,
 ) -> tuple[Any, ...]:
-    resolved_path = str(weights_path.resolve())
+    # Hash all weight paths to ensure multi-weight models don't collide
+    resolved_paths = tuple(str(p.resolve()) for p in weight_paths)
     if backend == Backend.PYTORCH:
-        return (backend.value, resolved_path, device, precision)
+        return (backend.value, resolved_paths, device, precision)
     provider_key = tuple(providers) if providers is not None else ("AUTO",)
-    return (backend.value, resolved_path, provider_key, device, precision)
+    return (backend.value, resolved_paths, provider_key, device, precision)
 
 
 def _acquire_backend(
     *,
     key: tuple[Any, ...],
     backend: Backend,
-    weights_path: Path,
+    weight_paths: tuple[Path, ...],
     device: str,
     providers: list[str] | None,
     precision: str,
@@ -336,23 +351,30 @@ def _acquire_backend(
 
         logger.debug("Loading backend backend=%s", backend.value)
         logger.debug(
-            "Backend load options backend=%s device=%s precision=%s weights_path=%s",
+            "Backend load options backend=%s device=%s precision=%s weight_paths=%s",
             backend.value,
             device,
             precision,
-            weights_path,
+            weight_paths,
         )
+
+        # Backends currently only handle primary weights natively; pass first path.
+        primary_weights = weight_paths[0]
+
         if backend == Backend.PYTORCH:
             instance = pytorch_cls()
-            instance.load(weights_path, device=device, precision=precision)
+            instance.load(primary_weights, device=device, precision=precision)
         else:
             instance = onnx_cls()
-            instance.load(weights_path, providers=providers, device=device, precision=precision)
+            instance.load(primary_weights, providers=providers, device=device, precision=precision)
 
         _BACKEND_POOL[key] = (instance, 1)
         logger.info("Backend ready backend=%s device=%s", backend.value, device)
         logger.debug("Created pooled backend key=%s refcount=1", key)
         return instance, lambda: _release_backend(key)
+
+
+# endregion
 
 
 def _release_backend(key: tuple[Any, ...]) -> None:
