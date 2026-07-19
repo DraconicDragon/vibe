@@ -331,8 +331,9 @@ class ModelSession:
 
                 assert isinstance(payload, InferenceResult)
                 yield payload
-        finally:
+        except asyncio.CancelledError:
             self.cancel_current_inference()
+            raise
 
     def cancel_current_inference(self) -> bool:
         """
