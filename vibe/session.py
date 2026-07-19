@@ -318,6 +318,7 @@ class ModelSession:
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, _ASYNC_INFER_DONE)
 
+        # Daemon thread so pending async inference doesn't prevent interpreter shutdown
         thread = threading.Thread(target=_worker, name="vibe-infer-async", daemon=True)
         thread.start()
 
