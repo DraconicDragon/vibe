@@ -129,7 +129,7 @@ class ModelPlugin(ABC):
         # Automatically skip validation for abstract classes
         if not inspect.isabstract(cls):
             if not getattr(cls, "family_name", None):
-                raise ValueError(f"Concrete plugin {cls.__name__} must define a valid 'family_name' string.")
+                raise ValueError(f"Concrete plugin {cls.__name__} must inherit or define a 'family_name' string.")
             if not hasattr(cls, "identity") or not cls.identity.model_id:
                 raise ValueError(f"Concrete plugin {cls.__name__} must define 'identity' with a valid model_id.")
             if not getattr(cls, "default_repo_id", None):

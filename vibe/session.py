@@ -81,7 +81,7 @@ class ModelSession:
         self._state = SessionRunnerState(plugin.identity.model_id)
 
         self._processor_context = ResultProcessorContext(
-            file_map=file_map,
+            file_map=file_map, # todo: change after result processor redesign is done
             source=source,
             auto_download=auto_download,
         )
