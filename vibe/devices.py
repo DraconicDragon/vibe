@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
 
-BackendName = Literal["onnx", "pytorch"]
+from vibe import Backend
 
 _DEVICE_PATTERN = re.compile(r"^(?P<family>[a-z]+)(?:[:](?P<index>\d+))?$")
 
@@ -33,17 +32,15 @@ class DeviceSpec:
         index_str = match.group("index")
         return cls(family=match.group("family"), index=int(index_str) if index_str is not None else None)
 
-    def to_backend_string(self, backend: BackendName) -> str:
+    def to_backend_string(self, backend: Backend) -> str:
         """Resolve the requested device to a backend-specific string."""
         if self.family in {"cpu", "auto"}:
             return self.family
 
-        if backend == "pytorch":
+        if backend == Backend.PYTORCH:
             return self._to_pytorch()
-        elif backend == "onnx":
+        elif backend == Backend.ONNX:
             return self._to_onnx()
-
-        raise ValueError(f"Unknown backend '{backend}'.")
 
     def _to_pytorch(self) -> str:
         if self.family in {"gpu", "cuda"}:
@@ -64,7 +61,7 @@ class DeviceSpec:
         raise ValueError(f"Unsupported ONNX device family '{self.family}'.")
 
 
-def normalize_device_string(device: str | None, *, backend: BackendName) -> str:
+def normalize_device_string(device: str | None, *, backend: Backend) -> str:
     """Convenience wrapper to parse and translate a device string for a specific backend."""
     return DeviceSpec.parse(device).to_backend_string(backend)
 
