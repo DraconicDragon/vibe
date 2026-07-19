@@ -1,107 +1,108 @@
+"""Hardware device selection and resolution."""
+
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Literal
 
 BackendName = Literal["onnx", "pytorch"]
 
-_NO_COLON_INDEX_PATTERN = re.compile(r"^(cuda|gpu|rocm|dml)(\d+)$")
-_COLON_INDEX_PATTERN = re.compile(r"^(cuda|gpu|rocm|dml):(\d+)$")
+_DEVICE_PATTERN = re.compile(r"^(?P<family>[a-z]+)(?:[:](?P<index>\d+))?$")
 
 
-def normalize_device_string(device: str, *, backend: BackendName) -> str:
-    """Normalize user-facing device strings into backend-specific selectors."""
-    value = str(device or "cpu").strip().lower()
-    if not value:
-        return "cpu"
+@dataclass(frozen=True)
+class DeviceSpec:
+    """Structured representation of a compute device request."""
 
-    no_colon_match = _NO_COLON_INDEX_PATTERN.match(value)
-    if no_colon_match:
-        family = no_colon_match.group(1)
-        index = no_colon_match.group(2)
-        raise ValueError(f"Invalid device '{value}'. Use '{family}:{index}' syntax.")
+    family: str
+    index: int | None = None
 
-    if value in {"cpu", "auto"}:
-        return value
+    @classmethod
+    def parse(cls, device: str | None) -> DeviceSpec:
+        value = str(device or "cpu").strip().lower()
+        if not value:
+            return cls(family="cpu")
 
-    if value == "gpu":
-        return "cuda" if backend == "pytorch" else "gpu"
+        match = _DEVICE_PATTERN.match(value)
+        if not match:
+            if re.match(r"^[a-z]+\d+$", value):
+                raise ValueError(f"Invalid device format '{value}'. Use 'family:index' syntax (e.g. 'cuda:0').")
+            return cls(family=value)
 
-    if value == "cuda":
-        return "cuda" if backend == "pytorch" else "gpu"
+        index_str = match.group("index")
+        return cls(family=match.group("family"), index=int(index_str) if index_str is not None else None)
 
-    if value == "mps":
-        if backend != "pytorch":
-            raise ValueError("'mps' is only valid for the pytorch backend.")
-        return "mps"
+    def to_backend_string(self, backend: BackendName) -> str:
+        """Resolve the requested device to a backend-specific string."""
+        if self.family in {"cpu", "auto"}:
+            return self.family
 
-    index_match = _COLON_INDEX_PATTERN.match(value)
-    if index_match:
-        family = index_match.group(1)
-        index = int(index_match.group(2))
+        if backend == "pytorch":
+            return self._to_pytorch()
+        elif backend == "onnx":
+            return self._to_onnx()
 
-        if family == "gpu":
-            return f"cuda:{index}" if backend == "pytorch" else f"gpu:{index}"
-        if family == "cuda":
-            return f"cuda:{index}" if backend == "pytorch" else f"gpu:{index}"
-        if family == "rocm":
-            if backend == "pytorch":
-                raise ValueError("'rocm' selectors are not valid for the pytorch backend device string.")
-            return f"rocm:{index}"
-        if family == "dml":
-            if backend == "pytorch":
-                raise ValueError("'dml' selectors are not valid for the pytorch backend device string.")
-            return f"dml:{index}"
+        raise ValueError(f"Unknown backend '{backend}'.")
 
-    if backend == "pytorch":
-        raise ValueError(f"Unsupported pytorch device '{value}'.")
+    def _to_pytorch(self) -> str:
+        if self.family in {"gpu", "cuda"}:
+            return f"cuda:{self.index}" if self.index is not None else "cuda"
+        if self.family == "mps":
+            return "mps"
 
-    if value in {"rocm", "dml"}:
-        return value
+        raise ValueError(f"Unsupported PyTorch device family '{self.family}'.")
 
-    raise ValueError(f"Unsupported onnx device '{value}'.")
+    def _to_onnx(self) -> str:
+        if self.family in {"gpu", "cuda"}:
+            base = "cuda" if self.family == "cuda" else "gpu"
+            return f"{base}:{self.index}" if self.index is not None else base
+
+        if self.family in {"rocm", "dml"}:
+            return f"{self.family}:{self.index}" if self.index is not None else self.family
+
+        raise ValueError(f"Unsupported ONNX device family '{self.family}'.")
+
+
+def normalize_device_string(device: str | None, *, backend: BackendName) -> str:
+    """Convenience wrapper to parse and translate a device string for a specific backend."""
+    return DeviceSpec.parse(device).to_backend_string(backend)
 
 
 def list_available_devices() -> list[str]:
     """Return available device selectors in user-facing format."""
-    candidates: list[str] = ["cpu"]
+    candidates: set[str] = {"cpu"}
 
     try:
         import torch
 
         if torch.cuda.is_available():
-            candidates.extend(["cuda", "gpu"])
-            count = int(torch.cuda.device_count())
-            for i in range(count):
-                candidates.append(f"cuda:{i}")
-                candidates.append(f"gpu:{i}")
+            candidates.update({"cuda", "gpu"})
+            for i in range(int(torch.cuda.device_count())):
+                candidates.update({f"cuda:{i}", f"gpu:{i}"})
 
         mps_backend = getattr(torch.backends, "mps", None)
-        if mps_backend is not None and callable(getattr(mps_backend, "is_available", None)):
-            if bool(mps_backend.is_available()):
-                candidates.append("mps")
-    except Exception:
+        if mps_backend and callable(getattr(mps_backend, "is_available", None)) and mps_backend.is_available():
+            candidates.add("mps")
+    except ImportError:
         pass
 
     try:
-        import onnxruntime as ort
+        import onnxruntime as ort  # ty:ignore[unresolved-import]
 
-        get_available_providers = getattr(ort, "get_available_providers", None)
-        if not callable(get_available_providers):
-            return candidates
-
-        available = set(str(p) for p in get_available_providers())
-        if "ROCMExecutionProvider" in available:
-            candidates.append("rocm")
-        if "DmlExecutionProvider" in available:
-            candidates.append("dml")
-    except Exception:
+        if hasattr(ort, "get_available_providers"):
+            available = set(str(p) for p in ort.get_available_providers())
+            if "ROCMExecutionProvider" in available:
+                candidates.add("rocm")
+            if "DmlExecutionProvider" in available:
+                candidates.add("dml")
+    except ImportError:
         pass
 
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for item in candidates:
-        if item not in seen:
-            seen.add(item)
-            deduped.append(item)
-    return deduped
+    def _sort_key(dev: str) -> tuple[int, str, int]:
+        if dev == "cpu":
+            return (0, dev, -1)
+        parts = dev.split(":")
+        return (1, parts[0], int(parts[1]) if len(parts) > 1 else -1)
+
+    return sorted(candidates, key=_sort_key)
