@@ -1,30 +1,18 @@
 """
 ModelRegistry — central index of all known plugins.
-
-Plugins are registered in two ways:
-  1. Auto-discovery: all modules in vibe/plugins/ are imported at
-     startup, and any ModelPlugin subclass with a non-empty model_id is
-     registered automatically.
-  2. Third-party entry points: packages can ship plugins by declaring an
-     entry point in their pyproject.toml under the group "vibe.plugins".
-
-After discovery, the registry resolves names to plugin classes and
-supports override — useful when a user wants to run an arbitrary HF repo
-through an existing plugin's inference code.
 """
 
 from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import inspect
 import pkgutil
 import warnings
 from typing import TYPE_CHECKING
 
-from vibe.plugin_validation import validate_plugin_declaration
-
 if TYPE_CHECKING:
-    from vibe.backends.base import ModelPlugin, ModelPluginInfo
+    from vibe.backends.base import ModelDescriptor, ModelPlugin
 
 
 class RegistryError(Exception):
@@ -33,60 +21,48 @@ class RegistryError(Exception):
 
 class ModelRegistry:
     """
-    Singleton-style registry (one instance is created in __init__.py).
-    You can also instantiate your own for testing.
+    Central index for registering and looking up ModelPlugin classes.
     """
 
     def __init__(self) -> None:
         # model_id → plugin class
         self._plugins: dict[str, type[ModelPlugin]] = {}
 
-    # region Registration
-
     def register(self, plugin_cls: type[ModelPlugin]) -> None:
         """
         Register a plugin class.
 
-        Raises if model_id is empty or already registered by a *different* class.
-        Re-registering the same class is a no-op.
+        Concrete classes are indexed using their class-level identity.model_id.
         """
-        mid = plugin_cls.model_id
-        if not mid:
-            raise ValueError(f"Cannot register plugin {plugin_cls.__name__}: model_id is empty.")
+        if inspect.isabstract(plugin_cls):
+            return
+
+        identity = getattr(plugin_cls, "identity", None)
+        if not identity or not identity.model_id:
+            raise ValueError(f"Cannot register plugin {plugin_cls.__name__}: identity is missing or model_id is empty.")
+
+        mid = identity.model_id
 
         if mid in self._plugins:
             existing = self._plugins[mid]
             if existing is plugin_cls:
-                return  # already registered, fine
+                return  # already registered
             raise ValueError(
                 f"model_id '{mid}' is already registered by {existing.__name__}. "
-                f"Cannot register {plugin_cls.__name__} with the same id."
+                f"Cannot register {plugin_cls.__name__} with the same ID."
             )
-
-        for warning_message in validate_plugin_declaration(plugin_cls):
-            warnings.warn(warning_message, stacklevel=2)
 
         self._plugins[mid] = plugin_cls
 
     def unregister(self, model_id: str) -> None:
-        """Remove a plugin (mostly useful in tests)."""
+        """Remove a plugin from the registry index."""
         self._plugins.pop(model_id, None)
 
-    # endregion Registration
-
-    # region Lookup
-
     def get(self, name: str) -> type[ModelPlugin]:
-        """
-        Resolve a name (model_id) to a plugin class.
-
-        Raises RegistryError with helpful message if not found.
-        """
-        # Direct model_id match
+        """Resolve a model ID string to its registered plugin class."""
         if name in self._plugins:
             return self._plugins[name]
 
-        # Friendly error
         suggestions = self._suggest(name)
         msg = f"No plugin found for '{name}'."
         if suggestions:
@@ -96,56 +72,33 @@ class ModelRegistry:
         raise RegistryError(msg)
 
     def get_by_class_name(self, class_name: str) -> type[ModelPlugin]:
-        """
-        Look up a plugin by its Python class name.
-
-        This is the advanced-user override path: the user knows the class name
-        of the inference code they want to use with an arbitrary HF repo.
-        """
+        """Look up a plugin strictly by its Python class name (e.g. 'WDEva02Plugin')."""
         for cls in self._plugins.values():
             if cls.__name__ == class_name:
                 return cls
-        raise RegistryError(
-            f"No plugin class named '{class_name}'. Known classes: {[c.__name__ for c in self._plugins.values()]}"
-        )
+        raise RegistryError(f"No plugin class named '{class_name}'. Known classes: {self.list_plugin_classes()}")
 
     def is_known(self, name: str) -> bool:
-        """Return True if name resolves to a registered plugin."""
+        """Return True if the model ID string is registered."""
         return name in self._plugins
 
-    # endregion Lookup
-
-    # region List
-
     def list_model_ids(self) -> list[str]:
+        """Return a sorted list of all registered model IDs."""
         return sorted(self._plugins.keys())
 
-    def list_all(self) -> list[ModelPluginInfo]:
-        """Return typed metadata describing every registered plugin."""
+    def list_all(self) -> list[ModelDescriptor]:
+        """Return structured metadata descriptions for all registered plugins."""
         return [cls.describe() for cls in self._plugins.values()]
 
     def list_plugin_classes(self) -> list[str]:
-        """Return plugin class names in model-id order."""
+        """Return plugin class names ordered by model ID."""
         names: list[str] = []
         for model_id in self.list_model_ids():
             names.append(self._plugins[model_id].__name__)
         return names
 
-    def __len__(self) -> int:
-        return len(self._plugins)
-
-    def __repr__(self) -> str:
-        return f"ModelRegistry({self.list_model_ids()})"
-
-    # endregion List
-
-    # region Discovery
-
     def discover_builtins(self) -> None:
-        """
-        Import every module in vibe/plugins/ so their ModelPlugin
-        subclasses get defined and trigger auto-registration.
-        """
+        """Import all built-in modules to trigger auto-registration."""
         import vibe.plugins as plugins_pkg
 
         for module_info in pkgutil.iter_modules(plugins_pkg.__path__):
@@ -159,16 +112,7 @@ class ModelRegistry:
                 )
 
     def discover_entry_points(self) -> None:
-        """
-        Load plugins declared via Python entry points.
-
-        Third-party packages add plugins by declaring in pyproject.toml:
-
-            [project.entry-points."vibe.plugins"]
-            my_plugin = "my_package.my_module:MyPlugin"
-
-        Each entry point value should be a ModelPlugin subclass.
-        """
+        """Load external third-party plugins declared via pyproject.toml entry points."""
         try:
             eps = importlib.metadata.entry_points(group="vibe.plugins")
         except Exception:
@@ -185,50 +129,14 @@ class ModelRegistry:
                 )
 
     def discover_all(self) -> None:
-        """Run all discovery mechanisms. Called once at library init."""
+        """Run all plugin discovery mechanisms."""
         self.discover_builtins()
         self.discover_entry_points()
 
-    # endregion Discovery
-
-    # region Internal Helpers
-
     def _suggest(self, name: str, max_suggestions: int = 3) -> list[str]:
-        """Very basic fuzzy suggestion — find names that share a substring."""
         name_lower = name.lower()
         all_names = list(self._plugins.keys())
         return [n for n in all_names if name_lower in n.lower() or n.lower() in name_lower][:max_suggestions]
 
 
-# endregion Internal Helpers
-
-
-# region Auto Registration
-
-
-# When a ModelPlugin subclass is defined (i.e. when its module is imported),
-# we want it to register itself automatically — no manual register() call
-# needed in plugin code.
-#
-# We do this by monkeypatching __init_subclass__ on ModelPlugin after the
-# registry is created. See vibe/__init__.py where this is wired up.
-
-
-def _make_auto_register_hook(registry: ModelRegistry):
-    """
-    Returns a function that registers a plugin class when called.
-    Meant to be called from ModelPlugin.__init_subclass__.
-    """
-
-    def auto_register(cls: type[ModelPlugin]) -> None:
-        # Skip abstract base classes and mixins (no model_id)
-        if cls.model_id:
-            try:
-                registry.register(cls)
-            except ValueError as exc:
-                warnings.warn(str(exc), stacklevel=3)
-
-    return auto_register
-
-
-# endregion Auto Registration
+model_registry = ModelRegistry()

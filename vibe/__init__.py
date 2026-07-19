@@ -38,7 +38,13 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
 from typing import Mapping
 
-from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin, ModelPluginInfo
+from vibe.backends.base import (
+    ArtifactSpec,
+    Backend,
+    FileRole,
+    ModelDescriptor,
+    ModelPlugin,
+)
 from vibe.devices import list_available_devices
 from vibe.exceptions import ProcessorError, SessionError
 from vibe.hf_downloader import (
@@ -51,8 +57,8 @@ from vibe.memory_stats import (
     MemorySnapshot,
     MemoryTrackerStats,
 )
-from vibe.precision import normalize_precision_string
-from vibe.registry import ModelRegistry, RegistryError, _make_auto_register_hook
+from vibe.precision import parse_precision
+from vibe.registry import RegistryError, model_registry
 from vibe.result_processors import (
     CharacterIPMapping,
     CleanTags,
@@ -92,25 +98,9 @@ __license__ = "MIT"
 
 # region Global Registry
 
-model_registry: ModelRegistry = ModelRegistry()
-
-# Wire up auto-registration: whenever a ModelPlugin subclass is defined
-# (i.e. when a plugin module is imported), it registers itself.
-_auto_register = _make_auto_register_hook(model_registry)
-_original_init_subclass = ModelPlugin.__init_subclass__.__func__
-
-
-def _patched_init_subclass(cls, **kwargs):
-    _original_init_subclass(cls, **kwargs)
-    _auto_register(cls)
-
-
-ModelPlugin.__init_subclass__ = classmethod(_patched_init_subclass)  # type: ignore[assignment]
-
-# Discover and register all built-in plugins
 model_registry.discover_all()
 
-# endregion Global Registry
+# endregion
 
 
 # region API
@@ -132,7 +122,7 @@ def _load_internal(
     is_custom: bool,
 ) -> ModelSession:
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
-    normalized_precision = normalize_precision_string(precision)
+    normalized_precision = parse_precision(precision).value
     resolved_source = _resolve_source(source, plugin_cls)
 
     if is_custom:
@@ -146,7 +136,7 @@ def _load_internal(
             memory_tracking,
         )
     else:
-        logger.info("Loading model '%s' from '%s'", plugin_cls.model_id, resolved_source)
+        logger.info("Loading model '%s' from '%s'", plugin_cls.identity.model_id, resolved_source)
         logger.debug(
             "Load options plugin=%s source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
             plugin_cls.__name__,
@@ -335,12 +325,12 @@ def list_plugin_classes() -> list[str]:
     return model_registry.list_plugin_classes()
 
 
-def describe(model: str) -> ModelPluginInfo:
+def describe(model: str) -> ModelDescriptor:
     """Return typed model metadata for a model ID."""
     return model_registry.get(model).describe()
 
 
-def describe_all() -> list[ModelPluginInfo]:
+def describe_all() -> list[ModelDescriptor]:
     """Return typed metadata objects for all registered models."""
     return model_registry.list_all()
 
@@ -356,13 +346,7 @@ def _resolve_source(
     plugin_cls: type[ModelPlugin],
 ) -> str:
     if source is None:
-        if plugin_cls.default_hf_repo is None:
-            raise SessionError(
-                f"Model '{plugin_cls.model_id}' has no default HF repo. "
-                f"Provide a source explicitly: "
-                f"vibe.load('{plugin_cls.model_id}', source=...)"
-            )
-        return f"hf:{plugin_cls.default_hf_repo}"
+        return f"hf:{plugin_cls.default_repo_id}"
 
     normalized = source.strip()
     if not normalized:
@@ -415,10 +399,14 @@ __all__ = [
     # Core objects
     "ModelSession",
     "ModelPlugin",
-    "FileSpec",
+    "ModelIdentity",
+    "ModelCapabilities",
+    "ModelVariant",
+    "ArtifactSpec",
+    "ArtifactMap",
     "FileRole",
     "Backend",
-    "ModelPluginInfo",
+    "ModelDescriptor",
     "MemorySnapshot",
     "InferenceMemoryRecord",
     "MemoryTrackerStats",
@@ -462,8 +450,7 @@ __all__ = [
     "describe_all",
     "set_auto_download_default",
     "get_auto_download_default",
-    "normalize_precision_string",
+    "parse_precision",
 ]
-
 
 # endregion Public re-Exports

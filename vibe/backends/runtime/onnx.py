@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 
 from vibe.devices import normalize_device_string
-from vibe.precision import normalize_precision_string
+from vibe.precision import parse_precision
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +95,10 @@ def _device_prefers_accelerator(device: str) -> tuple[bool, int]:
         return True, 0
     if value == "cpu":
         return False, 0
-    if value in {"gpu", "rocm", "dml"}:
+    if value in {"gpu", "cuda", "rocm", "dml"}:
         return True, 0
 
-    for prefix in ("gpu:", "rocm:", "dml:"):
+    for prefix in ("gpu:", "cuda:", "rocm:", "dml:"):
         if value.startswith(prefix):
             try:
                 return True, max(0, int(value.split(":", 1)[1]))
@@ -354,7 +354,7 @@ class ONNXBackend:
         """
         started_at = time.perf_counter()
         logger.debug("Loading ONNX model from %s", weights_path)
-        self._requested_precision = normalize_precision_string(precision)
+        self._requested_precision = parse_precision(precision).value
         prepare_onnxruntime_environment()
 
         try:
