@@ -1,14 +1,12 @@
-"""
-Result types returned by model inference.
-"""
+"""Result types returned by model inference."""
 
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from enum import Enum
-from typing import Any, Literal, TypeGuard, cast
+from typing import Any, ItemsView, Iterator, Literal, TypeGuard
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +27,7 @@ class BaseModelResult(ABC):
 
     @abstractmethod
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the result to a standardized dictionary structure."""
         pass
 
 
@@ -82,10 +81,10 @@ class TagResult(BaseModelResult):
         scores: dict[str, float] = {}
         for entry in sorted_entries:
             if entry.tag in scores:
-                # Duplicate tag: first occurrence already has the highest score
-                # shouldn't happen but checking and logging anyway
                 logger.warning(
-                    f"Duplicate tag '{entry.tag}' (score: {entry.score:.3f}) in result; keeping first occurrence"
+                    "Duplicate tag '%s' (score: %.3f) in result; keeping first occurrence",
+                    entry.tag,
+                    entry.score,
                 )
                 continue
             scores[entry.tag] = entry.score
@@ -112,13 +111,6 @@ class TagResult(BaseModelResult):
 class ScoreResult(BaseModelResult):
     """
     Result from a single-value scoring model (e.g. aesthetic scorer).
-
-    Attributes:
-        score:              The predicted score.
-        score_min:          The minimum of the model's output range (informational).
-        score_max:          The maximum of the model's output range (informational).
-        normalized_score:   Optional normalized score in [0, 1] computed by result processors.
-        label:              Human-readable label for what the score means. Default: "score".
     """
 
     output_type: Literal[OutputType.SCORE] = field(default=OutputType.SCORE, init=False)
@@ -144,87 +136,169 @@ class MultiScoreResult(BaseModelResult):
     """
     Result from a model that returns multiple scores.
 
-    Acts like a dictionary mapping both integer indices and string labels to their respective float scores.
+    Accepts lists, int-keyed dicts, or string-keyed dicts (where strings act as labels).
     """
 
     output_type: Literal[OutputType.MULTI_SCORE] = field(default=OutputType.MULTI_SCORE, init=False)
-    scores: dict[int, float] | list[float] = field(default_factory=dict)
+    scores_input: InitVar[dict[int, float] | dict[str, float] | list[float]]
     label_map: dict[int, str] | None = None
     label_order: list[str] | None = None
     score_min: float | None = None
     score_max: float | None = None
-    normalized_score: float | None = None
+    normalized_score: float | None = None  # Optional summary score representing the entire set
 
-    def __post_init__(self) -> None:
-        self.scores = self._normalize_scores(self.scores)
+    # Strict physical representations
+    scores: dict[int, float] = field(init=False)
+    _label_to_index: dict[str, int] = field(init=False, repr=False)
 
-        if self.label_map is None:
-            self.label_map = {index: f"score_{index + 1}" for index in self.scores.keys()}  # type: ignore[union-attr]
+    def __post_init__(self, scores_input: dict[int, float] | dict[str, float] | list[float]) -> None:
+        norm_scores, inferred_labels = self._normalize_scores(scores_input)
+        self.scores = norm_scores
+
+        self.label_map = self._build_and_validate_label_map(
+            norm_scores=self.scores,
+            explicit_map=self.label_map,
+            inferred_map=inferred_labels,
+        )
+
+        if self.label_map is not None:
+            self._label_to_index = {label: index for index, label in self.label_map.items()}
         else:
-            self.label_map = {int(index): str(label) for index, label in self.label_map.items()}
+            self._label_to_index = {}
 
         if self.label_order is not None:
             self.label_order = [str(label) for label in self.label_order]
+            self._validate_label_order(self.label_map, self.label_order)
+
+    def _normalize_scores(
+        self, raw_scores: dict[int, float] | dict[str, float] | list[float]
+    ) -> tuple[dict[int, float], dict[int, str] | None]:
+        """Convert arbitrary score inputs into a strict dict[int, float]."""
+        if isinstance(raw_scores, list):
+            return {i: float(v) for i, v in enumerate(raw_scores)}, None
+
+        if isinstance(raw_scores, dict):
+            if not raw_scores:
+                return {}, None
+
+            keys = list(raw_scores.keys())
+            is_int = all(isinstance(k, int) for k in keys)
+            is_str = all(isinstance(k, str) for k in keys)
+
+            if not (is_int or is_str):
+                raise ValueError("MultiScoreResult 'scores' dictionary must have all integer keys or all string keys.")
+
+            if is_str:
+                norm_scores: dict[int, float] = {}
+                inferred_labels: dict[int, str] = {}
+                for i, (k, v) in enumerate(raw_scores.items()):
+                    norm_scores[i] = float(v)
+                    inferred_labels[i] = str(k)
+                return norm_scores, inferred_labels
+
+            return {int(k): float(v) for k, v in raw_scores.items()}, None
+
+        raise TypeError(f"Unsupported scores type for MultiScoreResult: {type(raw_scores)}")
+
+    def _build_and_validate_label_map(
+        self,
+        norm_scores: dict[int, float],
+        explicit_map: dict[int, str] | None,
+        inferred_map: dict[int, str] | None,
+    ) -> dict[int, str] | None:
+        """Determine the final label map and ensure it perfectly matches the scores without duplicates."""
+        if explicit_map is not None:
+            if inferred_map is not None:
+                raise ValueError("Cannot provide an explicit 'label_map' when 'scores' is a string-keyed dictionary.")
+            final_map = {int(k): str(v) for k, v in explicit_map.items()}
+        elif inferred_map is not None:
+            final_map = inferred_map
+        else:
+            # can use integer indices results[0] etc
+            return None
+
+        score_keys = set(norm_scores.keys())
+        map_keys = set(final_map.keys())
+
+        # Validate index completeness
+        missing = score_keys - map_keys
+        if missing:
+            raise ValueError(f"label_map is missing labels for indices: {missing}")
+
+        extra = map_keys - score_keys
+        if extra:
+            raise ValueError(f"label_map contains extra indices not present in scores: {extra}")
+
+        # Validate label uniqueness
+        seen = set()
+        duplicates = set()
+        for label in final_map.values():
+            if label in seen:
+                duplicates.add(label)
+            seen.add(label)
+
+        if duplicates:
+            raise ValueError(f"label_map contains duplicate labels: {duplicates}")
+
+        return final_map
+
+    def _validate_label_order(self, final_map: dict[int, str] | None, order: list[str]) -> None:
+        """Ensure all requested labels in label_order actually exist."""
+        if final_map is None:
+            raise ValueError("Cannot specify label_order when no labels or label_map are available.")
+        known_labels = set(final_map.values())
+        unknown = set(order) - known_labels
+        if unknown:
+            raise ValueError(f"label_order contains unknown labels: {unknown}")
+
+    def __contains__(self, key: int | str) -> bool:
+        if isinstance(key, str):
+            return key in self._label_to_index
+        return key in self.scores
 
     def __getitem__(self, key: int | str) -> float:
         if isinstance(key, str):
-            label_map = self._label_to_index_map()
-            if key not in label_map:
-                raise KeyError(key)
-            return self.as_index_score_dict()[label_map[key]]
-        return self.as_index_score_dict()[key]
+            index = self._label_to_index.get(key)
+            if index is None:
+                raise KeyError(f"Label '{key}' not found in MultiScoreResult.")
+            return self.scores[index]
+        return self.scores[key]
 
     def get(self, key: int | str, default: float | None = None) -> float | None:
         if isinstance(key, str):
-            label_map = self._label_to_index_map()
-            index = label_map.get(key)
+            index = self._label_to_index.get(key)
             if index is None:
                 return default
-            return self.as_index_score_dict().get(index, default)
-        return self.as_index_score_dict().get(key, default)
+            return self.scores.get(index, default)
+        return self.scores.get(key, default)
 
-    def items(self):
-        """Yield (label, score) pairs."""
-        return self.as_label_score_dict().items()
+    def items(self) -> ItemsView[str, float] | ItemsView[int, float]:
+        """Yield (label, score) or (index, score) pairs based on label availability."""
+        if self.label_map is not None:
+            return self.as_label_score_dict().items()
+        return self.scores.items()
 
     def as_index_score_dict(self) -> dict[int, float]:
-        return cast(dict[int, float], self.scores)
+        """Return the strictly normalized integer-indexed dictionary."""
+        return self.scores
 
     def as_label_score_dict(self) -> dict[str, float]:
         """Return a {label: score} dictionary, ordered by label_order if specified."""
-        scores = self.as_index_score_dict()
-        label_map = self.label_map
-        label_order = self.label_order
-        assert label_map is not None
+        if self.label_map is None:
+            raise ValueError("No label mapping was parsed or supplied for this MultiScoreResult.")
 
-        label_scores = {label_map[index]: score for index, score in scores.items()}
-        if label_order is None:
+        label_scores = {self.label_map[index]: score for index, score in self.scores.items()}
+        if not self.label_order:
             return label_scores
 
         ordered_scores: dict[str, float] = {}
-        for label in label_order:
-            if label in label_scores and label not in ordered_scores:
+        for label in self.label_order:
+            if label in label_scores:
                 ordered_scores[label] = label_scores[label]
         for label, score in label_scores.items():
             if label not in ordered_scores:
                 ordered_scores[label] = score
         return ordered_scores
-
-    def _normalize_scores(self, scores: dict[int, float] | dict[str, float] | list[float]) -> dict[int, float]:
-        if isinstance(scores, list):
-            return {index: float(score) for index, score in enumerate(scores)}
-
-        if scores and not all(isinstance(index, int) for index in scores.keys()):
-            return {index: float(score) for index, score in enumerate(scores.values())}
-
-        normalized: dict[int, float] = {}
-        for index, score in sorted(scores.items(), key=lambda item: item[0]):
-            normalized[int(index)] = float(score)
-        return normalized
-
-    def _label_to_index_map(self) -> dict[str, int]:
-        assert self.label_map is not None
-        return {label: index for index, label in self.label_map.items()}
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -238,17 +312,13 @@ class MultiScoreResult(BaseModelResult):
         }
 
 
-# endregion Result Dataclasses
+# endregion
 
 
 @dataclass
 class InferenceResultItem:
     """
     Metadata wrapper for one input image and its model prediction.
-
-    Contains the input's position in the batch, the actual prediction
-    (ModelResult), and an optional reference back to the input source.
-    Returned as items within InferenceResult.
     """
 
     index: int
@@ -269,11 +339,6 @@ class InferenceResultItem:
 class InferenceResult:
     """
     Batch envelope returned by session.infer() for one or more images.
-
-    Each input image produces one InferenceResultItem in the items list.
-    Supports both single and batch operations via the same structure.
-    Provides convenience methods: first() for single-image workflows,
-    results() to extract all BaseModelResult objects, and iteration.
     """
 
     total_inputs: int
@@ -283,7 +348,7 @@ class InferenceResult:
     def __len__(self) -> int:
         return len(self.items)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[InferenceResultItem]:
         return iter(self.items)
 
     def results(self) -> list[BaseModelResult]:
@@ -312,17 +377,17 @@ ModelResult = TagResult | ScoreResult | MultiScoreResult
 
 
 def is_tag_result(result: BaseModelResult) -> TypeGuard[TagResult]:
-    """Check if result is a TagResult (narrows type for type checkers)."""
+    """Check if result is a TagResult."""
     return result.output_type == OutputType.TAGS
 
 
 def is_score_result(result: BaseModelResult) -> TypeGuard[ScoreResult]:
-    """Check if result is a ScoreResult (narrows type for type checkers)."""
+    """Check if result is a ScoreResult."""
     return result.output_type == OutputType.SCORE
 
 
 def is_multi_score_result(result: BaseModelResult) -> TypeGuard[MultiScoreResult]:
-    """Check if result is a MultiScoreResult (narrows type for type checkers)."""
+    """Check if result is a MultiScoreResult."""
     return result.output_type == OutputType.MULTI_SCORE
 
 
