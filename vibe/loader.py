@@ -13,6 +13,36 @@ from vibe.hf_downloader import HFDownloadError, download_or_cached_with_reason
 logger = logging.getLogger(__name__)
 
 
+def _is_local_source(source: str) -> bool:
+    source = source.strip()
+
+    if source.startswith("local:"):
+        return True
+
+    if source.startswith("hf:"):
+        return False
+
+    return Path(source).expanduser().is_dir()
+
+
+def _local_source_to_path(source: str) -> Path:
+    source = source.strip()
+
+    if source.startswith("local:"):
+        source = source[6:]
+
+    return Path(source).expanduser()
+
+
+def _hf_source_to_repo(source: str) -> str:
+    source = source.strip()
+
+    if source.startswith("hf:"):
+        return source[3:]
+
+    return source
+
+
 class LoaderError(Exception):
     """Raised when file resolution or validation fails."""
 
@@ -59,33 +89,30 @@ class SourceResolver(ABC):
         pass
 
     def _resolve_override(
-        self, spec: ArtifactSpec, override_source: str, mapped_name: str, **kwargs
+        self,
+        spec: ArtifactSpec,
+        override_source: str,
+        mapped_name: str,
+        **kwargs,
     ) -> tuple[Path | None, str | None]:
-        """Resolves a single artifact from an explicit override string."""
-        override_source = override_source.strip()
 
-        if override_source.startswith("local:"):
-            candidate = Path(override_source[6:]).expanduser()
+        if _is_local_source(override_source):
+            candidate = _local_source_to_path(override_source)
+
             if candidate.is_dir():
                 candidate = candidate / mapped_name
+
             if candidate.is_file():
                 return candidate, None
+
             return None, f"Local override file not found: {candidate}"
 
-        if override_source.startswith("hf:"):
-            repo_id = override_source[3:]
-            return self._fetch_hf(repo_id, spec, mapped_name, **kwargs)
-
-        # Unprefixed auto-mode override: try local first, then HF
-        candidate = Path(override_source).expanduser()
-        if candidate.is_dir():
-            candidate = candidate / mapped_name
-
-        if candidate.is_file():
-            return candidate, None
-
-        # Treat as Hugging Face repo ID if local resolution failed
-        return self._fetch_hf(override_source, spec, mapped_name, **kwargs)
+        return self._fetch_hf(
+            _hf_source_to_repo(override_source),
+            spec,
+            mapped_name,
+            **kwargs,
+        )
 
     def _fetch_hf(self, repo_id: str, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
         """Helper to fetch from Hugging Face cache/download."""
@@ -142,32 +169,6 @@ class HFResolver(SourceResolver):
         return self._fetch_hf(target_repo, spec, mapped_name, **kwargs)
 
 
-class AutoResolver(SourceResolver):
-    def __init__(
-        self,
-        folder: Path,
-        session_fallback_repo: str | None,
-        file_name_map: Mapping[str, str] | None = None,
-        source_map: Mapping[str, str] | None = None,
-    ):
-        super().__init__(file_name_map, source_map)
-        self.folder = folder
-        self.session_fallback_repo = session_fallback_repo
-
-    def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
-        # 1. Try local folder
-        local_candidate = self.folder / mapped_name
-        if local_candidate.is_file():
-            return local_candidate, None
-
-        # 2. Try HF fallback
-        target_repo = spec.repo_id or self.session_fallback_repo
-        if not target_repo:
-            return None, "Missing locally, and no HF fallback repo available."
-
-        return self._fetch_hf(target_repo, spec, mapped_name, **kwargs)
-
-
 def resolve_variant_artifacts(
     source: str,
     variant: ModelVariant,
@@ -189,10 +190,13 @@ def resolve_variant_artifacts(
     else:
         path_candidate = Path(source).expanduser()
         if path_candidate.is_dir():
-            # It's a real local directory. If a file is missing, fallback to plugin default.
-            resolver = AutoResolver(path_candidate, fallback_hf_repo_id, file_name_map, source_map)
+            resolver = LocalResolver(path_candidate, file_name_map, source_map)
         else:
-            # It's not a directory, so treat the string as a Hugging Face repo ID.
             resolver = HFResolver(source, file_name_map, source_map)
 
-    return resolver.resolve(variant, revision=revision, cache_dir=cache_dir, allow_download=allow_download)
+    return resolver.resolve(
+        variant,
+        revision=revision,
+        cache_dir=cache_dir,
+        allow_download=allow_download,
+    )
