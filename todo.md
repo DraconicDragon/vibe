@@ -1,4 +1,8 @@
-# new todo
+# new new todo huehuehuehue
+
+- ensure that heavy dependencies (torch, onnxruntime, transformers) are strictly imported inside load_ancillary or preprocess / postprocess
+
+## new todo
 
 - check session factory build_session, do the args need to be defaulted to something or nah? the only true places its being used, load/load_custom, already set all things
   - also session.py __init__
