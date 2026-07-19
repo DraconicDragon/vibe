@@ -19,7 +19,7 @@ class OutputType(str, Enum):
     MULTI_SCORE = "multi_score"
 
 
-@dataclass
+@dataclass(slots=True)
 class BaseModelResult(ABC):
     """Abstract base class for all inference result objects."""
 
@@ -34,7 +34,7 @@ class BaseModelResult(ABC):
 # region Result Dataclasses
 
 
-@dataclass
+@dataclass(slots=True)
 class TagEntry:
     """A single predicted tag with its confidence score."""
 
@@ -48,7 +48,7 @@ class TagEntry:
         }
 
 
-@dataclass
+@dataclass(slots=True)
 class TagResult(BaseModelResult):
     """
     Structured result for tagger model outputs.
@@ -107,7 +107,7 @@ class TagResult(BaseModelResult):
         return d
 
 
-@dataclass
+@dataclass(slots=True)
 class ScoreResult(BaseModelResult):
     """
     Result from a single-value scoring model (e.g. aesthetic scorer).
