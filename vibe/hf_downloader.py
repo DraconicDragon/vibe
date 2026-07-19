@@ -163,22 +163,11 @@ def download_or_cached_with_reason(
             raise HFDownloadError(f"File '{filename}' not available in local cache for '{repo_id}'.") from None
         return None, reason
     except RepositoryNotFoundError as exc:
-        status_code = _response_status_code(exc)
-        if status_code in {401, 403}:
-            reason = f"repo '{repo_id}' is private or gated and access was denied"
-            if not required:
-                return None, reason
-            raise HFDownloadError(
-                f"HuggingFace repo '{repo_id}' is private or gated and access was denied. "
-                "Check your token and repo permissions."
-            ) from None
-
-        reason = f"repo '{repo_id}' was not found"
+        reason = _format_hf_access_error(repo_id, filename, exc)
         if not required:
             return None, reason
-        raise HFDownloadError(f"HuggingFace repo '{repo_id}' was not found. Check repo ID and connectivity.") from None
+        raise HFDownloadError(reason) from None
     except HfHubHTTPError as exc:
-        status_code = _response_status_code(exc)
         reason = _format_hf_access_error(repo_id, filename, exc)
         if not required:
             return None, reason
