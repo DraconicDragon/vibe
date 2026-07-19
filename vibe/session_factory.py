@@ -76,52 +76,31 @@ def build_session(
 
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
     logger.debug("Session auto_download=%s", effective_auto_download)
-    source_is_unprefixed_local_dir = _is_unprefixed_local_dir_source(source)
 
     auto_resolution_failures: list[tuple[Backend, str]] = []
 
-    resolve_plan: list[tuple[bool, bool]] = []
-    if not backend_was_explicit and source_is_unprefixed_local_dir:
-        # Phase 1: try local files only across backends, no HF fallback.
-        resolve_plan.append((False, False))
-        # Phase 2: if neither backend resolved locally, allow normal fallback/download behavior.
-        resolve_plan.append((effective_auto_download, True))
-        logger.info(
-            "Auto backend source is local directory; trying local files across supported backends before HuggingFace fallback."
+    for candidate_backend in backend_candidates:
+        session = _attempt_session_build(
+            plugin_cls=plugin_cls,
+            source=source,
+            candidate_backend=candidate_backend,
+            selected_backend=selected_backend,
+            backend_was_explicit=backend_was_explicit,
+            device=device,
+            precision=precision,
+            onnx_providers=onnx_providers,
+            hf_revision=hf_revision,
+            hf_cache_dir=hf_cache_dir,
+            auto_download_attempt=effective_auto_download,
+            effective_auto_download=effective_auto_download,
+            file_name_map=file_name_map,
+            source_map=source_map,
+            memory_tracking=memory_tracking,
+            backend_candidates=backend_candidates,
+            auto_resolution_failures=auto_resolution_failures,
         )
-    else:
-        resolve_plan.append((effective_auto_download, True))
-
-    for allow_download_for_attempt, allow_hf_fallback in resolve_plan:
-        for candidate_backend in backend_candidates:
-            session = _attempt_session_build(
-                plugin_cls=plugin_cls,
-                source=source,
-                candidate_backend=candidate_backend,
-                selected_backend=selected_backend,
-                backend_was_explicit=backend_was_explicit,
-                device=device,
-                precision=precision,
-                onnx_providers=onnx_providers,
-                hf_revision=hf_revision,
-                hf_cache_dir=hf_cache_dir,
-                auto_download_attempt=allow_download_for_attempt,
-                allow_hf_fallback=allow_hf_fallback,
-                effective_auto_download=effective_auto_download,
-                file_name_map=file_name_map,
-                source_map=source_map,
-                memory_tracking=memory_tracking,
-                backend_candidates=backend_candidates,
-                auto_resolution_failures=auto_resolution_failures,
-            )
-            if session is not None:
-                return session
-
-        if source_is_unprefixed_local_dir and not allow_hf_fallback:
-            logger.info(
-                "No local backend files resolved for model_id=%s; trying HuggingFace fallback for auto backend mode.",
-                model_id,
-            )
+        if session is not None:
+            return session
 
     if auto_resolution_failures:
         attempts = "; ".join([f"{candidate.value}: {reason}" for candidate, reason in auto_resolution_failures])
@@ -149,7 +128,6 @@ def _attempt_session_build(
     hf_revision: str | None,
     hf_cache_dir: str | None,
     auto_download_attempt: bool,
-    allow_hf_fallback: bool,
     effective_auto_download: bool,
     file_name_map: Mapping[str, str] | None,
     source_map: Mapping[str, str] | None,
@@ -202,8 +180,6 @@ def _attempt_session_build(
     if variant is None:
         return None
 
-    fallback_repo_id = plugin_cls.default_repo_id if allow_hf_fallback else None
-
     try:
         file_map = resolve_variant_artifacts(
             source=source,
@@ -212,7 +188,6 @@ def _attempt_session_build(
             cache_dir=hf_cache_dir,
             allow_download=auto_download_attempt,
             file_name_map=file_name_map,
-            fallback_hf_repo_id=fallback_repo_id,
             source_map=source_map,
         )
     except Exception as exc:
@@ -222,9 +197,8 @@ def _attempt_session_build(
         next_backend = _next_backend_candidate(backend_candidates, candidate_backend)
         if next_backend is not None:
             logger.info(
-                "Auto backend '%s' unavailable %s for model_id=%s; trying %s next.",
+                "Auto backend '%s' unavailable for model_id=%s; trying %s next.",
                 candidate_backend.value,
-                "locally" if not allow_hf_fallback else "",
                 model_id,
                 next_backend.value,
             )
@@ -357,30 +331,40 @@ def _acquire_backend(
 
     # 2. Acquire model-specific lock
     with model_lock:
-        # Check again in case another thread finished loading while we waited on the queue
         with _BACKEND_POOL_LOCK:
             if key in _BACKEND_POOL:
                 instance, refcount = _BACKEND_POOL[key]
                 _BACKEND_POOL[key] = (instance, refcount + 1)
                 return instance, lambda: _release_backend(key)
 
-        # 3. Load the model (NO GLOBAL LOCK HELD DURING DISK/GPU I/O)
-        primary_weights = weight_paths[0]
-        if backend == Backend.PYTORCH:
-            instance = pytorch_cls()
-            instance.load(primary_weights, device=device, precision=precision)
-        else:
-            instance = onnx_cls()
-            instance.load(primary_weights, providers=providers, device=device, precision=precision)
+        try:
+            primary_weights = weight_paths[0]
 
-        # 4. Store in pool and clean up the lookup lock mapping on successful load
-        with _BACKEND_POOL_LOCK:
-            _BACKEND_POOL[key] = (instance, 1)
-            # Cleanup the loading lock since we are done
-            _LOADING_LOCKS.pop(key, None)
+            if backend == Backend.PYTORCH:
+                instance = pytorch_cls()
+                instance.load(
+                    primary_weights,
+                    device=device,
+                    precision=precision,
+                )
+            else:
+                instance = onnx_cls()
+                instance.load(
+                    primary_weights,
+                    providers=providers,
+                    device=device,
+                    precision=precision,
+                )
 
-        logger.info("Backend ready backend=%s device=%s", backend.value, device)
-        return instance, lambda: _release_backend(key)
+            with _BACKEND_POOL_LOCK:
+                _BACKEND_POOL[key] = (instance, 1)
+
+            logger.info("Backend ready backend=%s device=%s", backend.value, device)
+            return instance, lambda: _release_backend(key)
+
+        finally:
+            with _BACKEND_POOL_LOCK:
+                _LOADING_LOCKS.pop(key, None)
 
 
 # endregion
