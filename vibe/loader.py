@@ -76,14 +76,16 @@ class SourceResolver(ABC):
             repo_id = override_source[3:]
             return self._fetch_hf(repo_id, spec, mapped_name, **kwargs)
 
-        # Unprefixed auto-mode override
+        # Unprefixed auto-mode override: try local first, then HF
         candidate = Path(override_source).expanduser()
         if candidate.is_dir():
             candidate = candidate / mapped_name
+
         if candidate.is_file():
             return candidate, None
 
-        return None, f"Override source '{override_source}' could not be resolved locally."
+        # Treat as Hugging Face repo ID if local resolution failed
+        return self._fetch_hf(override_source, spec, mapped_name, **kwargs)
 
     def _fetch_hf(self, repo_id: str, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
         """Helper to fetch from Hugging Face cache/download."""
