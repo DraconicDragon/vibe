@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _BACKEND_POOL_LOCK = threading.RLock()
 _BACKEND_POOL: dict[tuple[Any, ...], tuple[Any, int]] = {}
+_LOADING_LOCKS: dict[tuple[Any, ...], threading.Lock] = {}
 
 
 def build_session(
@@ -340,27 +341,31 @@ def _acquire_backend(
     pytorch_cls: Any,
     onnx_cls: Any,
 ) -> tuple[Any, Callable[[], None]]:
+
+    # 1. Double-Checked Fast Path: Check if already loaded
     with _BACKEND_POOL_LOCK:
-        cached = _BACKEND_POOL.get(key)
-        if cached is not None:
-            instance, refcount = cached
+        if key in _BACKEND_POOL:
+            instance, refcount = _BACKEND_POOL[key]
             _BACKEND_POOL[key] = (instance, refcount + 1)
             logger.debug("Reusing pooled backend instance backend=%s refcount=%s", backend.value, refcount + 1)
-            logger.debug("Reusing pooled backend key=%s", key)
             return instance, lambda: _release_backend(key)
 
-        logger.debug("Loading backend backend=%s", backend.value)
-        logger.debug(
-            "Backend load options backend=%s device=%s precision=%s weight_paths=%s",
-            backend.value,
-            device,
-            precision,
-            weight_paths,
-        )
+        # Get or create a lock specific to this model key to avoid blocking other models
+        if key not in _LOADING_LOCKS:
+            _LOADING_LOCKS[key] = threading.Lock()
+        model_lock = _LOADING_LOCKS[key]
 
-        # Backends currently only handle primary weights natively; pass first path.
+    # 2. Acquire model-specific lock
+    with model_lock:
+        # Check again in case another thread finished loading while we waited on the queue
+        with _BACKEND_POOL_LOCK:
+            if key in _BACKEND_POOL:
+                instance, refcount = _BACKEND_POOL[key]
+                _BACKEND_POOL[key] = (instance, refcount + 1)
+                return instance, lambda: _release_backend(key)
+
+        # 3. Load the model (NO GLOBAL LOCK HELD DURING DISK/GPU I/O)
         primary_weights = weight_paths[0]
-
         if backend == Backend.PYTORCH:
             instance = pytorch_cls()
             instance.load(primary_weights, device=device, precision=precision)
@@ -368,9 +373,13 @@ def _acquire_backend(
             instance = onnx_cls()
             instance.load(primary_weights, providers=providers, device=device, precision=precision)
 
-        _BACKEND_POOL[key] = (instance, 1)
+        # 4. Store in pool and clean up the lookup lock mapping on successful load
+        with _BACKEND_POOL_LOCK:
+            _BACKEND_POOL[key] = (instance, 1)
+            # Cleanup the loading lock since we are done
+            _LOADING_LOCKS.pop(key, None)
+
         logger.info("Backend ready backend=%s device=%s", backend.value, device)
-        logger.debug("Created pooled backend key=%s refcount=1", key)
         return instance, lambda: _release_backend(key)
 
 
