@@ -28,9 +28,9 @@ class SourceResolver(ABC):
 
         for spec in variant.artifacts:
             mapped_name = self.file_name_map.get(spec.id, spec.name)
-
-            # 1. Universally respect runtime overrides by artifact ID
             override_source = self.source_map.get(spec.id)
+
+            # 1. Handle Explicit Artifact Override (via source_map)
             if override_source:
                 path, reason = self._resolve_override(spec, override_source, mapped_name, **kwargs)
                 if path:
@@ -43,7 +43,7 @@ class SourceResolver(ABC):
                     )
                 continue
 
-            # 2. Delegate standard resolution to the subclass
+            # 2. Delegate standard resolution to subclass
             path, reason = self._resolve_standard(spec, mapped_name, **kwargs)
             if path:
                 paths[spec.id] = path
@@ -56,7 +56,6 @@ class SourceResolver(ABC):
 
     @abstractmethod
     def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
-        """Subclass implementation for standard file resolution."""
         pass
 
     def _resolve_override(
@@ -65,7 +64,6 @@ class SourceResolver(ABC):
         """Resolves a single artifact from an explicit override string."""
         override_source = override_source.strip()
 
-        # Explicit Local Override
         if override_source.startswith("local:"):
             candidate = Path(override_source[6:]).expanduser()
             if candidate.is_dir():
@@ -74,22 +72,9 @@ class SourceResolver(ABC):
                 return candidate, None
             return None, f"Local override file not found: {candidate}"
 
-        # Explicit HF Override
         if override_source.startswith("hf:"):
             repo_id = override_source[3:]
-            hf_mapped_name = f"{spec.hf_subdir.rstrip('/')}/{mapped_name}" if spec.hf_subdir else mapped_name
-            try:
-                path, reason = download_or_cached_with_reason(
-                    repo_id=repo_id,
-                    filename=hf_mapped_name,
-                    revision=kwargs.get("revision"),
-                    cache_dir=kwargs.get("cache_dir"),
-                    allow_download=kwargs.get("allow_download", True),
-                    required=spec.required,
-                )
-                return (Path(path) if path else None), reason
-            except HFDownloadError as exc:
-                return None, str(exc)
+            return self._fetch_hf(repo_id, spec, mapped_name, **kwargs)
 
         # Unprefixed auto-mode override
         candidate = Path(override_source).expanduser()
@@ -98,7 +83,23 @@ class SourceResolver(ABC):
         if candidate.is_file():
             return candidate, None
 
-        return None, f"Override source '{override_source}' could not be resolved as a local file or directory."
+        return None, f"Override source '{override_source}' could not be resolved locally."
+
+    def _fetch_hf(self, repo_id: str, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
+        """Helper to fetch from Hugging Face cache/download."""
+        hf_mapped_name = f"{spec.hf_subdir.rstrip('/')}/{mapped_name}" if spec.hf_subdir else mapped_name
+        try:
+            path, reason = download_or_cached_with_reason(
+                repo_id=repo_id,
+                filename=hf_mapped_name,
+                revision=kwargs.get("revision"),
+                cache_dir=kwargs.get("cache_dir"),
+                allow_download=kwargs.get("allow_download", True),
+                required=spec.required,
+            )
+            return (Path(path) if path else None), reason
+        except HFDownloadError as exc:
+            return None, str(exc)
 
 
 class LocalResolver(SourceResolver):
@@ -109,81 +110,60 @@ class LocalResolver(SourceResolver):
         self.folder = folder
 
     def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
+        # Strictly local. Ignore HF repo_ids entirely.
         if not self.folder.is_dir():
             return None, f"Local folder does not exist: {self.folder}"
 
         candidate = self.folder / mapped_name
         if candidate.is_file():
             return candidate, None
-        return None, f"Missing in local folder {self.folder}"
+        return None, f"Missing in local folder: {candidate}"
 
 
 class HFResolver(SourceResolver):
     def __init__(
-        self, repo_id: str, file_name_map: Mapping[str, str] | None = None, source_map: Mapping[str, str] | None = None
+        self,
+        session_fallback_repo: str,
+        file_name_map: Mapping[str, str] | None = None,
+        source_map: Mapping[str, str] | None = None,
     ):
         super().__init__(file_name_map, source_map)
-        self.repo_id = repo_id
+        self.session_fallback_repo = session_fallback_repo
 
     def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
-        base_repo = self.repo_id or spec.repo_id
-        if not base_repo:
+        # If the artifact defines its own repo (e.g. CLIP), use it. Otherwise use session repo.
+        target_repo = spec.repo_id or self.session_fallback_repo
+
+        if not target_repo:
             return None, "No repository ID defined for HF resolution."
 
-        hf_mapped_name = f"{spec.hf_subdir.rstrip('/')}/{mapped_name}" if spec.hf_subdir else mapped_name
-        try:
-            path, reason = download_or_cached_with_reason(
-                repo_id=base_repo,
-                filename=hf_mapped_name,
-                revision=kwargs.get("revision"),
-                cache_dir=kwargs.get("cache_dir"),
-                allow_download=kwargs.get("allow_download", True),
-                required=spec.required,
-            )
-            return (Path(path) if path else None), reason
-        except HFDownloadError as exc:
-            if spec.required:
-                raise LoaderError(str(exc)) from None
-            return None, str(exc)
+        return self._fetch_hf(target_repo, spec, mapped_name, **kwargs)
 
 
 class AutoResolver(SourceResolver):
     def __init__(
         self,
-        source_string: str,
-        fallback_repo_id: str | None,
+        folder: Path,
+        session_fallback_repo: str | None,
         file_name_map: Mapping[str, str] | None = None,
         source_map: Mapping[str, str] | None = None,
     ):
         super().__init__(file_name_map, source_map)
-        self.source = Path(source_string).expanduser()
-        self.fallback_repo_id = fallback_repo_id
+        self.folder = folder
+        self.session_fallback_repo = session_fallback_repo
 
     def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
-        target_repo = spec.repo_id or self.fallback_repo_id
-        local_candidate = self.source / mapped_name if self.source.is_dir() else None
-
-        if local_candidate and local_candidate.is_file():
+        # 1. Try local folder
+        local_candidate = self.folder / mapped_name
+        if local_candidate.is_file():
             return local_candidate, None
 
+        # 2. Try HF fallback
+        target_repo = spec.repo_id or self.session_fallback_repo
         if not target_repo:
-            return None, "Missing locally, no HF fallback."
+            return None, "Missing locally, and no HF fallback repo available."
 
-        hf_mapped_name = f"{spec.hf_subdir.rstrip('/')}/{mapped_name}" if spec.hf_subdir else mapped_name
-        try:
-            path, reason = download_or_cached_with_reason(
-                repo_id=target_repo,
-                filename=hf_mapped_name,
-                revision=kwargs.get("revision"),
-                cache_dir=kwargs.get("cache_dir"),
-                allow_download=kwargs.get("allow_download", True),
-                required=spec.required,
-            )
-            return (Path(path) if path else None), f"Missing locally. HF fallback reason: {reason}" if reason else None
-        except HFDownloadError as exc:
-            if spec.required:
-                raise LoaderError(f"Artifact '{spec.id}' missing locally and failed HF fallback: {exc}") from None
-            return None, str(exc)
+        return self._fetch_hf(target_repo, spec, mapped_name, **kwargs)
 
 
 def resolve_variant_artifacts(
@@ -205,9 +185,12 @@ def resolve_variant_artifacts(
     elif source.startswith("hf:"):
         resolver = HFResolver(source[3:], file_name_map, source_map)
     else:
-        resolver = AutoResolver(source, fallback_hf_repo_id, file_name_map, source_map)
+        path_candidate = Path(source).expanduser()
+        if path_candidate.is_dir():
+            # It's a real local directory. If a file is missing, fallback to plugin default.
+            resolver = AutoResolver(path_candidate, fallback_hf_repo_id, file_name_map, source_map)
+        else:
+            # It's not a directory, so treat the string as a Hugging Face repo ID.
+            resolver = HFResolver(source, file_name_map, source_map)
 
     return resolver.resolve(variant, revision=revision, cache_dir=cache_dir, allow_download=allow_download)
-
-
-# endregion
