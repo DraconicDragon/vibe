@@ -1,16 +1,14 @@
 """
 Result types returned by model inference.
-
-Every result is serialisable to a plain dict via .to_dict().
-Consumers should check result.output_type before accessing type-specific fields.
 """
 
 from __future__ import annotations
 
 import logging
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Literal, TypeGuard
+from typing import Any, Literal, TypeGuard, cast
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +19,17 @@ class OutputType(str, Enum):
     TAGS = "tags"
     SCORE = "score"
     MULTI_SCORE = "multi_score"
+
+
+@dataclass
+class BaseModelResult(ABC):
+    """Abstract base class for all inference result objects."""
+
+    output_type: OutputType = field(init=False)
+
+    @abstractmethod
+    def to_dict(self) -> dict[str, Any]:
+        pass
 
 
 # region Result Dataclasses
@@ -41,16 +50,16 @@ class TagEntry:
 
 
 @dataclass
-class TagResult:
+class TagResult(BaseModelResult):
     """
     Structured result for tagger model outputs.
 
     Contains tags grouped by category.
     """
 
+    output_type: Literal[OutputType.TAGS] = field(default=OutputType.TAGS, init=False)
     tags: dict[str, list[TagEntry]] = field(default_factory=dict)
     character_copyright_mapping: dict[str, list[str]] | None = None
-    output_type: Literal[OutputType.TAGS] = field(default=OutputType.TAGS, init=False)
 
     def category(self, name: str) -> list[TagEntry]:
         """Return tags of one category by name, or an empty list if missing."""
@@ -100,7 +109,7 @@ class TagResult:
 
 
 @dataclass
-class ScoreResult:
+class ScoreResult(BaseModelResult):
     """
     Result from a single-value scoring model (e.g. aesthetic scorer).
 
@@ -131,26 +140,11 @@ class ScoreResult:
 
 
 @dataclass(slots=True)
-class MultiScoreResult:
+class MultiScoreResult(BaseModelResult):
     """
     Result from a model that returns multiple scores.
 
-    Attributes
-    ----------
-    output_type
-        Result type identifier used for dispatch and serialization.
-    scores
-        Score values in model output order.
-    label_map
-        Optional mapping from score index to label.
-    label_order
-        Optional label ordering for consumers that want a presentation order.
-    score_min
-        Optional lower bound of the score range.
-    score_max
-        Optional upper bound of the score range.
-    normalized_score
-        Optional normalized score in [0, 1] computed by result processors.
+    Acts like a dictionary mapping both integer indices and string labels to their respective float scores.
     """
 
     output_type: Literal[OutputType.MULTI_SCORE] = field(default=OutputType.MULTI_SCORE, init=False)
@@ -165,7 +159,7 @@ class MultiScoreResult:
         self.scores = self._normalize_scores(self.scores)
 
         if self.label_map is None:
-            self.label_map = {index: f"score_{index + 1}" for index in range(len(self.scores))}
+            self.label_map = {index: f"score_{index + 1}" for index in self.scores.keys()}  # type: ignore[union-attr]
         else:
             self.label_map = {int(index): str(label) for index, label in self.label_map.items()}
 
@@ -190,18 +184,19 @@ class MultiScoreResult:
         return self.as_index_score_dict().get(key, default)
 
     def items(self):
+        """Yield (label, score) pairs."""
         return self.as_label_score_dict().items()
 
     def as_index_score_dict(self) -> dict[int, float]:
-        if isinstance(self.scores, list):
-            return {index: float(score) for index, score in enumerate(self.scores)}
-        return self.scores
+        return cast(dict[int, float], self.scores)
 
     def as_label_score_dict(self) -> dict[str, float]:
+        """Return a {label: score} dictionary, ordered by label_order if specified."""
         scores = self.as_index_score_dict()
         label_map = self.label_map
         label_order = self.label_order
         assert label_map is not None
+
         label_scores = {label_map[index]: score for index, score in scores.items()}
         if label_order is None:
             return label_scores
@@ -228,12 +223,11 @@ class MultiScoreResult:
         return normalized
 
     def _label_to_index_map(self) -> dict[str, int]:
-        label_map = self.label_map
-        assert label_map is not None
-        return {label: index for index, label in label_map.items()}
+        assert self.label_map is not None
+        return {label: index for index, label in self.label_map.items()}
 
     def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
+        return {
             "output_type": self.output_type.value,
             "scores": self.scores,
             "label_map": self.label_map,
@@ -242,7 +236,9 @@ class MultiScoreResult:
             "score_max": self.score_max,
             "normalized_score": self.normalized_score,
         }
-        return data
+
+
+# endregion Result Dataclasses
 
 
 @dataclass
@@ -252,10 +248,11 @@ class InferenceResultItem:
 
     Contains the input's position in the batch, the actual prediction
     (ModelResult), and an optional reference back to the input source.
-    Returned as items within InferenceResult."""
+    Returned as items within InferenceResult.
+    """
 
     index: int
-    result: "ModelResult"
+    result: BaseModelResult
     input_ref: Any | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -276,7 +273,7 @@ class InferenceResult:
     Each input image produces one InferenceResultItem in the items list.
     Supports both single and batch operations via the same structure.
     Provides convenience methods: first() for single-image workflows,
-    results() to extract all ModelResult objects, and iteration.
+    results() to extract all BaseModelResult objects, and iteration.
     """
 
     total_inputs: int
@@ -289,10 +286,10 @@ class InferenceResult:
     def __iter__(self):
         return iter(self.items)
 
-    def results(self) -> list["ModelResult"]:
+    def results(self) -> list[BaseModelResult]:
         return [item.result for item in self.items]
 
-    def first(self) -> "ModelResult":
+    def first(self) -> BaseModelResult:
         if not self.items:
             raise IndexError("Inference batch result is empty.")
         return self.items[0].result
@@ -307,9 +304,6 @@ class InferenceResult:
         return data
 
 
-# endregion Result Dataclasses
-
-
 # Union type for type hints throughout the codebase
 ModelResult = TagResult | ScoreResult | MultiScoreResult
 
@@ -317,17 +311,17 @@ ModelResult = TagResult | ScoreResult | MultiScoreResult
 # region Type Narrowing Help
 
 
-def is_tag_result(result: ModelResult) -> TypeGuard[TagResult]:
+def is_tag_result(result: BaseModelResult) -> TypeGuard[TagResult]:
     """Check if result is a TagResult (narrows type for type checkers)."""
     return result.output_type == OutputType.TAGS
 
 
-def is_score_result(result: ModelResult) -> TypeGuard[ScoreResult]:
+def is_score_result(result: BaseModelResult) -> TypeGuard[ScoreResult]:
     """Check if result is a ScoreResult (narrows type for type checkers)."""
     return result.output_type == OutputType.SCORE
 
 
-def is_multi_score_result(result: ModelResult) -> TypeGuard[MultiScoreResult]:
+def is_multi_score_result(result: BaseModelResult) -> TypeGuard[MultiScoreResult]:
     """Check if result is a MultiScoreResult (narrows type for type checkers)."""
     return result.output_type == OutputType.MULTI_SCORE
 
