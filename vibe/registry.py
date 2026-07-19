@@ -8,6 +8,7 @@ import importlib
 import importlib.metadata
 import inspect
 import pkgutil
+import threading
 import warnings
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,19 @@ class ModelRegistry:
     def __init__(self) -> None:
         # model_id → plugin class
         self._plugins: dict[str, type[ModelPlugin]] = {}
+        self._discovered = False
+        self._discover_lock = threading.Lock()
+
+    def ensure_discovered(self) -> None:
+        if self._discovered:
+            return
+
+        with self._discover_lock:
+            if self._discovered:
+                return
+
+            self.discover_all()
+            self._discovered = True
 
     def register(self, plugin_cls: type[ModelPlugin]) -> None:
         """

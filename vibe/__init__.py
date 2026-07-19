@@ -96,12 +96,6 @@ except PackageNotFoundError:
 __author__ = "Drac"
 __license__ = "MIT"
 
-# region Global Registry
-
-model_registry.discover_all()
-
-# endregion
-
 
 # region API
 
@@ -229,6 +223,8 @@ def load(
         RegistryError:  If the model name is not recognised.
         SessionError:   If loading fails (missing files, bad backend, etc.).
     """
+    model_registry.ensure_discovered()
+
     plugin_cls = model_registry.get(model)
     return _load_internal(
         plugin_cls=plugin_cls,
@@ -297,6 +293,8 @@ def load_custom(
             plugin="WDEva02Plugin",
         )
     """
+    model_registry.ensure_discovered()
+
     plugin_cls = model_registry.get_by_class_name(plugin)
     return _load_internal(
         plugin_cls=plugin_cls,
@@ -317,21 +315,29 @@ def load_custom(
 
 def list_models() -> list[str]:
     """Return a sorted list of all registered model IDs."""
+    model_registry.ensure_discovered()
+
     return model_registry.list_model_ids()
 
 
 def list_plugin_classes() -> list[str]:
     """Return the class names of all registered plugins (for load_custom)."""
+    model_registry.ensure_discovered()
+
     return model_registry.list_plugin_classes()
 
 
 def describe(model: str) -> ModelDescriptor:
     """Return typed model metadata for a model ID."""
+    model_registry.ensure_discovered()
+
     return model_registry.get(model).describe()
 
 
 def describe_all() -> list[ModelDescriptor]:
     """Return typed metadata objects for all registered models."""
+    model_registry.ensure_discovered()
+
     return model_registry.list_all()
 
 
