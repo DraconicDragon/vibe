@@ -107,6 +107,10 @@ class ArtifactMap:
     def as_path_dict(self) -> dict[str, Path]:
         return dict(self._paths)
 
+    @property
+    def optional_missing(self) -> dict[str, str]:
+        return self._optional_missing
+
 
 class ModelPlugin(ABC):
     """

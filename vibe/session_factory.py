@@ -262,7 +262,7 @@ def _attempt_session_build(
             device=normalized_device,
             precision=normalized_precision,
             source=source,
-            optional_missing_files=file_map._optional_missing,
+            optional_missing_files=file_map.optional_missing,
         )
         plugin.load_ancillary(file_map)
         if candidate_backend == Backend.ONNX and normalized_precision in {"fp16", "bf16"}:
