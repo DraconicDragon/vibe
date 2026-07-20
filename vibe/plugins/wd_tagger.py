@@ -94,8 +94,8 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
 
         # If using PyTorch, reconstruct the timm architecture using the loaded config.json
         if self._backend == Backend.PYTORCH:
-            config_path = artifacts.get_optional("config")
-            config = self.read_timm_config_json(config_path) if config_path else {}
+            config_path = artifacts.get("config")
+            config = self.read_timm_config_json(config_path)
 
             # Reconstruct the PyTorch model architecture and load the state dict
             self.maybe_prepare_timm_pytorch_model(config=config, num_classes=len(self._raw_tag_names))
