@@ -107,22 +107,35 @@ class SourceResolver(ABC):
 
             return None, f"Local override file not found: {candidate}"
 
+        # Resolve overrides. Explicit overrides dictate their own layout, ignoring spec subfolders.
+        repo_id, subfolder = parse_hf_source(override_source)
         return self._fetch_hf(
-            _hf_source_to_repo(override_source),
+            repo_id,
             spec,
             mapped_name,
-            ignore_subdir=True,
+            override_subdir=subfolder,
+            ignore_spec_subdir=True,
             **kwargs,
         )
 
     def _fetch_hf(
-        self, repo_id: str, spec: ArtifactSpec, mapped_name: str, ignore_subdir: bool = False, **kwargs
+        self,
+        repo_id: str,
+        spec: ArtifactSpec,
+        mapped_name: str,
+        override_subdir: str | None = None,
+        ignore_spec_subdir: bool = False,
+        **kwargs,
     ) -> tuple[Path | None, str | None]:
         """Helper to fetch from Hugging Face cache/download."""
-        if ignore_subdir or not spec.hf_subdir:
-            hf_mapped_name = mapped_name
+        if override_subdir is not None:
+            subdir = override_subdir
+        elif ignore_spec_subdir or not spec.hf_subdir:
+            subdir = None
         else:
-            hf_mapped_name = f"{spec.hf_subdir.rstrip('/')}/{mapped_name}"
+            subdir = spec.hf_subdir
+
+        hf_mapped_name = f"{subdir.rstrip('/')}/{mapped_name}" if subdir else mapped_name
         try:
             path, reason = download_or_cached_with_reason(
                 repo_id=repo_id,
@@ -163,16 +176,29 @@ class HFResolver(SourceResolver):
         source_map: Mapping[str, str] | None = None,
     ):
         super().__init__(file_name_map, source_map)
-        self.session_fallback_repo = session_fallback_repo
+        # Parse the session's main source into repo_id and optional subfolder
+        self.session_fallback_repo, self.session_fallback_subdir = parse_hf_source(session_fallback_repo)
 
     def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
         # If the artifact defines its own repo (e.g. CLIP), use it. Otherwise use session repo.
-        target_repo = spec.repo_id or self.session_fallback_repo
+        if spec.repo_id:
+            target_repo = spec.repo_id
+            target_subdir = spec.hf_subdir
+        else:
+            target_repo = self.session_fallback_repo
+            # Fall back to spec's directory only if the session source did not specify a subfolder
+            target_subdir = self.session_fallback_subdir or spec.hf_subdir
 
         if not target_repo:
             return None, "No repository ID defined for HF resolution."
 
-        return self._fetch_hf(target_repo, spec, mapped_name, **kwargs)
+        return self._fetch_hf(
+            target_repo,
+            spec,
+            mapped_name,
+            override_subdir=target_subdir,
+            **kwargs,
+        )
 
 
 def resolve_variant_artifacts(
@@ -206,3 +232,27 @@ def resolve_variant_artifacts(
         cache_dir=cache_dir,
         allow_download=allow_download,
     )
+
+
+def parse_hf_source(source: str) -> tuple[str, str | None]:
+    """
+    Parses a Hugging Face source string into a valid (repo_id, subfolder) tuple.
+
+    Examples:
+        "username/repo-name" -> ("username/repo-name", None)
+        "username/repo-name/models/clip" -> ("username/repo-name", "models/clip")
+        "legacy-repo" -> ("legacy-repo", None)
+    """
+    source = source.strip()
+    if source.startswith("hf:"):
+        source = source[3:]
+
+    parts = source.split("/")
+    if len(parts) > 2:
+        # Standard user/repo/subfolder/... layout
+        repo_id = "/".join(parts[:2])
+        subfolder = "/".join(parts[2:])
+        return repo_id, subfolder
+
+    # Either just "repo_id" or "username/repo_id" with no subfolder
+    return source, None
