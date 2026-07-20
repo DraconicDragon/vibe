@@ -94,7 +94,7 @@ class ModelSession:
         logger.debug("Session created model_id=%s backend=%s", self.model_id, self._backend.value)
         logger.debug("Session memory_tracking=%s", self._memory_tracker.enabled)
         if not self._memory_tracker.enabled:
-            logger.info("Memory tracking disabled by user for model_id=%s", self.model_id)
+            logger.info("Memory tracking disabled for model_id=%s", self.model_id)
         else:
             snap = self._memory_tracker.snapshot()
             if snap.process_rss_bytes is None:
