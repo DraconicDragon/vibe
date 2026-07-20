@@ -39,11 +39,15 @@ from importlib.metadata import version as _package_version
 from typing import Mapping
 
 from vibe.backends.base import (
+    ArtifactMap,
     ArtifactSpec,
     Backend,
     FileRole,
+    ModelCapabilities,
     ModelDescriptor,
+    ModelIdentity,
     ModelPlugin,
+    ModelVariant,
 )
 from vibe.devices import list_available_devices
 from vibe.exceptions import ProcessorError, SessionError
