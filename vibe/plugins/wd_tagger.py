@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.backends.base import (
+    ArtifactMap,
+    ArtifactSpec,
+    Backend,
+    FileRole,
+    ModelCapabilities,
+    ModelIdentity,
+    ModelPlugin,
+    ModelVariant,
+)
 from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.tagger_shared import (
     build_entries_for_indices,
@@ -24,40 +32,32 @@ logger = logging.getLogger(__name__)
 class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
     """Shared implementation for WaifuDiffusion taggers by SmilingWolf."""
 
-    _abstract = True
     family_name = "SmilingWolf WD Taggers"
 
-    output_type = OutputType.TAGS
-    supported_backends = (
-        Backend.ONNX,
-        Backend.PYTORCH,
-    )
-    supported_processors = (
-        CleanTags,
-        ScoreThresholds,
-        CharacterIPMapping,
+    capabilities = ModelCapabilities(
+        output_type=OutputType.TAGS,
+        supported_processors=(
+            CleanTags,
+            ScoreThresholds,
+            CharacterIPMapping,
+        ),
     )
 
-    required_files = (
-        FileSpec(
-            name="model.onnx",
-            role=FileRole.WEIGHTS,
-            backends=(Backend.ONNX,),
+    variants = (
+        ModelVariant(
+            backend=Backend.ONNX,
+            artifacts=(
+                ArtifactSpec(id="model_onnx", name="model.onnx", role=FileRole.WEIGHTS),
+                ArtifactSpec(id="selected_tags", name="selected_tags.csv", role=FileRole.TAG_LIST),
+            ),
         ),
-        FileSpec(
-            name="model.safetensors",
-            role=FileRole.WEIGHTS,
-            backends=(Backend.PYTORCH,),
-        ),
-        FileSpec(
-            name="config.json",
-            role=FileRole.CONFIG,
-            backends=(Backend.PYTORCH,),
-        ),
-        FileSpec(
-            name="selected_tags.csv",
-            role=FileRole.TAG_LIST,
-            backends=(),  # empty = needed for all backends
+        ModelVariant(
+            backend=Backend.PYTORCH,
+            artifacts=(
+                ArtifactSpec(id="model_pt", name="model.safetensors", role=FileRole.WEIGHTS),
+                ArtifactSpec(id="config", name="config.json", role=FileRole.CONFIG),
+                ArtifactSpec(id="selected_tags", name="selected_tags.csv", role=FileRole.TAG_LIST),
+            ),
         ),
     )
 
@@ -71,9 +71,9 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
     _general_indices: list[int]
     _character_indices: list[int]
 
-    def load_ancillary(self, file_map: dict[str, Path]) -> None:
+    def load_ancillary(self, artifacts: ArtifactMap) -> None:
         """Load tag metadata from selected_tags.csv and handle PyTorch bootstrapping."""
-        csv_path = file_map["selected_tags.csv"]
+        csv_path = artifacts.get("selected_tags")
 
         logger.info("Loading tag list from %s", csv_path)
         metadata = load_tag_metadata(csv_path)
@@ -94,7 +94,7 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
 
         # If using PyTorch, reconstruct the timm architecture using the loaded config.json
         if self._backend == Backend.PYTORCH:
-            config_path = file_map.get("config.json")
+            config_path = artifacts.get_optional("config")
             config = self.read_timm_config_json(config_path) if config_path else {}
 
             # Reconstruct the PyTorch model architecture and load the state dict
@@ -175,37 +175,45 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
 class WDEva02Plugin(WDTaggerBasePlugin):
     """WD Eva02 Large tagger."""
 
-    model_id = "wd-eva02-large-v3"
-    display_name = "WD Eva02-large Tagger v3"
-    description = "Danbooru tag prediction using Eva02 ViT-L architecture."
-    default_hf_repo = "SmilingWolf/wd-eva02-large-tagger-v3"
+    identity = ModelIdentity(
+        model_id="wd-eva02-large-v3",
+        display_name="WD Eva02-large Tagger v3",
+        description="Danbooru tag prediction using Eva02 ViT-L architecture.",
+    )
+    default_repo_id = "SmilingWolf/wd-eva02-large-tagger-v3"
 
 
 class WDSwinV2Plugin(WDTaggerBasePlugin):
     """WD SwinV2 tagger."""
 
-    model_id = "wd-swinv2-v3"
-    display_name = "WD SwinV2 Tagger v3"
-    description = "Danbooru tag prediction using SwinV2 architecture."
-    default_hf_repo = "SmilingWolf/wd-swinv2-tagger-v3"
+    identity = ModelIdentity(
+        model_id="wd-swinv2-v3",
+        display_name="WD SwinV2 Tagger v3",
+        description="Danbooru tag prediction using SwinV2 architecture.",
+    )
+    default_repo_id = "SmilingWolf/wd-swinv2-tagger-v3"
 
 
 class WDConvNextPlugin(WDTaggerBasePlugin):
     """WD ConvNeXt tagger."""
 
-    model_id = "wd-convnext-v3"
-    display_name = "WD ConvNeXt Tagger v3"
-    description = "Danbooru tag prediction using ConvNeXt architecture."
-    default_hf_repo = "SmilingWolf/wd-convnext-tagger-v3"
+    identity = ModelIdentity(
+        model_id="wd-convnext-v3",
+        display_name="WD ConvNeXt Tagger v3",
+        description="Danbooru tag prediction using ConvNeXt architecture.",
+    )
+    default_repo_id = "SmilingWolf/wd-convnext-tagger-v3"
 
 
 class WDVitPlugin(WDTaggerBasePlugin):
     """WD ViT tagger (normal version)."""
 
-    model_id = "wd-vit-v3"
-    display_name = "WD ViT Tagger v3"
-    description = "Danbooru tag prediction using ViT architecture."
-    default_hf_repo = "SmilingWolf/wd-vit-tagger-v3"
+    identity = ModelIdentity(
+        model_id="wd-vit-v3",
+        display_name="WD ViT Tagger v3",
+        description="Danbooru tag prediction using ViT architecture.",
+    )
+    default_repo_id = "SmilingWolf/wd-vit-tagger-v3"
 
 
 # endregion Model Variants
