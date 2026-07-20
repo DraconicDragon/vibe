@@ -111,12 +111,18 @@ class SourceResolver(ABC):
             _hf_source_to_repo(override_source),
             spec,
             mapped_name,
+            ignore_subdir=True,
             **kwargs,
         )
 
-    def _fetch_hf(self, repo_id: str, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
+    def _fetch_hf(
+        self, repo_id: str, spec: ArtifactSpec, mapped_name: str, ignore_subdir: bool = False, **kwargs
+    ) -> tuple[Path | None, str | None]:
         """Helper to fetch from Hugging Face cache/download."""
-        hf_mapped_name = f"{spec.hf_subdir.rstrip('/')}/{mapped_name}" if spec.hf_subdir else mapped_name
+        if ignore_subdir or not spec.hf_subdir:
+            hf_mapped_name = mapped_name
+        else:
+            hf_mapped_name = f"{spec.hf_subdir.rstrip('/')}/{mapped_name}"
         try:
             path, reason = download_or_cached_with_reason(
                 repo_id=repo_id,
