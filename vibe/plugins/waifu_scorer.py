@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.backends.base import (
+    ArtifactMap,
+    ArtifactSpec,
+    Backend,
+    FileRole,
+    ModelCapabilities,
+    ModelIdentity,
+    ModelPlugin,
+    ModelVariant,
+)
 from vibe.result_processors import NormalizedScore
 from vibe.results import OutputType, ScoreResult
 
@@ -16,47 +24,48 @@ logger = logging.getLogger(__name__)
 class WaifuScorerBasePlugin(ModelPlugin):
     """Shared implementation for the Eugeoter waifu scorer models."""
 
-    _abstract = True
     family_name = "Eugeoter Aesthetic Scorers"
 
     SCORE_MIN = 0.0
     SCORE_MAX = 10.0
     INPUT_SIZE = 768
 
-    output_type = OutputType.SCORE
-    supported_backends = (Backend.PYTORCH,)
-    supported_processors = (NormalizedScore,)
+    capabilities = ModelCapabilities(
+        output_type=OutputType.SCORE,
+        supported_processors=(NormalizedScore,),
+    )
 
-    MLP_WEIGHTS_KEY = "mlp_weights"
-    CLIP_WEIGHTS_KEY = "clip_weights"
-    CLIP_CONFIG_KEY = "clip_config"
-    CLIP_PREPROCESSOR_KEY = "clip_preprocessor"
-
-    required_files = (
-        FileSpec(
-            name="model.safetensors",
-            key=MLP_WEIGHTS_KEY,
-            role=FileRole.WEIGHTS,
-            backends=(Backend.PYTORCH,),
-        ),
-        FileSpec(
-            name="model.safetensors",
-            key=CLIP_WEIGHTS_KEY,
-            role=FileRole.WEIGHTS,
-            backends=(Backend.PYTORCH,),
-            repo_id="openai/clip-vit-large-patch14",
-        ),
-        FileSpec(
-            name="config.json",
-            key=CLIP_CONFIG_KEY,
-            role=FileRole.CONFIG,
-            repo_id="openai/clip-vit-large-patch14",
-        ),
-        FileSpec(
-            name="preprocessor_config.json",
-            key=CLIP_PREPROCESSOR_KEY,
-            role=FileRole.CONFIG,
-            repo_id="openai/clip-vit-large-patch14",
+    # NOTE: if user overrides source with local dir for example, then user needs to
+    # use filename_map (or source_map) to allow for the same-filename files to load
+    # (rename one weight file and use filename_map to point to it)
+    variants = (
+        ModelVariant(
+            backend=Backend.PYTORCH,
+            artifacts=(
+                ArtifactSpec(
+                    id="mlp_weights",
+                    name="model.safetensors",
+                    role=FileRole.WEIGHTS,
+                ),
+                ArtifactSpec(
+                    id="clip_weights",
+                    name="model.safetensors",
+                    role=FileRole.WEIGHTS,
+                    repo_id="openai/clip-vit-large-patch14",
+                ),
+                ArtifactSpec(
+                    id="clip_config",
+                    name="config.json",
+                    role=FileRole.CONFIG,
+                    repo_id="openai/clip-vit-large-patch14",
+                ),
+                ArtifactSpec(
+                    id="clip_preprocessor",
+                    name="preprocessor_config.json",
+                    role=FileRole.CONFIG,
+                    repo_id="openai/clip-vit-large-patch14",
+                ),
+            ),
         ),
     )
 
@@ -69,7 +78,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
         self._backend = kwargs.get("backend")
         self._backend_instance = kwargs.get("backend_instance")
 
-    def load_ancillary(self, file_map: dict[str, Path]) -> None:
+    def load_ancillary(self, artifacts: ArtifactMap) -> None:
         if self._backend != Backend.PYTORCH:
             return
 
@@ -90,7 +99,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
             raise RuntimeError("Waifu scorer weights must be a PyTorch state dict or nn.Module.")
 
         device = getattr(backend, "device", "cpu")
-        clip_model, clip_preprocess = self._load_clip_model(device, file_map)
+        clip_model, clip_preprocess = self._load_clip_model(device, artifacts)
         mlp = self._build_mlp()
         normalized_state = self._normalize_mlp_state_dict(model_or_state)
         self._load_state_dict(mlp, normalized_state)
@@ -133,7 +142,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
             score_max=self.SCORE_MAX,
         )
 
-    def _load_clip_model(self, device: str, file_map: dict[str, Path]) -> tuple[Any, Any]:
+    def _load_clip_model(self, device: str, artifacts: ArtifactMap) -> tuple[Any, Any]:
         try:
             from transformers import CLIPImageProcessor, CLIPModel
         except ImportError as exc:
@@ -143,12 +152,9 @@ class WaifuScorerBasePlugin(ModelPlugin):
                 "Try upgrading or reinstalling both packages together."
             ) from exc
 
-        clip_weights = file_map.get(self.CLIP_WEIGHTS_KEY)
-        clip_config = file_map.get(self.CLIP_CONFIG_KEY)
-        clip_preprocessor = file_map.get(self.CLIP_PREPROCESSOR_KEY)
-
-        if not clip_weights or not clip_config or not clip_preprocessor:
-            raise RuntimeError("Waifu scorer is missing CLIP files; check resolved sources.")
+        clip_weights = artifacts.get("clip_weights")
+        clip_config = artifacts.get("clip_config")
+        clip_preprocessor = artifacts.get("clip_preprocessor")
 
         clip_dir = clip_weights.parent
         if clip_config.parent != clip_dir or clip_preprocessor.parent != clip_dir:
@@ -218,15 +224,15 @@ class WaifuScorerBasePlugin(ModelPlugin):
             raise RuntimeError(f"Failed to load waifu scorer weights: {exc}") from exc
 
         if missing:
-            logger.warning("Waifu scorer missing keys for model_id=%s: %s", self.model_id, missing[:8])
+            logger.warning("Waifu scorer missing keys for model_id=%s: %s", self.identity.model_id, missing[:8])
         if unexpected:
-            logger.warning("Waifu scorer unexpected keys for model_id=%s: %s", self.model_id, unexpected[:8])
+            logger.warning("Waifu scorer unexpected keys for model_id=%s: %s", self.identity.model_id, unexpected[:8])
 
 
 try:
     import torch.nn as nn
-except ImportError:  # pragma: no cover - module discovery stays importable without torch
-    nn = None  # type: ignore[assignment]
+except ImportError:
+    nn = None  # ty:ignore[invalid-assignment]
 
 
 if nn is not None:
@@ -263,17 +269,21 @@ else:  # pragma: no cover - only used when torch is missing entirely
 
 
 class WaifuScorerV3Plugin(WaifuScorerBasePlugin):
-    model_id = "waifu-scorer-v3"
-    display_name = "Waifu Scorer v3"
-    description = "Anime image aesthetic scorer using CLIP ViT-L/14 image encoder and Waifu Scorer v3 MLP head."
-    default_hf_repo = "Eugeoter/waifu-scorer-v3"
+    identity = ModelIdentity(
+        model_id="waifu-scorer-v3",
+        display_name="Waifu Scorer v3",
+        description="Anime image aesthetic scorer using CLIP ViT-L/14 image encoder and Waifu Scorer v3 MLP head.",
+    )
+    default_repo_id = "Eugeoter/waifu-scorer-v3"
 
 
 class WaifuScorerV4Plugin(WaifuScorerBasePlugin):
-    model_id = "waifu-scorer-v4-beta"
-    display_name = "Waifu Scorer v4 Beta"
-    description = "Anime image aesthetic scorer using CLIP ViT-L/14 image encoder and Waifu Scorer v4-beta MLP head."
-    default_hf_repo = "Eugeoter/waifu-scorer-v4-beta"
+    identity = ModelIdentity(
+        model_id="waifu-scorer-v4-beta",
+        display_name="Waifu Scorer v4 Beta",
+        description="Anime image aesthetic scorer using CLIP ViT-L/14 image encoder and Waifu Scorer v4-beta MLP head.",
+    )
+    default_repo_id = "Eugeoter/waifu-scorer-v4-beta"
 
 
 # endregion Model Variants
