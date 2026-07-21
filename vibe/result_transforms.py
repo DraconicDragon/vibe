@@ -119,10 +119,6 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
             return
         if not getattr(cls, "transform_id", None):
             raise ValueError(f"{cls.__name__} must define a 'transform_id' ClassVar.")
-        if not dataclasses.is_dataclass(cls):
-            raise TypeError(
-                f"ResultTransform subclass '{cls.__name__}' must be decorated with @dataclass(frozen=True)."
-            )
         transform_registry.register(cls)
 
     def __call__(self, result: TIn, *, context: TransformContext) -> TOut:
@@ -132,6 +128,9 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
     @classmethod
     def describe(cls) -> TransformInfo:
         """Dynamically build transform metadata from dataclass fields."""
+        if not dataclasses.is_dataclass(cls):
+            raise TypeError(f"ResultTransform subclass '{cls.__name__}' must be decorated with @dataclass.")
+
         params: list[ParamInfo] = []
         fields_dict: dict[str, dataclasses.Field[Any]] = getattr(cls, "__dataclass_fields__", {})
 
