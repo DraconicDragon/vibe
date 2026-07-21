@@ -50,7 +50,7 @@ from vibe.backends.base import (
     ModelVariant,
 )
 from vibe.devices import list_available_devices
-from vibe.exceptions import ProcessorError, SessionError
+from vibe.exceptions import SessionError
 from vibe.hf_downloader import (
     get_auto_download_default,
     set_auto_download_default,
@@ -62,16 +62,16 @@ from vibe.memory_stats import (
     MemoryTrackerStats,
 )
 from vibe.precision import parse_precision
-from vibe.registry import RegistryError, model_registry
-from vibe.result_processors import (
+from vibe.registry import RegistryError, model_registry, transform_registry
+from vibe.result_transforms import (
     CharacterIPMapping,
     CleanTags,
     MultiScoreToScore,
     NormalizedScore,
-    ProcessorInfo,
-    ResultProcessor,
+    ResultTransform,
     ScoreThresholds,
     TagLevelThresholds,
+    TransformInfo,
 )
 from vibe.results import (
     InferenceResult,
@@ -371,33 +371,17 @@ def _resolve_source(
 # todo: move out in future
 
 
-def list_processors() -> list[ProcessorInfo]:
-    "Return metadata in form of ProcessorInfo for all available result processor classes in the library."
-    import vibe.result_processors as rp
-
-    return [
-        cls.describe()
-        for cls in vars(rp).values()
-        if isinstance(cls, type)
-        and issubclass(cls, rp.ResultProcessor)
-        and cls is not rp.ResultProcessor
-        and hasattr(cls, "_processor_info")  # only classes that completed __init_subclass__
-    ]
+def list_transforms() -> list[TransformInfo]:
+    """Return metadata in form of TransformInfo for all available transforms in the library."""
+    # Triggers evaluation of any pending class decorators
+    model_registry.ensure_discovered()
+    return transform_registry.list_all()
 
 
-def get_processor(name: str) -> type[ResultProcessor]:
-    """Return a result processor class by its class name in form of a string."""
-    import vibe.result_processors as rp
-
-    cls = getattr(rp, name, None)
-    if cls is None or not (isinstance(cls, type) and issubclass(cls, rp.ResultProcessor)):
-        available = [
-            c.__name__
-            for c in vars(rp).values()
-            if isinstance(c, type) and issubclass(c, rp.ResultProcessor) and c is not rp.ResultProcessor
-        ]
-        raise RegistryError(f"No processor named '{name}'. Available: {available}")
-    return cls
+def get_transform(transform_id: str) -> type[ResultTransform]:
+    """Return a result transform class by its string ID."""
+    model_registry.ensure_discovered()
+    return transform_registry.get(transform_id)
 
 
 # endregion Utils
@@ -435,7 +419,10 @@ __all__ = [
     "ImageChunk",
     "iter_load_images",
     # Processors
-    "ResultProcessor",
+    "ResultTransform",
+    "TransformInfo",
+    "list_transforms",
+    "get_transform",
     "CleanTags",
     "CharacterIPMapping",
     "ScoreThresholds",

@@ -5,9 +5,9 @@ from typing import Any, Literal
 from vibe.backends.base import Backend, ModelPlugin
 from vibe.batch_utils import split_batch_output, stack_batch
 from vibe.exceptions import InferenceCancelled, SessionError
-from vibe.processor_pipeline import ProcessorPipeline
-from vibe.result_processors import ResultProcessor
+from vibe.result_transforms import ResultTransform
 from vibe.results import ModelResult
+from vibe.transform_pipeline import TransformPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -64,22 +64,22 @@ class SessionRunnerState:
 
 
 class InferenceEngine:
-    def __init__(self, plugin: ModelPlugin, backend_instance: Any, pipeline: ProcessorPipeline):
+    def __init__(self, plugin: ModelPlugin, backend_instance: Any, pipeline: TransformPipeline):
         self.plugin = plugin
         self.backend_instance = backend_instance
         self.pipeline = pipeline
         self.model_id = plugin.identity.model_id
 
-    def execute_single(self, image: Any, processors: list[ResultProcessor] | None) -> ModelResult:
+    def execute_single(self, image: Any, transforms: list[ResultTransform] | None) -> ModelResult:
         try:
             tensor = self.plugin.preprocess(image)
             logger.debug("Preprocess output shape=%s dtype=%s", _fmt_shape(tensor), _fmt_dtype(tensor))
         except Exception as exc:
             raise SessionError(f"Preprocessing failed for model '{self.model_id}': {exc}") from exc
 
-        return self.execute_tensor(tensor, processors)
+        return self.execute_tensor(tensor, transforms)
 
-    def execute_tensor(self, tensor: Any, processors: list[ResultProcessor] | None) -> ModelResult:
+    def execute_tensor(self, tensor: Any, transforms: list[ResultTransform] | None) -> ModelResult:
         try:
             raw_output = self.backend_instance.run(tensor)
             logger.debug("Raw backend output shape=%s dtype=%s", _fmt_shape(raw_output), _fmt_dtype(raw_output))
@@ -91,7 +91,7 @@ class InferenceEngine:
         except Exception as exc:
             raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
 
-        return self.pipeline.apply(result, processors)
+        return self.pipeline.apply(result, transforms)
 
 
 class BatchRunner:
@@ -134,7 +134,7 @@ class BatchRunner:
         return any(p.strip() and p.strip() != "CPUExecutionProvider" for p in providers)
 
     def execute_chunk(
-        self, chunk_images: list[Any], processors: list[ResultProcessor] | None, fallback_to_sequential: bool
+        self, chunk_images: list[Any], transforms: list[ResultTransform] | None, fallback_to_sequential: bool
     ) -> list[ModelResult]:
         self.state.check_cancelled()
         try:
@@ -149,7 +149,7 @@ class BatchRunner:
                 results = []
                 for tensor in chunk_tensors:
                     self.state.check_cancelled()
-                    results.append(self.engine.execute_tensor(tensor, processors))
+                    results.append(self.engine.execute_tensor(tensor, transforms))
                 return results
             raise
 
@@ -165,5 +165,5 @@ class BatchRunner:
                 result = self.engine.plugin.postprocess(sample_output)
             except Exception as exc:
                 raise SessionError(f"Postprocessing failed for model '{self.engine.model_id}': {exc}") from exc
-            results.append(self.engine.pipeline.apply(result, processors))
+            results.append(self.engine.pipeline.apply(result, transforms))
         return results

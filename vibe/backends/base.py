@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from vibe.results import ModelResult, OutputType
 
 if TYPE_CHECKING:
-    from vibe.result_processors import ResultProcessor
+    from vibe.result_transforms import ResultTransform
 
 
 class FileRole(str, Enum):
@@ -40,7 +40,8 @@ class ModelDescriptor:
     description: str
     output_type: OutputType
     supported_backends: tuple[Backend, ...]
-    supported_processors: tuple[str, ...]
+    supported_transforms: tuple[str, ...]
+    recommended_transforms: dict[str, dict[str, Any]]  # transform_id -> dict of recommended values
     default_repo_id: str
     variants: tuple[ModelVariant, ...]
 
@@ -86,7 +87,7 @@ class ModelIdentity:
 @dataclass(frozen=True)
 class ModelCapabilities:
     output_type: OutputType = OutputType.TAGS
-    supported_processors: tuple[type["ResultProcessor"], ...] = ()
+    transforms: tuple[type["ResultTransform"] | "ResultTransform", ...] = ()
 
 
 class ArtifactMap:
@@ -178,6 +179,19 @@ class ModelPlugin(ABC):
         """Assembles a structured descriptor of the model plugin's metadata."""
         resolved_variants = tuple(v.resolve(cls.default_repo_id) for v in cls.variants)
 
+        # Unified extraction
+        supported_ids = []
+        recommended_configs = {}
+
+        from vibe.result_transforms import ResultTransform
+
+        for t in cls.capabilities.transforms:
+            if isinstance(t, type) and issubclass(t, ResultTransform):
+                supported_ids.append(t.transform_id)
+            elif isinstance(t, ResultTransform):
+                supported_ids.append(t.transform_id)
+                recommended_configs[t.transform_id] = t.to_config_dict()
+
         return ModelDescriptor(
             model_id=cls.identity.model_id,
             display_name=cls.identity.display_name,
@@ -185,7 +199,8 @@ class ModelPlugin(ABC):
             description=cls.identity.description,
             output_type=cls.capabilities.output_type,
             supported_backends=tuple(v.backend for v in cls.variants),
-            supported_processors=tuple(p.__name__ for p in cls.capabilities.supported_processors),
+            supported_transforms=tuple(supported_ids),
+            recommended_transforms=recommended_configs,
             default_repo_id=cls.default_repo_id,
             variants=resolved_variants,
         )
