@@ -125,6 +125,10 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
             )
         transform_registry.register(cls)
 
+    def __call__(self, result: TIn, *, context: TransformContext) -> TOut:
+        """Convenience caller forwarding directly to apply()."""
+        return self.apply(result, context=context)
+
     @classmethod
     def describe(cls) -> TransformInfo:
         """Dynamically build transform metadata from dataclass fields."""
