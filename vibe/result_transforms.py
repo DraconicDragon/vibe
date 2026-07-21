@@ -196,13 +196,11 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
         default=None,
         metadata={"description": "Path to custom mapping JSON. If omitted, uses model bundle or HF fallback."},
     )
-    _mapping_cache: dict[str, list[str]] | None = field(
-        default=None, repr=False, compare=False, metadata={"internal": True}
+    _mapping_cache: dict[str, dict[str, list[str]]] = field(
+        default_factory=dict, repr=False, compare=False, metadata={"internal": True}
     )
 
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
-        if not isinstance(result, TagResult):
-            return result
 
         character_entries = result.category("character")
         if not character_entries:
@@ -219,8 +217,9 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
         return result
 
     def _get_mapping(self, context: TransformContext) -> dict[str, list[str]]:
-        if self._mapping_cache is not None:
-            return self._mapping_cache
+        cache_key = self.mapping_file or "default"
+        if cache_key in self._mapping_cache:
+            return self._mapping_cache[cache_key]
 
         tag_list_path = context.artifacts.get_optional("tag_list")
         model_dir = tag_list_path.parent if tag_list_path else Path.cwd()
@@ -230,7 +229,7 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
             manual_path=self.mapping_file,
             allow_download=context.auto_download,
         )
-        object.__setattr__(self, "_mapping_cache", cache)  # bypass frozen for internal cache
+        self._mapping_cache[cache_key] = cache
         return cache
 
 
