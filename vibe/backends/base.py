@@ -89,6 +89,28 @@ class ModelCapabilities:
     output_type: OutputType = OutputType.TAGS
     transforms: tuple[type["ResultTransform"] | "ResultTransform", ...] = ()
 
+    def with_transforms(self, *overrides: type["ResultTransform"] | "ResultTransform") -> "ModelCapabilities":
+        """Return a copy with specified transforms added or replaced by their transform_id."""
+        import dataclasses
+
+        # Map overrides by their explicit transform_id
+        override_map = {getattr(o, "transform_id"): o for o in overrides}
+
+        new_transforms = []
+        for t in self.transforms:
+            tid = getattr(t, "transform_id")
+            if tid in override_map:
+                # Replace existing and remove from override map
+                new_transforms.append(override_map.pop(tid))
+            else:
+                # Keep existing
+                new_transforms.append(t)
+
+        # Append any brand new transforms that weren't in the original tuple
+        new_transforms.extend(override_map.values())
+
+        return dataclasses.replace(self, transforms=tuple(new_transforms))
+
 
 class ArtifactMap:
     """A strictly ID-keyed mapping of resolved paths. Plugins never index by filename."""
