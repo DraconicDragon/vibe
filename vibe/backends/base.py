@@ -91,24 +91,28 @@ class ModelCapabilities:
 
     def with_transforms(self, *overrides: type["ResultTransform"] | "ResultTransform") -> "ModelCapabilities":
         """Return a copy with specified transforms added or replaced by their transform_id."""
-        import dataclasses
-
-        # Map overrides by their explicit transform_id
-        override_map = {getattr(o, "transform_id"): o for o in overrides}
+        override_map = {}
+        for o in overrides:
+            tid = getattr(o, "transform_id", None)
+            if not tid:
+                raise ValueError(f"Invalid transform override '{o}': missing 'transform_id'.")
+            override_map[tid] = o
 
         new_transforms = []
         for t in self.transforms:
-            tid = getattr(t, "transform_id")
-            if tid in override_map:
-                # Replace existing and remove from override map
+            tid = getattr(t, "transform_id", None)
+            if tid and tid in override_map:
                 new_transforms.append(override_map.pop(tid))
             else:
                 new_transforms.append(t)
 
-        # Append any brand new transforms that weren't in the original tuple
         new_transforms.extend(override_map.values())
 
-        return dataclasses.replace(self, transforms=tuple(new_transforms))
+        return ModelCapabilities(
+            output_type=self.output_type,
+            output_categories=self.output_categories,
+            transforms=tuple(new_transforms),
+        )
 
 
 class ArtifactMap:
