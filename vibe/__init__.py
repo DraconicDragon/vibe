@@ -418,7 +418,7 @@ __all__ = [
     "is_multi_score_result",
     "ImageChunk",
     "iter_load_images",
-    # Processors
+    # Result Transforms
     "ResultTransform",
     "TransformInfo",
     "list_transforms",
@@ -431,9 +431,11 @@ __all__ = [
     "NormalizedScore",
     # Registry
     "model_registry",
+    "transform_registry",
+    # Exceptions
     "RegistryError",
     "SessionError",
-    "ProcessorError",
+    "TransformError",
     # API
     "__version__",
     "__author__",
