@@ -119,6 +119,10 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
             return
         if not getattr(cls, "transform_id", None):
             raise ValueError(f"{cls.__name__} must define a 'transform_id' ClassVar.")
+        if not dataclasses.is_dataclass(cls):
+            raise TypeError(
+                f"ResultTransform subclass '{cls.__name__}' must be decorated with @dataclass(frozen=True)."
+            )
         transform_registry.register(cls)
 
     @classmethod
