@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterator, Literal
 
+from vibe import ModelResult
 from vibe.backends.base import ArtifactMap, Backend, ModelPlugin
 from vibe.exceptions import InferenceCancelled, SessionError
 from vibe.image_loading import (
@@ -385,6 +386,15 @@ class ModelSession:
         return self._source
 
     # todo: describe/session info func for the session?
+
+    def apply_transforms(self, result: ModelResult, transforms: list[ResultTransform]) -> ModelResult:
+        """
+        Manually apply a list of transforms to an existing result.
+        """
+        if self._closed:
+            raise SessionError("Cannot apply transforms: Session is closed.")
+
+        return self._pipeline.apply(result, transforms)
 
     def close(self) -> None:
         """Release runtime resources for this session."""
