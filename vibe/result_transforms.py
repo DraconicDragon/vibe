@@ -73,6 +73,15 @@ class ParamInfo:
     required: bool
     description: str
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "type": self.type,
+            "default": self.default,
+            "required": self.required,
+            "description": self.description,
+        }
+
 
 @dataclass(frozen=True)
 class TransformInfo:
@@ -80,6 +89,14 @@ class TransformInfo:
     display_name: str
     description: str
     params: list[ParamInfo]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "transform_id": self.transform_id,
+            "display_name": self.display_name,
+            "description": self.description,
+            "params": [p.to_dict() for p in self.params],
+        }
 
 
 # endregion
