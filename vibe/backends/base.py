@@ -103,7 +103,6 @@ class ModelCapabilities:
                 # Replace existing and remove from override map
                 new_transforms.append(override_map.pop(tid))
             else:
-                # Keep existing
                 new_transforms.append(t)
 
         # Append any brand new transforms that weren't in the original tuple
@@ -201,7 +200,6 @@ class ModelPlugin(ABC):
         """Assembles a structured descriptor of the model plugin's metadata."""
         resolved_variants = tuple(v.resolve(cls.default_repo_id) for v in cls.variants)
 
-        # Unified extraction
         supported_ids = []
         recommended_configs = {}
 
