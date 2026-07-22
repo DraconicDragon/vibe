@@ -39,6 +39,7 @@ class ModelDescriptor:
     family_name: str
     description: str
     output_type: OutputType
+    output_categories: tuple[str, ...]
     supported_backends: tuple[Backend, ...]
     supported_transforms: tuple[str, ...]
     recommended_transforms: dict[str, dict[str, Any]]  # transform_id -> dict of recommended values
@@ -87,6 +88,7 @@ class ModelIdentity:
 @dataclass(frozen=True)
 class ModelCapabilities:
     output_type: OutputType = OutputType.TAGS
+    output_categories: tuple[str, ...] = ()
     transforms: tuple[type["ResultTransform"] | "ResultTransform", ...] = ()
 
     def with_transforms(self, *overrides: type["ResultTransform"] | "ResultTransform") -> "ModelCapabilities":
