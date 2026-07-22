@@ -219,7 +219,7 @@ class ModelSession:
 
                 for chunk in iter_load_images(
                     images=images,
-                    batch_size=batch_size if method != "sequential" else 1,
+                    batch_size=batch_size,
                     prefetch=prefetch_images,
                     cancel_check=self._state.check_cancelled,
                     error_cls=SessionError,

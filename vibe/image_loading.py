@@ -123,6 +123,7 @@ def iter_load_images(
         return batch
 
     total = len(values)
+    prefetch_read_size = max(batch_size, 8) if use_prefetch else batch_size
 
     if not use_prefetch:
         for start in range(0, total, batch_size):
@@ -132,7 +133,7 @@ def iter_load_images(
 
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="vibe-image-loader") as executor:
         start = 0
-        end = min(batch_size, total)
+        end = min(prefetch_read_size, total)
         future = executor.submit(_load_batch, start, end)
 
         while start < total:
@@ -150,7 +151,7 @@ def iter_load_images(
 
             # Dispatch next chunk while yielding the current one
             next_start = start + batch_size
-            next_end = min(next_start + batch_size, total)
+            next_end = min(next_start + prefetch_read_size, total)
 
             if next_start < total:
                 future = executor.submit(_load_batch, next_start, next_end)
