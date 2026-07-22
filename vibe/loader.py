@@ -162,9 +162,17 @@ class LocalResolver(SourceResolver):
         if not self.folder.is_dir():
             return None, f"Local folder does not exist: {self.folder}"
 
+        # Check HF Repo-like nested structure first
+        if spec.hf_subdir:
+            nested_candidate = self.folder / spec.hf_subdir / mapped_name
+            if nested_candidate.is_file():
+                return nested_candidate, None
+
+        # Flat structure
         candidate = self.folder / mapped_name
         if candidate.is_file():
             return candidate, None
+
         return None, f"Missing in local folder: {candidate}"
 
 
