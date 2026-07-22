@@ -212,12 +212,15 @@ class ModelPlugin(ABC):
                 supported_ids.append(t.transform_id)
                 recommended_configs[t.transform_id] = t.to_config_dict()
 
+        supported_ids = list(dict.fromkeys(supported_ids))
+
         return ModelDescriptor(
             model_id=cls.identity.model_id,
             display_name=cls.identity.display_name,
             family_name=cls.family_name,
             description=cls.identity.description,
             output_type=cls.capabilities.output_type,
+            output_categories=cls.capabilities.output_categories,
             supported_backends=tuple(v.backend for v in cls.variants),
             supported_transforms=tuple(supported_ids),
             recommended_transforms=recommended_configs,
