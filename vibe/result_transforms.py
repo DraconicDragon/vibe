@@ -8,7 +8,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar, Union, cast
+from typing import Any, Callable, ClassVar, Generic, TypeVar, Union, cast
 
 import numpy as np
 
@@ -55,7 +55,13 @@ class TransformContext:
     artifacts: ArtifactMap
     source: str
     auto_download: bool
+    cache: dict[str, Any] = field(default_factory=dict, repr=False)
     _warned_keys: set[str] = field(default_factory=set, repr=False, compare=False)
+
+    def get_cached_or_load(self, key: str, loader_fn: Callable[[], Any]) -> Any:
+        if key not in self.cache:
+            self.cache[key] = loader_fn()
+        return self.cache[key]
 
     def warn_once(self, key: str, message: str) -> None:
         """Log a warning message exactly once for the given key in this context (session)."""
@@ -444,9 +450,6 @@ class NormalizedScore(ResultTransform[Union[ScoreResult, MultiScoreResult], Unio
     use_samples_percentile: bool = field(
         default=False, metadata={"description": "Use bundled samples.npz for percentile normalization."}
     )
-    _samples_cache: dict[str, tuple[np.ndarray, np.ndarray]] = field(
-        default_factory=dict, repr=False, compare=False, metadata={"internal": True}
-    )
 
     def apply(
         self, result: Union[ScoreResult, MultiScoreResult], *, context: TransformContext
@@ -476,7 +479,7 @@ class NormalizedScore(ResultTransform[Union[ScoreResult, MultiScoreResult], Unio
         if self.use_samples_percentile:
             if samples_path is None:
                 raise FileNotFoundError("NormalizedScore: use_samples_percentile=True but artifact 'samples' missing.")
-            x, y = self._get_samples_table(samples_path)
+            x, y = self._get_samples_table(samples_path, context=context)
             return self._interp_percentile(weighted_mean, x, y)
 
         if samples_path is not None:
@@ -504,23 +507,9 @@ class NormalizedScore(ResultTransform[Union[ScoreResult, MultiScoreResult], Unio
             weighted_mean += index * float(value)
         return weighted_mean
 
-    def _get_samples_table(self, path: Path) -> tuple[np.ndarray, np.ndarray]:
-        key = str(path)
-        if key in self._samples_cache:
-            return self._samples_cache[key]
-
-        with np.load(path, allow_pickle=False) as data:
-            arr = np.asarray(data["arr_0"], dtype=np.float32)
-            x, y = np.asarray(arr[0], dtype=np.float32), np.asarray(arr[1], dtype=np.float32)
-
-        order = np.argsort(x)
-        x, y = x[order], y[order]
-
-        x = np.concatenate(([0.0], x, [x[-1] + 1e-6])).astype(np.float32, copy=False)
-        y = np.concatenate(([0.0], y, [1.0])).astype(np.float32, copy=False)
-
-        self._samples_cache[key] = (x, y)
-        return x, y
+    def _get_samples_table(self, path: Path, context: TransformContext) -> tuple[np.ndarray, np.ndarray]:
+        cache_key = f"normalized_score:samples:{path}"
+        return context.get_cached_or_load(cache_key, lambda: self._load_samples_file(path))
 
     @staticmethod
     def _interp_percentile(value: float, x: np.ndarray, y: np.ndarray) -> float:
@@ -532,6 +521,18 @@ class NormalizedScore(ResultTransform[Union[ScoreResult, MultiScoreResult], Unio
         x0, y0 = x[idx], y[idx]
         x1, y1 = x[idx + 1], y[idx + 1]
         return float(y0) if x1 == x0 else float((value - x0) / (x1 - x0) * (y1 - y0) + y0)
+
+    @staticmethod
+    def _load_samples_file(path: Path) -> tuple[np.ndarray, np.ndarray]:
+        with np.load(path, allow_pickle=False) as data:
+            arr = np.asarray(data["arr_0"], dtype=np.float32)
+            x, y = np.asarray(arr[0], dtype=np.float32), np.asarray(arr[1], dtype=np.float32)
+
+        order = np.argsort(x)
+        x, y = x[order], y[order]
+        x = np.concatenate(([0.0], x, [x[-1] + 1e-6])).astype(np.float32, copy=False)
+        y = np.concatenate(([0.0], y, [1.0])).astype(np.float32, copy=False)
+        return x, y
 
 
 # endregion
