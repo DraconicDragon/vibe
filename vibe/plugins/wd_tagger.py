@@ -22,9 +22,9 @@ from vibe.plugins.shared.tagger_shared import (
     normalize_output_scores,
     preprocess_tagger_image,
 )
-from vibe.result_processors import CharacterIPMapping, CleanTags, ScoreThresholds
+from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds
 from vibe.results import OutputType, TagEntry, TagResult
-from vibe.tag_categories import DanbooruTagCategory
+from vibe.tag_categories import DanbooruTagCategory, TagCategory
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +36,17 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
 
     capabilities = ModelCapabilities(
         output_type=OutputType.TAGS,
-        supported_processors=(
+        output_categories=(
+            TagCategory.RATING,
+            TagCategory.GENERAL,
+            TagCategory.CHARACTER,
+        ),
+        transforms=(
             CleanTags,
-            ScoreThresholds,
+            ScoreThresholds(
+                threshold=0.35,
+                category_thresholds={TagCategory.CHARACTER: 0.75},
+            ),
             CharacterIPMapping,
         ),
     )
@@ -48,7 +56,7 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
             backend=Backend.ONNX,
             artifacts=(
                 ArtifactSpec(id="model_onnx", name="model.onnx", role=FileRole.WEIGHTS),
-                ArtifactSpec(id="selected_tags", name="selected_tags.csv", role=FileRole.TAG_LIST),
+                ArtifactSpec(id="tag_list", name="selected_tags.csv", role=FileRole.TAG_LIST),
             ),
         ),
         ModelVariant(
@@ -56,12 +64,11 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
             artifacts=(
                 ArtifactSpec(id="model_pt", name="model.safetensors", role=FileRole.WEIGHTS),
                 ArtifactSpec(id="config", name="config.json", role=FileRole.CONFIG),
-                ArtifactSpec(id="selected_tags", name="selected_tags.csv", role=FileRole.TAG_LIST),
+                ArtifactSpec(id="tag_list", name="selected_tags.csv", role=FileRole.TAG_LIST),
             ),
         ),
     )
 
-    # Image input size for this model (most WD models use 448x448)
     IMAGE_SIZE = 448
 
     # Internal state loaded by load_ancillary()
@@ -73,7 +80,7 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         """Load tag metadata from selected_tags.csv and handle PyTorch bootstrapping."""
-        csv_path = artifacts.get("selected_tags")
+        csv_path = artifacts.get("tag_list")
 
         logger.info("Loading tag list from %s", csv_path)
         metadata = load_tag_metadata(csv_path)
@@ -92,22 +99,20 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
             len(self._rating_indices),
         )
 
-        # If using PyTorch, reconstruct the timm architecture using the loaded config.json
+        # If PyTorch variant, use timm
         if self._backend == Backend.PYTORCH:
             config_path = artifacts.get("config")
             config = self.read_timm_config_json(config_path)
-
-            # Reconstruct the PyTorch model architecture and load the state dict
             self.maybe_prepare_timm_pytorch_model(config=config, num_classes=len(self._raw_tag_names))
 
     def preprocess(self, image: Any) -> np.ndarray:
         """Convert image to layout expected by the active backend."""
-        # Under PyTorch, models expect standard (1, C, H, W) NCHW format
-        # Under ONNX, these models expect (1, H, W, C) NHWC format
+        # NOTE: PyTorch - models expect standard (1, C, H, W) NCHW format
+        # NOTE: ONNX - models expect (1, H, W, C) NHWC format
         layout = "NCHW" if self._backend == Backend.PYTORCH else "NHWC"
 
         if self._backend == Backend.PYTORCH:
-            # PyTorch expects BGR normalized to [-1, 1] range: (x - 127.5) / 127.5
+            # NOTE: PyTorch expects BGR normalized to [-1, 1] range: (x - 127.5) / 127.5
             return preprocess_tagger_image(
                 image,
                 image_size=self.IMAGE_SIZE,
@@ -118,7 +123,7 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
                 std=(0.5, 0.5, 0.5),
             )
         else:
-            # ONNX expects unnormalized, raw BGR [0, 255] float32
+            # NOTE: ONNX expects unnormalized, raw BGR [0, 255] float32
             arr = preprocess_tagger_image(
                 image,
                 image_size=self.IMAGE_SIZE,
@@ -128,10 +133,7 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
             )
             return np.ascontiguousarray(arr)
 
-    def postprocess(
-        self,
-        raw_output: Any,
-    ) -> TagResult:
+    def postprocess(self, raw_output: Any) -> TagResult:
         """Return full scored output grouped by WD tag category."""
         scores = normalize_output_scores(raw_output)
 
@@ -149,9 +151,9 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
 
         return TagResult(
             tags={
-                "rating": rating,
-                "general": general,
-                "character": character,
+                TagCategory.RATING: rating,
+                TagCategory.GENERAL: general,
+                TagCategory.CHARACTER: character,
             }
         )
 
@@ -181,6 +183,12 @@ class WDEva02Plugin(WDTaggerBasePlugin):
         description="Danbooru tag prediction using Eva02 ViT-L architecture.",
     )
     default_repo_id = "SmilingWolf/wd-eva02-large-tagger-v3"
+    capabilities = WDTaggerBasePlugin.capabilities.with_transforms(
+        ScoreThresholds(
+            threshold=0.53,
+            category_thresholds={TagCategory.CHARACTER: 0.75},
+        )
+    )
 
 
 class WDSwinV2Plugin(WDTaggerBasePlugin):
@@ -192,6 +200,12 @@ class WDSwinV2Plugin(WDTaggerBasePlugin):
         description="Danbooru tag prediction using SwinV2 architecture.",
     )
     default_repo_id = "SmilingWolf/wd-swinv2-tagger-v3"
+    capabilities = WDTaggerBasePlugin.capabilities.with_transforms(
+        ScoreThresholds(
+            threshold=0.265,
+            category_thresholds={TagCategory.CHARACTER: 0.75},
+        )
+    )
 
 
 class WDConvNextPlugin(WDTaggerBasePlugin):
@@ -203,6 +217,12 @@ class WDConvNextPlugin(WDTaggerBasePlugin):
         description="Danbooru tag prediction using ConvNeXt architecture.",
     )
     default_repo_id = "SmilingWolf/wd-convnext-tagger-v3"
+    capabilities = WDTaggerBasePlugin.capabilities.with_transforms(
+        ScoreThresholds(
+            threshold=0.27,
+            category_thresholds={TagCategory.CHARACTER: 0.75},
+        )
+    )
 
 
 class WDVitPlugin(WDTaggerBasePlugin):
@@ -214,6 +234,12 @@ class WDVitPlugin(WDTaggerBasePlugin):
         description="Danbooru tag prediction using ViT architecture.",
     )
     default_repo_id = "SmilingWolf/wd-vit-tagger-v3"
+    capabilities = WDTaggerBasePlugin.capabilities.with_transforms(
+        ScoreThresholds(
+            threshold=0.26,
+            category_thresholds={TagCategory.CHARACTER: 0.75},
+        )
+    )
 
 
 # endregion Model Variants
