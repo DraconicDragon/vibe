@@ -50,7 +50,7 @@ from vibe.backends.base import (
     ModelVariant,
 )
 from vibe.devices import list_available_devices
-from vibe.exceptions import SessionError
+from vibe.exceptions import InferenceCancelled, RegistryError, SessionError, TransformError
 from vibe.hf_downloader import (
     get_auto_download_default,
     set_auto_download_default,
@@ -62,7 +62,7 @@ from vibe.memory_stats import (
     MemoryTrackerStats,
 )
 from vibe.precision import parse_precision
-from vibe.registry import RegistryError, model_registry, transform_registry
+from vibe.registry import model_registry, transform_registry
 from vibe.result_transforms import (
     CharacterIPMapping,
     CleanTags,
@@ -433,9 +433,10 @@ __all__ = [
     "model_registry",
     "transform_registry",
     # Exceptions
-    "RegistryError",
     "SessionError",
     "TransformError",
+    "InferenceCancelled",
+    "RegistryError",
     # API
     "__version__",
     "__author__",
