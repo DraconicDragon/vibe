@@ -17,6 +17,7 @@ from vibe.backends.char_ip_mapping import apply_character_ip_mapping, resolve_ch
 from vibe.plugins.shared.tagger_shared import load_tag_metadata
 from vibe.registry import transform_registry
 from vibe.results import ModelResult, MultiScoreResult, ScoreResult, TagEntry, TagResult
+from vibe.tag_categories import TagCategory
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +270,7 @@ class ScoreThresholds(ResultTransform[TagResult, TagResult]):
     priority: ClassVar[int] = 0
 
     threshold: float = field(default=0.0, metadata={"description": "Global minimum score required."})
-    category_thresholds: dict[str, float] | None = field(
+    category_thresholds: dict[str | TagCategory, float] | None = field(
         default=None, metadata={"description": "Per-category threshold overrides."}
     )
 
