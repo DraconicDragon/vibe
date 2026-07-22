@@ -108,11 +108,7 @@ class ModelCapabilities:
 
         new_transforms.extend(override_map.values())
 
-        return ModelCapabilities(
-            output_type=self.output_type,
-            output_categories=self.output_categories,
-            transforms=tuple(new_transforms),
-        )
+        return dataclasses.replace(self, transforms=tuple(new_transforms))
 
 
 class ArtifactMap:
