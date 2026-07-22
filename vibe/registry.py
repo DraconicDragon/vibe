@@ -12,12 +12,11 @@ import threading
 import warnings
 from typing import TYPE_CHECKING
 
+from vibe.exceptions import RegistryError
+from vibe.result_transforms import ResultTransform, TransformInfo
+
 if TYPE_CHECKING:
     from vibe.backends.base import ModelDescriptor, ModelPlugin
-
-
-class RegistryError(Exception):
-    """Raised when a plugin lookup fails."""
 
 
 class ModelRegistry:
@@ -153,4 +152,26 @@ class ModelRegistry:
         return [n for n in all_names if name_lower in n.lower() or n.lower() in name_lower][:max_suggestions]
 
 
+class TransformRegistry:
+    """Central index for registering and looking up ResultTransform classes."""
+
+    def __init__(self) -> None:
+        self._transforms: dict[str, type["ResultTransform"]] = {}
+
+    def register(self, transform_cls: type["ResultTransform"]) -> None:
+        tid = getattr(transform_cls, "transform_id", None)
+        if not tid:
+            return
+        self._transforms[tid] = transform_cls
+
+    def get(self, transform_id: str) -> type["ResultTransform"]:
+        if transform_id not in self._transforms:
+            raise RegistryError(f"No transform found for '{transform_id}'. Known: {list(self._transforms)}")
+        return self._transforms[transform_id]
+
+    def list_all(self) -> list["TransformInfo"]:
+        return [cls.describe() for cls in self._transforms.values()]
+
+
 model_registry = ModelRegistry()
+transform_registry = TransformRegistry()

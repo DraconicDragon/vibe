@@ -3,7 +3,7 @@ ModelSession — a loaded model, ready to run inference.
 
 This is the object users interact with after calling vibe.load().
 It holds the resolved plugin instance, the active runtime backend,
-and optional result processors. Calling .infer() is the one thing you do with it.
+and optional result transforms. Calling .infer() is the one thing you do with it.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterator, Literal
 
+from vibe import ModelResult
 from vibe.backends.base import ArtifactMap, Backend, ModelPlugin
 from vibe.exceptions import InferenceCancelled, SessionError
 from vibe.image_loading import (
@@ -21,10 +22,10 @@ from vibe.image_loading import (
     should_prefetch_image_loading,
 )
 from vibe.memory_stats import MemoryTracker
-from vibe.processor_pipeline import ProcessorPipeline
-from vibe.result_processors import ResultProcessor, ResultProcessorContext
+from vibe.result_transforms import ResultTransform, TransformContext
 from vibe.results import InferenceResult, InferenceResultItem
 from vibe.runners import BatchRunner, InferenceEngine, SessionRunnerState
+from vibe.transform_pipeline import TransformPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -80,13 +81,14 @@ class ModelSession:
 
         self._state = SessionRunnerState(plugin.identity.model_id)
 
-        self._processor_context = ResultProcessorContext(
-            file_map=file_map,  # todo: change after result processor redesign is done
+        self._transform_context = TransformContext(
+            model_id=plugin.identity.model_id,
+            artifacts=file_map,
             source=source,
             auto_download=auto_download,
         )
-        self._pipeline = ProcessorPipeline(
-            plugin.identity.model_id, self._processor_context, plugin.capabilities.supported_processors
+        self._pipeline = TransformPipeline(
+            plugin.identity.model_id, self._transform_context, plugin.capabilities.transforms
         )
         self._engine = InferenceEngine(plugin, backend_instance, self._pipeline)
         self._runner = BatchRunner(self._engine, self._state, backend)
@@ -109,7 +111,7 @@ class ModelSession:
     def infer(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        result_processors: list[ResultProcessor] | None = None,
+        transforms: list[ResultTransform] | None = None,
         *,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
@@ -131,7 +133,7 @@ class ModelSession:
         try:
             for chunk in self.infer_batches(
                 images,
-                result_processors=result_processors,
+                transforms=transforms,
                 batch_size=batch_size,
                 batch_method=batch_method,
             ):
@@ -161,7 +163,7 @@ class ModelSession:
     def infer_batches(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        result_processors: list[ResultProcessor] | None = None,
+        transforms: list[ResultTransform] | None = None,
         *,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
@@ -184,8 +186,8 @@ class ModelSession:
                     logger.warning("No input images provided for model_id=%s", self.model_id)
                     return
 
-                # Delegated to the processor pipeline
-                self._pipeline.notify_infer_start(result_processors)
+                # Delegated to the transforms pipeline
+                self._pipeline.notify_infer_start(transforms)
 
                 total_inputs = len(values)
                 path_inputs = sum(1 for value in values if isinstance(value, (str, Path)))
@@ -234,7 +236,7 @@ class ModelSession:
                         chunk_items = []
                         for i, img in enumerate(chunk_images):
                             self._state.check_cancelled()
-                            result = self._engine.execute_single(img, processors=result_processors)
+                            result = self._engine.execute_single(img, transforms=transforms)
                             global_idx = start + i
                             chunk_items.append(
                                 InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
@@ -244,7 +246,7 @@ class ModelSession:
                         )
                     else:
                         chunk_results = self._runner.execute_chunk(
-                            chunk_images, processors=result_processors, fallback_to_sequential=(batch_method == "auto")
+                            chunk_images, transforms=transforms, fallback_to_sequential=(batch_method == "auto")
                         )
                         chunk_items = []
                         for i, result in enumerate(chunk_results):
@@ -285,7 +287,7 @@ class ModelSession:
     async def infer_async(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        result_processors: list[ResultProcessor] | None = None,
+        transforms: list[ResultTransform] | None = None,
         *,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
@@ -308,7 +310,7 @@ class ModelSession:
             try:
                 for chunk in self.infer_batches(
                     images,
-                    result_processors=result_processors,
+                    transforms=transforms,
                     batch_size=batch_size,
                     batch_method=batch_method,
                 ):
@@ -384,6 +386,16 @@ class ModelSession:
         return self._source
 
     # todo: describe/session info func for the session?
+
+    def apply_transforms(self, result: ModelResult, transforms: list[ResultTransform]) -> ModelResult:
+        """
+        Manually apply a list of transforms to an existing result.
+        """
+        if self._closed:
+            raise SessionError("Cannot apply transforms: Session is closed.")
+
+        self._pipeline.notify_infer_start(transforms)
+        return self._pipeline.apply(result, transforms)
 
     def close(self) -> None:
         """Release runtime resources for this session."""
