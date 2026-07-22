@@ -182,7 +182,14 @@ class MultiScoreResult(BaseModelResult):
                 return {}, None
 
             keys = list(raw_scores.keys())
-            is_int = all(isinstance(k, int) for k in keys)
+
+            if any(isinstance(k, bool) for k in keys):
+                raise ValueError("MultiScoreResult dictionary keys cannot be boolean values.")
+
+            # Check if all keys are integral (supports python int, np.int64, np.int32, torch int, etc.)
+            import numbers
+
+            is_int = all(isinstance(k, numbers.Integral) for k in keys)
             is_str = all(isinstance(k, str) for k in keys)
 
             if not (is_int or is_str):
@@ -196,6 +203,7 @@ class MultiScoreResult(BaseModelResult):
                     inferred_labels[i] = str(k)
                 return norm_scores, inferred_labels
 
+            # Standardize numpy/C integer types to native Python int
             return {int(k): float(v) for k, v in raw_scores.items()}, None
 
         raise TypeError(f"Unsupported scores type for MultiScoreResult: {type(raw_scores)}")
