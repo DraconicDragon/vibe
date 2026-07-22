@@ -394,6 +394,7 @@ class ModelSession:
         if self._closed:
             raise SessionError("Cannot apply transforms: Session is closed.")
 
+        self._pipeline.notify_infer_start(transforms)
         return self._pipeline.apply(result, transforms)
 
     def close(self) -> None:
