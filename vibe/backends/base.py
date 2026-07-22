@@ -148,6 +148,8 @@ class ModelPlugin(ABC):
     default_repo_id: str
     variants: tuple[ModelVariant, ...]
 
+    _backend: Backend | None = None
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
@@ -182,8 +184,8 @@ class ModelPlugin(ABC):
             warnings.warn(str(exc), stacklevel=2)
 
     def configure(self, **kwargs: Any) -> None:
-        """Optional per-session configuration hook."""
-        pass
+        """Store session configuration. Base implementation saves active backend."""
+        self._backend = kwargs.get("backend")
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         """Load tag lists, mappings, etc., using strict artifact IDs."""
