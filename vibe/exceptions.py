@@ -8,3 +8,7 @@ class TransformError(SessionError):
 
 class InferenceCancelled(SessionError):
     """Raised when an in-flight inference run is cancelled by user request."""
+
+
+class RegistryError(Exception):
+    """Raised when a plugin lookup fails."""

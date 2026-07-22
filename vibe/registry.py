@@ -12,14 +12,11 @@ import threading
 import warnings
 from typing import TYPE_CHECKING
 
+from vibe.exceptions import RegistryError
 from vibe.result_transforms import ResultTransform, TransformInfo
 
 if TYPE_CHECKING:
     from vibe.backends.base import ModelDescriptor, ModelPlugin
-
-
-class RegistryError(Exception):
-    """Raised when a plugin lookup fails."""
 
 
 class ModelRegistry:
