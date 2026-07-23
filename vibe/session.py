@@ -316,9 +316,15 @@ class ModelSession:
                 ):
                     loop.call_soon_threadsafe(queue.put_nowait, chunk)
             except Exception as exc:
-                loop.call_soon_threadsafe(queue.put_nowait, exc)
+                try:
+                    loop.call_soon_threadsafe(queue.put_nowait, exc)
+                except RuntimeError:
+                    pass  # Event loop is already closed; safe to ignore
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, _ASYNC_INFER_DONE)
+                try:
+                    loop.call_soon_threadsafe(queue.put_nowait, _ASYNC_INFER_DONE)
+                except RuntimeError:
+                    pass  # Event loop is already closed; safe to ignore
 
         # Daemon thread so pending async inference doesn't prevent interpreter shutdown
         thread = threading.Thread(target=_worker, name="vibe-infer-async", daemon=True)
@@ -336,7 +342,7 @@ class ModelSession:
                 yield payload
         except asyncio.CancelledError:
             self.cancel_current_inference()
-            raise
+            raise  # Exit immediately. Let the daemon thread die naturally in the background.
 
     def cancel_current_inference(self) -> bool:
         """
