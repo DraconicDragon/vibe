@@ -15,10 +15,29 @@ from vibe.backends.base import (
     ModelPlugin,
     ModelVariant,
 )
-from vibe.result_processors import NormalizedScore
+from vibe.result_transforms import NormalizedScore
 from vibe.results import OutputType, ScoreResult
 
 logger = logging.getLogger(__name__)
+
+
+def _get_runtime_model_cls(nn_module: Any) -> type:
+    """Dynamically define and return the WaifuScorerRuntimeModel class given torch.nn."""
+
+    class WaifuScorerRuntimeModel(nn_module.Module):
+        """Combined CLIP image encoder + MLP scorer."""
+
+        def __init__(self, *, clip_model: Any, mlp: Any) -> None:
+            super().__init__()
+            self.clip_model = clip_model
+            self.mlp = mlp
+
+        def forward(self, images: Any) -> Any:
+            features = self.clip_model.get_image_features(images).pooler_output
+            features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+            return self.mlp(features).clamp(0, 10)
+
+    return WaifuScorerRuntimeModel
 
 
 class WaifuScorerBasePlugin(ModelPlugin):
@@ -32,7 +51,8 @@ class WaifuScorerBasePlugin(ModelPlugin):
 
     capabilities = ModelCapabilities(
         output_type=OutputType.SCORE,
-        supported_processors=(NormalizedScore,),
+        output_categories=(),
+        transforms=(NormalizedScore,),
     )
 
     # NOTE: if user overrides source with local dir for example, then user needs to
@@ -104,14 +124,15 @@ class WaifuScorerBasePlugin(ModelPlugin):
         normalized_state = self._normalize_mlp_state_dict(model_or_state)
         self._load_state_dict(mlp, normalized_state)
 
-        model = WaifuScorerRuntimeModel(clip_model=clip_model, mlp=mlp)
+        # Build class dynamically without importing torch at module import time
+        runtime_cls = _get_runtime_model_cls(nn)
+        model = runtime_cls(clip_model=clip_model, mlp=mlp)
         backend._model = model
 
         apply_precision = getattr(backend, "_apply_precision_plan", None)
         if callable(apply_precision):
             apply_precision(torch)
         else:
-            device = getattr(backend, "device", "cpu")
             model.to(device=device)
 
         model.eval()
@@ -227,42 +248,6 @@ class WaifuScorerBasePlugin(ModelPlugin):
             logger.warning("Waifu scorer missing keys for model_id=%s: %s", self.identity.model_id, missing[:8])
         if unexpected:
             logger.warning("Waifu scorer unexpected keys for model_id=%s: %s", self.identity.model_id, unexpected[:8])
-
-
-try:
-    import torch.nn as nn
-except ImportError:
-    nn = None  # ty:ignore[invalid-assignment]
-
-
-if nn is not None:
-
-    class WaifuScorerRuntimeModel(nn.Module):
-        """Combined CLIP image encoder + MLP scorer."""
-
-        def __init__(self, *, clip_model: Any, mlp: Any) -> None:
-            super().__init__()
-            self.clip_model = clip_model
-            self.mlp = mlp
-
-        def forward(self, images: Any) -> Any:
-            features = self.clip_model.get_image_features(images).pooler_output
-            features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
-
-            # do not divide by 10 here, use NormalizedScore result processor to keep score in 0-1 range
-            return self.mlp(features).clamp(0, 10)
-
-else:  # pragma: no cover - only used when torch is missing entirely
-
-    class WaifuScorerRuntimeModel:
-        """Fallback placeholder when torch is unavailable."""
-
-        def __init__(self, *, clip_model: Any, mlp: Any) -> None:
-            self.clip_model = clip_model
-            self.mlp = mlp
-
-        def forward(self, images: Any) -> Any:
-            raise RuntimeError("PyTorch is required to run the waifu scorer model.")
 
 
 # region Model Variants
