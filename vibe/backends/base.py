@@ -93,20 +93,21 @@ class ModelCapabilities:
 
     def with_transforms(self, *overrides: type["ResultTransform"] | "ResultTransform") -> "ModelCapabilities":
         """Return a copy with specified transforms added or replaced by their transform_id."""
-        override_map = {}
-        for o in overrides:
-            tid = getattr(o, "transform_id", None)
-            if not tid:
-                raise ValueError(f"Invalid transform override '{o}': missing 'transform_id'.")
-            override_map[tid] = o
-
+        override_map = {getattr(o, "transform_id"): o for o in overrides}
+        seen_overrides = set()
         new_transforms = []
+
         for t in self.transforms:
             tid = getattr(t, "transform_id", None)
-            if tid and tid in override_map:
-                new_transforms.append(override_map.pop(tid))
+            if tid in override_map:
+                new_transforms.append(override_map[tid])
+                seen_overrides.add(tid)
             else:
                 new_transforms.append(t)
+
+        for tid, o in override_map.items():
+            if tid not in seen_overrides:
+                new_transforms.append(o)
 
         new_transforms.extend(override_map.values())
 
