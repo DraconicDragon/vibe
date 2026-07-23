@@ -28,14 +28,13 @@ class TransformPipeline:
             return result
 
         clean_tags_idx = next((i for i, t in enumerate(transforms) if isinstance(t, CleanTags)), -1)
-        if clean_tags_idx != -1:
-            if any(getattr(t, "priority", 0) < 100 for t in transforms[clean_tags_idx + 1 :]):
-                self.context.warn_once(
-                    "clean-tags-order",
-                    "CleanTags was found before other tag transforms in the requested list. "
-                    "The pipeline will auto-sort transforms by priority to fix this.",
-                )
-
+        # If CleanTags is present, but NOT the very last item in the user's provided list:
+        if clean_tags_idx != -1 and clean_tags_idx != len(transforms) - 1:
+            self.context.warn_once(
+                "clean-tags-order",
+                "CleanTags was found before other result transforms in the requested list. "
+                "This may cause tag matching errors with subsequent transforms."
+            )
         ordered_transforms = sorted(transforms, key=lambda t: t.priority)
 
         current = result
