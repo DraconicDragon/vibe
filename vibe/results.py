@@ -72,7 +72,7 @@ class TagResult(BaseModelResult):
         return names
 
     def as_score_dict(self) -> dict[str, float]:
-        """Return a flat {tag: score} dict sorted by score descending."""
+        """Return a flat {tag: score} dict sorted by score descending. Deduplicates by keeping the highest score."""
         all_entries: list[TagEntry] = []
         for entries in self.tags.values():
             all_entries.extend(entries)
@@ -80,14 +80,8 @@ class TagResult(BaseModelResult):
         sorted_entries = sorted(all_entries, key=lambda entry: entry.score, reverse=True)
         scores: dict[str, float] = {}
         for entry in sorted_entries:
-            if entry.tag in scores:
-                logger.warning(
-                    "Duplicate tag '%s' (score: %.3f) in result; keeping first occurrence",
-                    entry.tag,
-                    entry.score,
-                )
-                continue
-            scores[entry.tag] = entry.score
+            if entry.tag not in scores:
+                scores[entry.tag] = entry.score
         return scores
 
     def to_dict(self) -> dict[str, Any]:
