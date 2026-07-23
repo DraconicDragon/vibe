@@ -8,7 +8,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Generic, TypeVar, Union, cast
+from typing import Any, Callable, ClassVar, Generic, TypeVar, cast
 
 import numpy as np
 
@@ -223,12 +223,14 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
         return result
 
     def _get_mapping(self, context: TransformContext) -> dict[str, list[str]]:
-        cache_key = self.mapping_file or "default"
-        if cache_key in self._mapping_cache:
-            return self._mapping_cache[cache_key]
-
         tag_list_path = context.artifacts.get_optional("tag_list")
         model_dir = tag_list_path.parent if tag_list_path else Path.cwd()
+
+        # Unique cache key based on the manual file (if any) and the model's directory
+        cache_key = f"{self.mapping_file}::{model_dir}"
+
+        if cache_key in self._mapping_cache:
+            return self._mapping_cache[cache_key]
 
         cache = resolve_character_ip_mapping(
             model_dir=model_dir,
@@ -442,7 +444,7 @@ class MultiScoreToScore(ResultTransform[MultiScoreResult, ScoreResult]):
 
 
 @dataclass(frozen=True)
-class NormalizedScore(ResultTransform[Union[ScoreResult, MultiScoreResult], Union[ScoreResult, MultiScoreResult]]):
+class NormalizedScore(ResultTransform[ScoreResult | MultiScoreResult, ScoreResult | MultiScoreResult]):
     transform_id: ClassVar[str] = "normalized_score"
     display_name: ClassVar[str] = "Normalized Score"
     description: ClassVar[str] = "Attaches a normalized score in [0, 1]."
@@ -453,8 +455,8 @@ class NormalizedScore(ResultTransform[Union[ScoreResult, MultiScoreResult], Unio
     )
 
     def apply(
-        self, result: Union[ScoreResult, MultiScoreResult], *, context: TransformContext
-    ) -> Union[ScoreResult, MultiScoreResult]:
+        self, result: ScoreResult | MultiScoreResult, *, context: TransformContext
+    ) -> ScoreResult | MultiScoreResult:
         if isinstance(result, ScoreResult):
             result.normalized_score = self._normalize_scalar(result.score, result.score_min, result.score_max)
             return result
