@@ -2,6 +2,8 @@
 
 - ensure that heavy dependencies (torch, onnxruntime, transformers) are strictly imported inside load_ancillary or preprocess / postprocess
 
+- add some kind of pre-run check to transforms to ensure everything is fine (eg files are available and/or download-able)
+
 ## new todo
 
 - check session factory build_session, do the args need to be defaulted to something or nah? the only true places its being used, load/load_custom, already set all things
