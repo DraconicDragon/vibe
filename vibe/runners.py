@@ -27,6 +27,16 @@ class SessionRunnerState:
         self.run_state_lock = threading.Lock()
         self.cancel_event = threading.Event()
         self.run_active = False
+        self._warned_keys: set[str] = set()
+
+    def warn_once(self, key: str, message: str, level: int = logging.WARNING) -> None:
+        """Log a message exactly once for the lifetime of this session state."""
+        with self.lock:
+            if key in self._warned_keys:
+                return
+            self._warned_keys.add(key)
+
+        logger.log(level, message)
 
     def start_run(self) -> None:
         with self.run_state_lock:
@@ -146,6 +156,11 @@ class BatchRunner:
             batch_tensor = stack_batch(chunk_tensors, self.engine.model_id)
         except SessionError:
             if fallback_to_sequential:
+                self.state.warn_once(
+                    key="batch_fallback",
+                    message=f"Batch stacking failed for model '{self.engine.model_id}'; falling back to sequential execution.",
+                )
+
                 results = []
                 for tensor in chunk_tensors:
                     self.state.check_cancelled()
