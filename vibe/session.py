@@ -31,25 +31,6 @@ from vibe.transform_pipeline import TransformPipeline
 logger = logging.getLogger(__name__)
 
 
-_has_pillow_jxl: bool
-try:
-    import pillow_jxl as _pjxl  # noqa: F401
-
-    _has_pillow_jxl = True
-except ImportError:
-    _has_pillow_jxl = False
-    logger.info("pillow-jxl-plugin not installed; JPEG XL image format support is unavailable.")
-
-_has_pillow_heif: bool
-try:
-    import pillow_heif as _pheif  # noqa: F401
-
-    _has_pillow_heif = True
-except ImportError:
-    _has_pillow_heif = False
-    logger.info("pillow-heif not installed; HEIF/HEIC image format support is unavailable.")
-
-
 _ASYNC_INFER_DONE = object()
 
 # region ModelSession
