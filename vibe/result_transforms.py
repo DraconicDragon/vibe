@@ -139,9 +139,8 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
             raise TypeError(f"ResultTransform subclass '{cls.__name__}' must be decorated with @dataclass.")
 
         params: list[ParamInfo] = []
-        fields_dict: dict[str, dataclasses.Field[Any]] = getattr(cls, "__dataclass_fields__", {})
 
-        for f in fields_dict.values():
+        for f in dataclasses.fields(cls):
             if f.metadata.get("internal", False):
                 continue
 
