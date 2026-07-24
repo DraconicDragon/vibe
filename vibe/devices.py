@@ -88,7 +88,7 @@ def list_available_devices() -> list[str]:
         import onnxruntime as ort  # ty:ignore[unresolved-import]
 
         if hasattr(ort, "get_available_providers"):
-            available = set(str(p) for p in ort.get_available_providers())
+            available = {str(p) for p in ort.get_available_providers()}
             if "ROCMExecutionProvider" in available:
                 candidates.add("rocm")
             if "DmlExecutionProvider" in available:

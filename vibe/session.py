@@ -182,7 +182,7 @@ class ModelSession:
             before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
 
             try:
-                values, refs = normalize_input_format(images, error_cls=SessionError)
+                values, _refs = normalize_input_format(images, error_cls=SessionError)
                 if not values:
                     logger.warning("No input images provided for model_id=%s", self.model_id)
                     return

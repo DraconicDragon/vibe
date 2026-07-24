@@ -3,8 +3,8 @@ import math
 from functools import lru_cache
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 logger = logging.getLogger(__name__)
 

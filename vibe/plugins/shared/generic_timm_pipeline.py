@@ -142,7 +142,7 @@ class TimmPipelineMixin:
         if backend is not None:
             raw = getattr(backend, "raw", None)
             try:
-                import torch.nn as nn
+                from torch import nn
 
                 if isinstance(raw, nn.Module):
                     model = raw
@@ -185,7 +185,7 @@ class TimmPipelineMixin:
 
         try:
             import torch
-            import torch.nn as nn
+            from torch import nn
         except ImportError:
             return
 
@@ -443,6 +443,7 @@ class TimmPipelineMixin:
 
 # region Output Helpers
 
+
 def flatten_timm_output(raw_output: Any) -> np.ndarray:
     if isinstance(raw_output, (list, tuple)):
         raw_output = raw_output[0]
@@ -452,6 +453,7 @@ def flatten_timm_output(raw_output: Any) -> np.ndarray:
     elif arr.ndim > 1:
         arr = arr.reshape(arr.shape[0], -1)[0]
     return arr.astype(np.float32, copy=False)
+
 
 # endregion Output Helpers
 

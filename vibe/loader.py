@@ -28,8 +28,7 @@ def _is_local_source(source: str) -> bool:
 def _local_source_to_path(source: str) -> Path:
     source = source.strip()
 
-    if source.startswith("local:"):
-        source = source[6:]
+    source = source.removeprefix("local:")
 
     return Path(source).expanduser()
 
@@ -252,8 +251,7 @@ def parse_hf_source(source: str) -> tuple[str, str | None]:
         "legacy-repo" -> ("legacy-repo", None)
     """
     source = source.strip()
-    if source.startswith("hf:"):
-        source = source[3:]
+    source = source.removeprefix("hf:")
 
     parts = source.split("/")
     if len(parts) > 2:

@@ -108,7 +108,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
 
         try:
             import torch
-            import torch.nn as nn
+            from torch import nn
         except ImportError as exc:
             raise RuntimeError("PyTorch is required to use the waifu scorer plugin.") from exc
 
@@ -116,7 +116,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
         if isinstance(model_or_state, nn.Module):
             return
         if not isinstance(model_or_state, dict):
-            raise RuntimeError("Waifu scorer weights must be a PyTorch state dict or nn.Module.")
+            raise TypeError("Waifu scorer weights must be a PyTorch state dict or nn.Module.")
 
         device = getattr(backend, "device", "cpu")
         clip_model, clip_preprocess = self._load_clip_model(device, artifacts)
@@ -212,7 +212,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
 
     def _build_mlp(self) -> Any:
         try:
-            import torch.nn as nn
+            from torch import nn
         except ImportError as exc:
             raise RuntimeError("PyTorch is required to build the waifu scorer MLP.") from exc
 

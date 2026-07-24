@@ -112,7 +112,7 @@ def build_session(
 
 def _is_unprefixed_local_dir_source(source: str) -> bool:
     normalized = str(source).strip()
-    if normalized.startswith("local:") or normalized.startswith("hf:"):
+    if normalized.startswith(("local:", "hf:")):
         return False
     return Path(normalized).expanduser().is_dir()
 

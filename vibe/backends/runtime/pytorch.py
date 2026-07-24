@@ -11,14 +11,11 @@ import inspect
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
 from vibe.precision import parse_precision
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +93,7 @@ class PyTorchBackend:
 
         # Put in eval mode if it's an nn.Module
         try:
-            import torch.nn as nn
+            from torch import nn
 
             if isinstance(self._model, nn.Module):
                 self._model.eval()
@@ -134,7 +131,7 @@ class PyTorchBackend:
         user-requested precision (fp16, bf16, fp32) is honoured consistently.
         """
         try:
-            import torch.nn as nn
+            from torch import nn
         except ImportError as exc:
             raise RuntimeError("PyTorch is not installed.") from exc
 
@@ -164,7 +161,7 @@ class PyTorchBackend:
         """
         try:
             import torch
-            import torch.nn as nn
+            from torch import nn
         except ImportError as exc:
             raise RuntimeError("PyTorch is not installed.") from exc
 
@@ -172,7 +169,7 @@ class PyTorchBackend:
         from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
 
         if not isinstance(self._model, nn.Module):
-            raise RuntimeError(
+            raise TypeError(
                 "Model is a state dict, not an nn.Module. "
                 "The plugin must build the architecture and call "
                 "backend.raw to get the state dict, then construct the model itself."
