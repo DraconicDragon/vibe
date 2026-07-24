@@ -156,20 +156,20 @@ class TransformRegistry:
     """Central index for registering and looking up ResultTransform classes."""
 
     def __init__(self) -> None:
-        self._transforms: dict[str, type["ResultTransform"]] = {}
+        self._transforms: dict[str, type[ResultTransform]] = {}
 
-    def register(self, transform_cls: type["ResultTransform"]) -> None:
+    def register(self, transform_cls: type[ResultTransform]) -> None:
         tid = getattr(transform_cls, "transform_id", None)
         if not tid:
             return
         self._transforms[tid] = transform_cls
 
-    def get(self, transform_id: str) -> type["ResultTransform"]:
+    def get(self, transform_id: str) -> type[ResultTransform]:
         if transform_id not in self._transforms:
             raise RegistryError(f"No transform found for '{transform_id}'. Known: {list(self._transforms)}")
         return self._transforms[transform_id]
 
-    def list_all(self) -> list["TransformInfo"]:
+    def list_all(self) -> list[TransformInfo]:
         return [cls.describe() for cls in self._transforms.values()]
 
 

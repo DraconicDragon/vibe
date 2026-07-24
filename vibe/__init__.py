@@ -34,9 +34,9 @@ Quick start
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
-from typing import Mapping
 
 from vibe.backends.base import (
     ArtifactMap,

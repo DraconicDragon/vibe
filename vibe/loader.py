@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 from vibe.backends.base import ArtifactMap, ArtifactSpec, ModelVariant
 from vibe.hf_downloader import HFDownloadError, download_or_cached_with_reason

@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 from vibe.results import ModelResult, OutputType
 
@@ -89,11 +89,11 @@ class ModelIdentity:
 class ModelCapabilities:
     output_type: OutputType = OutputType.TAGS
     output_categories: tuple[str, ...] = ()
-    transforms: tuple[type["ResultTransform"] | "ResultTransform", ...] = ()
+    transforms: tuple[type[ResultTransform] | ResultTransform, ...] = ()
 
-    def with_transforms(self, *overrides: type["ResultTransform"] | "ResultTransform") -> "ModelCapabilities":
+    def with_transforms(self, *overrides: type[ResultTransform] | ResultTransform) -> Self:
         """Return a copy with specified transforms added or replaced by their transform_id."""
-        override_map = {getattr(o, "transform_id"): o for o in overrides}
+        override_map = {o.transform_id: o for o in overrides}
         seen_overrides = set()
         new_transforms = []
 
@@ -157,7 +157,7 @@ class ModelPlugin(ABC):
 
         if inspect.isabstract(cls):
             if is_concrete_intent:
-                missing = sorted(list(cls.__abstractmethods__))
+                missing = sorted(cls.__abstractmethods__)
                 raise TypeError(
                     f"Plugin class '{cls.__name__}' declared an identity but is missing concrete "
                     f"implementations for abstract methods: {missing}"
@@ -188,7 +188,6 @@ class ModelPlugin(ABC):
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         """Load tag lists, mappings, etc., using strict artifact IDs."""
-        pass
 
     @abstractmethod
     def preprocess(self, image: Any) -> Any:

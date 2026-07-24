@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from vibe.backends.base import ArtifactMap, Backend, FileRole, ModelPlugin, ModelVariant
 from vibe.devices import normalize_device_string

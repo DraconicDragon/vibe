@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from vibe.exceptions import TransformError
 from vibe.result_transforms import CleanTags, ResultTransform, TransformContext

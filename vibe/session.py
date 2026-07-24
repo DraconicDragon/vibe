@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Iterator, Literal
+from typing import Any, Literal
 
 from vibe import ModelResult
 from vibe.backends.base import ArtifactMap, Backend, ModelPlugin

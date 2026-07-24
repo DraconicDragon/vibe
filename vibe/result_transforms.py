@@ -6,9 +6,10 @@ import dataclasses
 import inspect
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Generic, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar, cast
 
 import numpy as np
 
@@ -166,7 +167,6 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
 
     def on_infer_start(self, *, context: TransformContext) -> None:
         """Hook called once per infer call before any outputs are processed."""
-        pass
 
     def to_config_dict(self) -> dict[str, Any]:
         """Serialize non-internal dataclass fields for third-party inspection."""
@@ -363,7 +363,7 @@ class TagLevelThresholds(ResultTransform[TagResult, TagResult]):
                 ),
             )
 
-        for category, entries in result.tags.items():
+        for entries in result.tags.values():
             filtered = []
             for entry in entries:
                 threshold = threshold_map.get(entry.tag, self.threshold_fallback)

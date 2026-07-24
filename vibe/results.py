@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import ItemsView, Iterator
 from dataclasses import InitVar, dataclass, field
 from enum import Enum
-from typing import Any, ItemsView, Iterator, Literal, TypeGuard
+from typing import Any, Literal, TypeGuard
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,6 @@ class BaseModelResult(ABC):
     @abstractmethod
     def to_dict(self) -> dict[str, Any]:
         """Serialize the result to a standardized dictionary structure."""
-        pass
 
 
 # region Result Dataclasses
