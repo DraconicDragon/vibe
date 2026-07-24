@@ -109,8 +109,6 @@ class ModelCapabilities:
             if tid not in seen_overrides:
                 new_transforms.append(o)
 
-        new_transforms.extend(override_map.values())
-
         return dataclasses.replace(self, transforms=tuple(new_transforms))
 
 
