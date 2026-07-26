@@ -146,9 +146,11 @@ class BatchRunner:
     def execute_chunk(
         self, chunk_images: list[Any], transforms: list[ResultTransform] | None, fallback_to_sequential: bool
     ) -> list[ModelResult]:
-        self.state.check_cancelled()
         try:
-            chunk_tensors = [self.engine.plugin.preprocess(img) for img in chunk_images]
+            chunk_tensors = []
+            for img in chunk_images:
+                self.state.check_cancelled()
+                chunk_tensors.append(self.engine.plugin.preprocess(img))
         except Exception as exc:
             raise SessionError(f"Preprocessing failed for model '{self.engine.model_id}': {exc}") from exc
 
