@@ -121,7 +121,6 @@ def iter_load_images(
     error_cls: type[Exception] = ValueError,
 ) -> Iterator[ImageChunk]:
     """Yield image batches loaded from the input list, efficiently flattening the loading pipeline."""
-
     values, refs = normalize_input_format(images, error_cls=error_cls)
     if not values:
         return
@@ -138,7 +137,6 @@ def iter_load_images(
         return batch
 
     total = len(values)
-    prefetch_read_size = max(batch_size, 8) if use_prefetch else batch_size
 
     if not use_prefetch:
         for start in range(0, total, batch_size):
@@ -146,33 +144,30 @@ def iter_load_images(
             yield ImageChunk(start_index=start, images=_load_batch(start, end), refs=refs[start:end])
         return
 
+    #  Queue-based prefetch (~8 images ahead, split into batch-sized futures)
+    from collections import deque
+
+    max_prefetch_batches = max(1, 8 // batch_size)
+    futures_queue: deque[tuple[int, int, Future[list[Any]]]] = deque()
+
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="vibe-image-loader") as executor:
-        start = 0
-        end = min(prefetch_read_size, total)
-        future = executor.submit(_load_batch, start, end)
+        current_idx = 0
+        while current_idx < total and len(futures_queue) < max_prefetch_batches:
+            end_idx = min(current_idx + batch_size, total)
+            futures_queue.append((current_idx, end_idx, executor.submit(_load_batch, current_idx, end_idx)))
+            current_idx = end_idx
 
-        while start < total:
-            if cancel_check:
-                cancel_check()
+        while futures_queue:
+            chunk_start, chunk_end, future = futures_queue.popleft()
+            loaded_images = _await_loaded_chunk(future, cancel_check=cancel_check)
 
-            # Await current chunk
-            while True:
-                try:
-                    loaded_images = future.result(timeout=0.05)
-                    break
-                except FutureTimeoutError:
-                    if cancel_check:
-                        cancel_check()
+            if current_idx < total:
+                end_idx = min(current_idx + batch_size, total)
+                futures_queue.append((current_idx, end_idx, executor.submit(_load_batch, current_idx, end_idx)))
+                current_idx = end_idx
 
-            # Dispatch next chunk while yielding the current one
-            next_start = start + batch_size
-            next_end = min(next_start + prefetch_read_size, total)
-
-            if next_start < total:
-                future = executor.submit(_load_batch, next_start, next_end)
-
-            yield ImageChunk(start_index=start, images=loaded_images, refs=refs[start:end])
-            start = next_start
+            yield ImageChunk(start_index=chunk_start, images=loaded_images, refs=refs[chunk_start:chunk_end])
+    # endregion
 
 
 def _await_loaded_chunk(
@@ -189,6 +184,17 @@ def _await_loaded_chunk(
             continue
 
 
+def _robust_eq(a: Any, b: Any) -> bool:
+    """Safely compare two refs, falling back to identity for arrays/tensors."""
+    if a is b:
+        return True
+    try:
+        eq = a == b
+        return bool(eq) if isinstance(eq, bool) else False
+    except Exception:
+        return False
+
+
 def _find_duplicates(values: list[Any]) -> list[Any]:
     seen_hashable: set[Any] = set()
     seen_unhashable: list[Any] = []
@@ -199,9 +205,9 @@ def _find_duplicates(values: list[Any]) -> list[Any]:
         try:
             is_seen = value in seen_hashable
         except TypeError:
-            # Unhashable, fall back to linear scan
-            if any(value == existing for existing in seen_unhashable):
-                if not any(value == existing for existing in duplicates):
+            # Unhashable (e.g. numpy array), fall back to robust linear scan
+            if any(_robust_eq(value, existing) for existing in seen_unhashable):
+                if not any(_robust_eq(value, existing) for existing in duplicates):
                     duplicates.append(value)
             else:
                 seen_unhashable.append(value)
