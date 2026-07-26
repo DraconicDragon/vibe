@@ -126,7 +126,7 @@ def iter_load_images(
         return
 
     path_inputs = sum(1 for value in values if isinstance(value, (str, Path)))
-    use_prefetch = (path_inputs > 1) if prefetch is None else bool(prefetch)
+    use_prefetch = should_prefetch_image_loading(path_inputs=path_inputs) if prefetch is None else bool(prefetch)
 
     def _load_batch(start_idx: int, end_idx: int) -> list[Any]:
         batch = []
