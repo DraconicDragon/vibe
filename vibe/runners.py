@@ -146,6 +146,7 @@ class BatchRunner:
     def execute_chunk(
         self, chunk_images: list[Any], transforms: list[ResultTransform] | None, fallback_to_sequential: bool
     ) -> list[ModelResult]:
+        self.state.check_cancelled()
         try:
             chunk_tensors = []
             for img in chunk_images:
