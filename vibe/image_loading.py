@@ -185,13 +185,18 @@ def _await_loaded_chunk(
 
 
 def _robust_eq(a: Any, b: Any) -> bool:
-    """Safely compare two refs, falling back to identity for arrays/tensors."""
+    """Safely compare two refs, falling back to identity if `==` doesn't yield a single truth value."""
     if a is b:
         return True
     try:
         eq = a == b
-        return bool(eq) if isinstance(eq, bool) else False
     except Exception:
+        # ref's __eq__ raised something arbitrary/unexpected - treat as "no match", never crash.
+        return False
+    try:
+        return bool(eq)
+    except Exception:
+        # e.g. a multi-element numpy/torch array: bool() on it raises ValueError.
         return False
 
 
