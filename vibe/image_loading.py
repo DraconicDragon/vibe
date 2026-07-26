@@ -144,7 +144,7 @@ def iter_load_images(
             yield ImageChunk(start_index=start, images=_load_batch(start, end), refs=refs[start:end])
         return
 
-    #  Queue-based prefetch (~8 images ahead, split into batch-sized futures)
+    # Queue-based prefetch
     from collections import deque
 
     max_prefetch_batches = max(1, 8 // batch_size)
@@ -167,7 +167,6 @@ def iter_load_images(
                 current_idx = end_idx
 
             yield ImageChunk(start_index=chunk_start, images=loaded_images, refs=refs[chunk_start:chunk_end])
-    # endregion
 
 
 def _await_loaded_chunk(
