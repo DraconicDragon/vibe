@@ -204,6 +204,8 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
     _mapping_cache: dict[str, dict[str, list[str]]] = field(
         default_factory=dict, repr=False, compare=False, metadata={"internal": True}
     )
+    
+    # todo: this transform needs a complete rework
 
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
 
