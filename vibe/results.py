@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import ItemsView, Iterator
-from dataclasses import InitVar, dataclass, field
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal, TypeGuard
 
@@ -45,6 +45,26 @@ class TagEntry:
         return {
             "tag": self.tag,
             "score": self.score,
+        }
+
+
+@dataclass(slots=True)
+class ScoreEntry:
+    """A single score component, used inside MultiScoreResult."""
+
+    label: str
+    score: float
+    score_min: float
+    score_max: float
+    normalized_score: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "label": self.label,
+            "score": self.score,
+            "score_min": self.score_min,
+            "score_max": self.score_max,
+            "normalized_score": self.normalized_score,
         }
 
 
@@ -129,187 +149,28 @@ class ScoreResult(BaseModelResult):
 class MultiScoreResult(BaseModelResult):
     """
     Result from a model that returns multiple scores.
-
-    Accepts lists, int-keyed dicts, or string-keyed dicts (where strings act as labels).
     """
 
     output_type: Literal[OutputType.MULTI_SCORE] = field(default=OutputType.MULTI_SCORE, init=False)
-    scores_input: InitVar[dict[int, float] | dict[str, float] | list[float]]
+    entries: list[ScoreEntry]
     normalized_score: float
-    label_map: dict[int, str] | None = None
-    label_order: list[str] | None = None
-    score_min: float | None = None
-    score_max: float | None = None
 
-    # Strict physical representations
-    scores: dict[int, float] = field(init=False)
-    _label_to_index: dict[str, int] = field(init=False, repr=False)
+    def entry(self, label: str) -> ScoreEntry | None:
+        """Return the ScoreEntry for a label, or None if missing."""
+        return next((e for e in self.entries if e.label == label), None)
 
-    def __post_init__(self, scores_input: dict[int, float] | dict[str, float] | list[float]) -> None:
-        norm_scores, inferred_labels = self._normalize_scores(scores_input)
-        self.scores = norm_scores
+    def as_score_dict(self) -> dict[str, float]:
+        """Return a flat {label: raw_score} dict preserving list order."""
+        return {e.label: e.score for e in self.entries}
 
-        self.label_map = self._build_and_validate_label_map(
-            norm_scores=self.scores,
-            explicit_map=self.label_map,
-            inferred_map=inferred_labels,
-        )
-
-        if self.label_map is not None:
-            self._label_to_index = {label: index for index, label in self.label_map.items()}
-        else:
-            self._label_to_index = {}
-
-        if self.label_order is not None:
-            self.label_order = [str(label) for label in self.label_order]
-            self._validate_label_order(self.label_map, self.label_order)
-
-    def _normalize_scores(
-        self, raw_scores: dict[int, float] | dict[str, float] | list[float]
-    ) -> tuple[dict[int, float], dict[int, str] | None]:
-        """Convert arbitrary score inputs into a strict dict[int, float]."""
-        if isinstance(raw_scores, list):
-            return {i: float(v) for i, v in enumerate(raw_scores)}, None
-
-        if isinstance(raw_scores, dict):
-            if not raw_scores:
-                return {}, None
-
-            keys = list(raw_scores.keys())
-
-            if any(isinstance(k, bool) for k in keys):
-                raise ValueError("MultiScoreResult dictionary keys cannot be boolean values.")
-
-            # Check if all keys are integral (supports python int, np.int64, np.int32, torch int, etc.)
-            import numbers
-
-            is_int = all(isinstance(k, numbers.Integral) for k in keys)
-            is_str = all(isinstance(k, str) for k in keys)
-
-            if not (is_int or is_str):
-                raise ValueError("MultiScoreResult 'scores' dictionary must have all integer keys or all string keys.")
-
-            if is_str:
-                norm_scores: dict[int, float] = {}
-                inferred_labels: dict[int, str] = {}
-                for i, (k, v) in enumerate(raw_scores.items()):
-                    norm_scores[i] = float(v)
-                    inferred_labels[i] = str(k)
-                return norm_scores, inferred_labels
-
-            # Standardize numpy/C integer types to native Python int
-            return {int(k): float(v) for k, v in raw_scores.items()}, None
-
-        raise TypeError(f"Unsupported scores type for MultiScoreResult: {type(raw_scores)}")
-
-    def _build_and_validate_label_map(
-        self,
-        norm_scores: dict[int, float],
-        explicit_map: dict[int, str] | None,
-        inferred_map: dict[int, str] | None,
-    ) -> dict[int, str] | None:
-        """Determine the final label map and ensure it perfectly matches the scores without duplicates."""
-        if explicit_map is not None:
-            if inferred_map is not None:
-                raise ValueError("Cannot provide an explicit 'label_map' when 'scores' is a string-keyed dictionary.")
-            final_map = {int(k): str(v) for k, v in explicit_map.items()}
-        elif inferred_map is not None:
-            final_map = inferred_map
-        else:
-            # can use integer indices results[0] etc
-            return None
-
-        score_keys = set(norm_scores.keys())
-        map_keys = set(final_map.keys())
-
-        # Validate index completeness
-        missing = score_keys - map_keys
-        if missing:
-            raise ValueError(f"label_map is missing labels for indices: {missing}")
-
-        extra = map_keys - score_keys
-        if extra:
-            raise ValueError(f"label_map contains extra indices not present in scores: {extra}")
-
-        # Validate label uniqueness
-        seen = set()
-        duplicates = set()
-        for label in final_map.values():
-            if label in seen:
-                duplicates.add(label)
-            seen.add(label)
-
-        if duplicates:
-            raise ValueError(f"label_map contains duplicate labels: {duplicates}")
-
-        return final_map
-
-    def _validate_label_order(self, final_map: dict[int, str] | None, order: list[str]) -> None:
-        """Ensure all requested labels in label_order actually exist."""
-        if final_map is None:
-            raise ValueError("Cannot specify label_order when no labels or label_map are available.")
-        known_labels = set(final_map.values())
-        unknown = set(order) - known_labels
-        if unknown:
-            raise ValueError(f"label_order contains unknown labels: {unknown}")
-
-    def __contains__(self, key: int | str) -> bool:
-        if isinstance(key, str):
-            return key in self._label_to_index
-        return key in self.scores
-
-    def __getitem__(self, key: int | str) -> float:
-        if isinstance(key, str):
-            index = self._label_to_index.get(key)
-            if index is None:
-                raise KeyError(f"Label '{key}' not found in MultiScoreResult.")
-            return self.scores[index]
-        return self.scores[key]
-
-    def get(self, key: int | str, default: float | None = None) -> float | None:
-        if isinstance(key, str):
-            index = self._label_to_index.get(key)
-            if index is None:
-                return default
-            return self.scores.get(index, default)
-        return self.scores.get(key, default)
-
-    def items(self) -> ItemsView[str, float] | ItemsView[int, float]:
-        """Yield (label, score) or (index, score) pairs based on label availability."""
-        if self.label_map is not None:
-            return self.as_label_score_dict().items()
-        return self.scores.items()
-
-    def as_index_score_dict(self) -> dict[int, float]:
-        """Return the strictly normalized integer-indexed dictionary."""
-        return self.scores
-
-    def as_label_score_dict(self) -> dict[str, float]:
-        """Return a {label: score} dictionary, ordered by label_order if specified."""
-        if self.label_map is None:
-            raise ValueError("No label mapping was parsed or supplied for this MultiScoreResult.")
-
-        label_scores = {self.label_map[index]: score for index, score in self.scores.items()}
-        if not self.label_order:
-            return label_scores
-
-        ordered_scores: dict[str, float] = {}
-        for label in self.label_order:
-            if label in label_scores:
-                ordered_scores[label] = label_scores[label]
-        for label, score in label_scores.items():
-            if label not in ordered_scores:
-                ordered_scores[label] = score
-        return ordered_scores
+    def as_normalized_dict(self) -> dict[str, float]:
+        """Return a flat {label: normalized_score} dict preserving list order."""
+        return {e.label: e.normalized_score for e in self.entries}
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "output_type": self.output_type.value,
-            "scores": self.scores,
-            "label_map": self.label_map,
-            "label_order": self.label_order,
-            "score_min": self.score_min,
-            "score_max": self.score_max,
+            "entries": [entry.to_dict() for entry in self.entries],
             "normalized_score": self.normalized_score,
         }
 
