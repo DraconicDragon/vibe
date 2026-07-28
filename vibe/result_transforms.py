@@ -11,13 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Generic, TypeVar, cast
 
-import numpy as np
-
 from vibe.backends.base import ArtifactMap
 from vibe.backends.char_ip_mapping import apply_character_ip_mapping, resolve_character_ip_mapping
 from vibe.plugins.shared.tagger_shared import load_tag_metadata
 from vibe.registry import transform_registry
-from vibe.results import ModelResult, MultiScoreResult, ScoreResult, TagEntry, TagResult
+from vibe.results import ModelResult, TagEntry, TagResult
 from vibe.tag_categories import TagCategory
 
 logger = logging.getLogger(__name__)
