@@ -4,6 +4,8 @@
 
 - add some kind of pre-run check to transforms to ensure everything is fine (eg files are available and/or download-able)
 
+- env var to enable true batching for CPU, in general globals/constant env vars
+
 ## new todo
 
 - check session factory build_session, do the args need to be defaulted to something or nah? the only true places its being used, load/load_custom, already set all things
