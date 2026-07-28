@@ -204,7 +204,7 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
     _mapping_cache: dict[str, dict[str, list[str]]] = field(
         default_factory=dict, repr=False, compare=False, metadata={"internal": True}
     )
-    
+
     # todo: this transform needs a complete rework
 
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
@@ -404,139 +404,6 @@ class TagLevelThresholds(ResultTransform[TagResult, TagResult]):
         if cache_key not in self._threshold_stats_cache:
             self._threshold_map_for_csv(csv_path)
         return self._threshold_stats_cache.get(cache_key, (0, 0, False))
-
-
-@dataclass(frozen=True)
-class MultiScoreToScore(ResultTransform[MultiScoreResult, ScoreResult]):
-    transform_id: ClassVar[str] = "multi_score_to_score"
-    display_name: ClassVar[str] = "Multi-Score to Score"
-    description: ClassVar[str] = "Collapses a MultiScoreResult into a single normalized ScoreResult."
-    priority: ClassVar[int] = 0
-
-    use_samples_percentile: bool = field(
-        default=False, metadata={"description": "Use bundled samples.npz to map score to a percentile."}
-    )
-    label: str = field(default="score", metadata={"description": "Label attached to the output ScoreResult."})
-
-    def apply(self, result: MultiScoreResult, *, context: TransformContext) -> ScoreResult:
-        if not isinstance(result, MultiScoreResult):
-            raise TypeError(f"Expected MultiScoreResult, got {type(result)}")
-
-        if not result.scores:
-            context.warn_once(f"MultiScoreToScore:empty-scores:{self.label}", "Empty scores; returning zero.")
-            return ScoreResult(score=0.0, score_min=0.0, score_max=1.0, label=self.label, normalized_score=0.0)
-
-        norm_transform = NormalizedScore(use_samples_percentile=self.use_samples_percentile)
-        normalized_result = norm_transform.apply(result, context=context)
-
-        score = (
-            normalized_result.normalized_score
-            if isinstance(normalized_result, MultiScoreResult) and normalized_result.normalized_score is not None
-            else 0.0
-        )
-
-        return ScoreResult(
-            score=score,
-            score_min=0.0,
-            score_max=1.0,
-            label=self.label,
-            normalized_score=score,
-        )
-
-
-@dataclass(frozen=True)
-class NormalizedScore(ResultTransform[ScoreResult | MultiScoreResult, ScoreResult | MultiScoreResult]):
-    transform_id: ClassVar[str] = "normalized_score"
-    display_name: ClassVar[str] = "Normalized Score"
-    description: ClassVar[str] = "Attaches a normalized score in [0, 1]."
-    priority: ClassVar[int] = 0
-
-    use_samples_percentile: bool = field(
-        default=False, metadata={"description": "Use bundled samples.npz for percentile normalization."}
-    )
-
-    def apply(
-        self, result: ScoreResult | MultiScoreResult, *, context: TransformContext
-    ) -> ScoreResult | MultiScoreResult:
-        if isinstance(result, ScoreResult):
-            result.normalized_score = self._normalize_scalar(result.score, result.score_min, result.score_max)
-            return result
-
-        if not isinstance(result, MultiScoreResult):
-            return result
-
-        result.normalized_score = self._normalize_multiscore(result, context=context)
-        return result
-
-    def _normalize_scalar(self, score: float, score_min: float, score_max: float) -> float:
-        if score_max <= score_min:
-            return 0.0
-        return float(np.clip((score - score_min) / (score_max - score_min), 0.0, 1.0))
-
-    def _normalize_multiscore(self, result: MultiScoreResult, *, context: TransformContext) -> float:
-        if not result.scores:
-            return 0.0
-
-        weighted_mean = self._weighted_mean(result)
-        samples_path = context.artifacts.get_optional("samples")
-
-        if self.use_samples_percentile:
-            if samples_path is None:
-                raise FileNotFoundError("NormalizedScore: use_samples_percentile=True but artifact 'samples' missing.")
-            x, y = self._get_samples_table(samples_path, context=context)
-            return self._interp_percentile(weighted_mean, x, y)
-
-        if samples_path is not None:
-            context.warn_once(
-                f"NormalizedScore:samples-detected-not-used:{samples_path}",
-                "Optional 'samples' artifact detected but ignored. Set use_samples_percentile=True.",
-            )
-
-        max_v = float(max(len(result.scores) - 1, 1))
-        return float(np.clip((weighted_mean - 0.0) / max_v, 0.0, 1.0)) if max_v > 0.0 else 0.0
-
-    def _weighted_mean(self, result: MultiScoreResult) -> float:
-        scores = result.as_index_score_dict()
-        weighted_mean = 0.0
-
-        if result.label_order is not None and result.label_map is not None:
-            label_scores = result.as_label_score_dict()
-            ordered_values = [label_scores[label] for label in result.label_order if label in label_scores]
-            total = len(ordered_values)
-            for index, value in enumerate(ordered_values):
-                weighted_mean += (total - 1 - index) * float(value)
-            return weighted_mean
-
-        for index, value in enumerate(scores.values()):
-            weighted_mean += index * float(value)
-        return weighted_mean
-
-    def _get_samples_table(self, path: Path, context: TransformContext) -> tuple[np.ndarray, np.ndarray]:
-        cache_key = f"normalized_score:samples:{path}"
-        return context.get_cached_or_load(cache_key, lambda: self._load_samples_file(path))
-
-    @staticmethod
-    def _interp_percentile(value: float, x: np.ndarray, y: np.ndarray) -> float:
-        value = float(np.clip(value, x[0], x[-1]))
-        idx = np.searchsorted(x, value)
-        if idx >= len(x) - 1:
-            return float(y[-1])
-
-        x0, y0 = x[idx], y[idx]
-        x1, y1 = x[idx + 1], y[idx + 1]
-        return float(y0) if x1 == x0 else float((value - x0) / (x1 - x0) * (y1 - y0) + y0)
-
-    @staticmethod
-    def _load_samples_file(path: Path) -> tuple[np.ndarray, np.ndarray]:
-        with np.load(path, allow_pickle=False) as data:
-            arr = np.asarray(data["arr_0"], dtype=np.float32)
-            x, y = np.asarray(arr[0], dtype=np.float32), np.asarray(arr[1], dtype=np.float32)
-
-        order = np.argsort(x)
-        x, y = x[order], y[order]
-        x = np.concatenate(([0.0], x, [x[-1] + 1e-6])).astype(np.float32, copy=False)
-        y = np.concatenate(([0.0], y, [1.0])).astype(np.float32, copy=False)
-        return x, y
 
 
 # endregion
