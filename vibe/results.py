@@ -111,7 +111,7 @@ class ScoreResult(BaseModelResult):
     score: float
     score_min: float
     score_max: float
-    normalized_score: float | None = None
+    normalized_score: float
     label: str = "score"
 
     def to_dict(self) -> dict[str, Any]:
@@ -135,11 +135,11 @@ class MultiScoreResult(BaseModelResult):
 
     output_type: Literal[OutputType.MULTI_SCORE] = field(default=OutputType.MULTI_SCORE, init=False)
     scores_input: InitVar[dict[int, float] | dict[str, float] | list[float]]
+    normalized_score: float
     label_map: dict[int, str] | None = None
     label_order: list[str] | None = None
     score_min: float | None = None
     score_max: float | None = None
-    normalized_score: float | None = None  # Optional summary score representing the entire set
 
     # Strict physical representations
     scores: dict[int, float] = field(init=False)
