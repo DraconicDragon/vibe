@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
+from vibe.results import ScoreEntry
+
 
 def normalize_scalar(score: float, score_min: float, score_max: float) -> float:
     """Normalize a scalar score to a strict [0, 1] range."""
@@ -39,43 +41,32 @@ def interp_percentile(value: float, x: np.ndarray, y: np.ndarray) -> float:
     return float(y0) if x1 == x0 else float((value - x0) / (x1 - x0) * (y1 - y0) + y0)
 
 
-def get_weighted_mean(
-    scores: dict[int, float],
-    label_map: dict[int, str] | None = None,
-    label_order: list[str] | None = None,
-) -> float:
-    """Calculate the weighted mean of a score dictionary."""
+def get_weighted_mean(entries: list[ScoreEntry]) -> float:
+    """
+    Calculate the weighted mean of a list of ScoreEntries.
+    Assumes entries are ordered by concept weight (e.g. [good, normal, bad] -> weights [2, 1, 0]).
+    Uses the normalized_score of each entry to safely handle mixed bounds.
+    """
+    total = len(entries)
     weighted_mean = 0.0
-
-    if label_order is not None and label_map is not None:
-        label_scores = {label_map[idx]: score for idx, score in scores.items()}
-        ordered_values = [label_scores[label] for label in label_order if label in label_scores]
-        total = len(ordered_values)
-        for index, value in enumerate(ordered_values):
-            weighted_mean += (total - 1 - index) * float(value)
-        return weighted_mean
-
-    # Sort by key to guarantee deterministic indexing regardless of backend dict insertion order
-    for index, (_, value) in enumerate(sorted(scores.items())):
-        weighted_mean += index * float(value)
+    for i, entry in enumerate(entries):
+        weighted_mean += (total - 1 - i) * entry.normalized_score
     return weighted_mean
 
 
 def normalize_multiscore(
-    scores: dict[int, float],
-    label_map: dict[int, str] | None = None,
-    label_order: list[str] | None = None,
+    entries: list[ScoreEntry],
     percentiles: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> float:
-    """Extract a [0, 1] normalized score from a multi-score distribution."""
-    if not scores:
+    """Extract a [0, 1] normalized summary score from a list of ScoreEntries."""
+    if not entries:
         return 0.0
 
-    weighted_mean = get_weighted_mean(scores, label_map, label_order)
+    weighted_mean = get_weighted_mean(entries)
 
     if percentiles is not None:
         x, y = percentiles
         return interp_percentile(weighted_mean, x, y)
 
-    max_v = float(max(len(scores) - 1, 1))
+    max_v = float(max(len(entries) - 1, 1))
     return float(np.clip((weighted_mean - 0.0) / max_v, 0.0, 1.0)) if max_v > 0.0 else 0.0
