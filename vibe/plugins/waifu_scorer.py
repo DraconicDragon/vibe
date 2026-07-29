@@ -15,7 +15,7 @@ from vibe.backends.base import (
     ModelPlugin,
     ModelVariant,
 )
-from vibe.result_transforms import NormalizedScore
+from vibe.plugins.shared.scores_utils import normalize_scalar
 from vibe.results import OutputType, ScoreResult
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
     capabilities = ModelCapabilities(
         output_type=OutputType.SCORE,
         output_categories=(),
-        transforms=(NormalizedScore,),
+        transforms=(),
     )
 
     # NOTE: if user overrides source with local dir for example, then user needs to
@@ -161,6 +161,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
             score=score,
             score_min=self.SCORE_MIN,
             score_max=self.SCORE_MAX,
+            normalized_score=normalize_scalar(score, self.SCORE_MIN, self.SCORE_MAX),
         )
 
     def _load_clip_model(self, device: str, artifacts: ArtifactMap) -> tuple[Any, Any]:

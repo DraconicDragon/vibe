@@ -66,8 +66,6 @@ from vibe.registry import model_registry, transform_registry
 from vibe.result_transforms import (
     CharacterIPMapping,
     CleanTags,
-    MultiScoreToScore,
-    NormalizedScore,
     ResultTransform,
     ScoreThresholds,
     TagLevelThresholds,
@@ -427,8 +425,6 @@ __all__ = [
     "CharacterIPMapping",
     "ScoreThresholds",
     "TagLevelThresholds",
-    "MultiScoreToScore",
-    "NormalizedScore",
     # Registry
     "model_registry",
     "transform_registry",
