@@ -6,6 +6,10 @@
 
 - env var to enable true batching for CPU, in general globals/constant env vars
 
+- dghs_aes/results add way to add extra data like percentile normalized score using samples npz
+
+- add validation of some kind to ensure metadata is same as what gets actually outputted, or just error if different
+
 ## new todo
 
 - check session factory build_session, do the args need to be defaulted to something or nah? the only true places its being used, load/load_custom, already set all things
