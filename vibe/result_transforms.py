@@ -206,19 +206,17 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
     # todo: this transform needs a complete rework
 
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
-
-        character_entries = result.category("character")
+        character_entries = result.category(TagCategory.CHARACTER)
         if not character_entries:
-            result.character_copyright_mapping = None
             return result
 
         mapping = self._get_mapping(context)
         if not mapping:
-            result.character_copyright_mapping = None
             return result
 
         mapped = apply_character_ip_mapping([entry.tag for entry in character_entries], mapping)
-        result.character_copyright_mapping = mapped or None
+        if mapped:
+            result.extras["character_copyright_mapping"] = mapped
         return result
 
     def _get_mapping(self, context: TransformContext) -> dict[str, list[str]]:
@@ -254,10 +252,12 @@ class CleanTags(ResultTransform[TagResult, TagResult]):
         for entries in result.tags.values():
             entries[:] = [TagEntry(tag=_clean_tag_text(entry.tag), score=entry.score) for entry in entries]
 
-        if result.character_copyright_mapping is not None:
-            result.character_copyright_mapping = {
-                _clean_tag_text(character): [_clean_tag_text(ip) for ip in ips]
-                for character, ips in result.character_copyright_mapping.items()
+        # todo: have transforms see this as another tag category and process it with options to ignore extras or specific one(s)
+
+        mapping = result.extras.get("character_copyright_mapping")
+        if mapping is not None:
+            result.extras["character_copyright_mapping"] = {
+                _clean_tag_text(character): [_clean_tag_text(ip) for ip in ips] for character, ips in mapping.items()
             }
 
         return result

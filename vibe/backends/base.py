@@ -7,7 +7,7 @@ from __future__ import annotations
 import dataclasses
 import inspect
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -40,6 +40,8 @@ class ModelDescriptor:
     description: str
     output_type: OutputType
     output_categories: tuple[str, ...]
+    output_extras: dict[str, str]
+    entry_extras: dict[str, str]
     supported_backends: tuple[Backend, ...]
     supported_transforms: tuple[str, ...]
     recommended_transforms: dict[str, dict[str, Any]]  # transform_id -> dict of recommended values
@@ -89,6 +91,10 @@ class ModelIdentity:
 class ModelCapabilities:
     output_type: OutputType
     output_categories: tuple[str, ...] = ()
+    # Top-level extras
+    output_extras: dict[str, str] = field(default_factory=dict)
+    # Per-entry extras
+    entry_extras: dict[str, str] = field(default_factory=dict)
     transforms: tuple[type[ResultTransform] | ResultTransform, ...] = ()
 
     def with_transforms(self, *overrides: type[ResultTransform] | ResultTransform) -> Self:
@@ -223,6 +229,8 @@ class ModelPlugin(ABC):
             description=cls.identity.description,
             output_type=cls.capabilities.output_type,
             output_categories=cls.capabilities.output_categories,
+            output_extras=cls.capabilities.output_extras,
+            entry_extras=cls.capabilities.entry_extras,
             supported_backends=tuple(v.backend for v in cls.variants),
             supported_transforms=tuple(supported_ids),
             recommended_transforms=recommended_configs,

@@ -40,12 +40,13 @@ class TagEntry:
 
     tag: str
     score: float
+    extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "tag": self.tag,
-            "score": self.score,
-        }
+        d: dict[str, Any] = {"tag": self.tag, "score": self.score}
+        if self.extras:
+            d["extras"] = self.extras
+        return d
 
 
 @dataclass(slots=True)
@@ -57,6 +58,7 @@ class ScoreEntry:
     score_min: float
     score_max: float
     normalized_score: float
+    extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,7 +80,7 @@ class TagResult(BaseModelResult):
 
     output_type: Literal[OutputType.TAGS] = field(default=OutputType.TAGS, init=False)
     tags: dict[str, list[TagEntry]] = field(default_factory=dict)
-    character_copyright_mapping: dict[str, list[str]] | None = None
+    extras: dict[str, Any] = field(default_factory=dict)
 
     def category(self, name: str) -> list[TagEntry]:
         """Return tags of one category by name, or an empty list if missing."""
@@ -114,10 +116,8 @@ class TagResult(BaseModelResult):
             "output_type": self.output_type.value,
             "tags": tags_dict,
         }
-
-        if self.character_copyright_mapping is not None:
-            d["character_copyright_mapping"] = self.character_copyright_mapping
-
+        if self.extras:
+            d["extras"] = self.extras
         return d
 
 
@@ -133,9 +133,10 @@ class ScoreResult(BaseModelResult):
     score_max: float
     normalized_score: float
     label: str = "score"
+    extras: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "output_type": self.output_type.value,
             "score": self.score,
             "score_min": self.score_min,
@@ -143,6 +144,9 @@ class ScoreResult(BaseModelResult):
             "normalized_score": self.normalized_score,
             "label": self.label,
         }
+        if self.extras:
+            d["extras"] = self.extras
+        return d
 
 
 @dataclass(slots=True)
@@ -154,6 +158,7 @@ class MultiScoreResult(BaseModelResult):
     output_type: Literal[OutputType.MULTI_SCORE] = field(default=OutputType.MULTI_SCORE, init=False)
     entries: list[ScoreEntry]
     normalized_score: float
+    extras: dict[str, Any] = field(default_factory=dict)
 
     def entry(self, label: str) -> ScoreEntry | None:
         """Return the ScoreEntry for a label, or None if missing."""
@@ -168,11 +173,14 @@ class MultiScoreResult(BaseModelResult):
         return {e.label: e.normalized_score for e in self.entries}
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "output_type": self.output_type.value,
             "entries": [entry.to_dict() for entry in self.entries],
             "normalized_score": self.normalized_score,
         }
+        if self.extras:
+            d["extras"] = self.extras
+        return d
 
 
 # endregion
