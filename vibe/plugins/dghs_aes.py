@@ -19,7 +19,13 @@ from vibe.backends.base import (
     ModelPlugin,
     ModelVariant,
 )
-from vibe.plugins.shared.scores_utils import load_samples_file, normalize_multiscore, normalize_scalar
+from vibe.plugins.shared.scores_utils import (
+    get_weighted_mean,
+    interp_percentile,
+    load_samples_file,
+    normalize_multiscore,
+    normalize_scalar,
+)
 from vibe.results import MultiScoreResult, OutputType, ScoreEntry
 
 logger = logging.getLogger(__name__)
@@ -68,10 +74,10 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
 
     capabilities = ModelCapabilities(
         output_type=OutputType.MULTI_SCORE,
-        output_categories=(),
-        transforms=(),
+        output_extras={"percentile": "Score percentile calibrated against the model's training dataset samples."},
     )
 
+    _samples_percentiles: tuple[np.ndarray, np.ndarray] | None = None
     _labels: list[str]
     _mark_table: tuple[np.ndarray, np.ndarray] | None = None
     _image_size: int
@@ -115,35 +121,37 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
 
     def postprocess(self, raw_output: Any) -> MultiScoreResult:
         scores = self._flatten_scores(raw_output)
-        usable_count = min(len(scores), len(self._labels))
-        if usable_count != len(self._labels):
-            logger.warning(
-                "Score length mismatch for model_id=%s: got %d scores for %d labels.",
-                self.identity.model_id,
-                len(scores),
-                len(self._labels),
-            )
 
-        labels = self._labels[:usable_count]
-        values = scores[:usable_count]
+        if len(scores) != len(self._labels):
+            logger.warning(
+                "Score length mismatch for model '%s': expected %d scores for labels %s, got %d.",
+                self.identity.model_id,
+                len(self._labels),
+                self._labels,
+                len(scores),
+            )
 
         entries = [
             ScoreEntry(
                 label=label,
-                score=float(val),
+                score=float(score),
                 score_min=self.SCORE_MIN,
                 score_max=self.SCORE_MAX,
-                normalized_score=normalize_scalar(float(val), self.SCORE_MIN, self.SCORE_MAX),
+                normalized_score=normalize_scalar(float(score), self.SCORE_MIN, self.SCORE_MAX),
             )
-            for label, val in zip(labels, values)
+            for label, score in zip(self._labels, scores, strict=False)
         ]
 
-        norm_score = normalize_multiscore(entries, percentiles=self._mark_table)
+        generic_normalized = normalize_multiscore(entries)
 
-        return MultiScoreResult(
-            entries=entries,
-            normalized_score=norm_score,
-        )
+        # Calculate special dataset percentile
+        extras = {}
+        if self._mark_table is not None:
+            weighted_mean = get_weighted_mean(entries)
+            x, y = self._mark_table
+            extras["percentile"] = interp_percentile(weighted_mean, x, y)
+
+        return MultiScoreResult(entries=entries, normalized_score=generic_normalized, extras=extras)
 
     def _read_meta_json(self, path: Path) -> dict[str, Any]:
         try:
