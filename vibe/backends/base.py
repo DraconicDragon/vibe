@@ -87,7 +87,7 @@ class ModelIdentity:
 
 @dataclass(frozen=True)
 class ModelCapabilities:
-    output_type: OutputType = OutputType.TAGS
+    output_type: OutputType
     output_categories: tuple[str, ...] = ()
     transforms: tuple[type[ResultTransform] | ResultTransform, ...] = ()
 
