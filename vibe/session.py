@@ -72,7 +72,7 @@ class ModelSession:
         self._pipeline = TransformPipeline(
             plugin.identity.model_id, self._transform_context, plugin.capabilities.transforms
         )
-        self._engine = InferenceEngine(plugin, backend_instance, self._pipeline)
+        self._engine = InferenceEngine(plugin, backend_instance, self._pipeline, self._state)
         self._runner = BatchRunner(self._engine, self._state, backend)
 
         logger.debug("Session created model_id=%s backend=%s", self.model_id, self._backend.value)

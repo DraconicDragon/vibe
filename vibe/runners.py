@@ -6,7 +6,7 @@ from vibe.backends.base import Backend, ModelPlugin
 from vibe.batch_utils import split_batch_output, stack_batch
 from vibe.exceptions import InferenceCancelled, SessionError
 from vibe.result_transforms import ResultTransform
-from vibe.results import ModelResult
+from vibe.results import ModelResult, is_multi_score_result, is_tag_result
 from vibe.transform_pipeline import TransformPipeline
 
 logger = logging.getLogger(__name__)
@@ -74,11 +74,14 @@ class SessionRunnerState:
 
 
 class InferenceEngine:
-    def __init__(self, plugin: ModelPlugin, backend_instance: Any, pipeline: TransformPipeline):
+    def __init__(
+        self, plugin: ModelPlugin, backend_instance: Any, pipeline: TransformPipeline, state: SessionRunnerState
+    ):
         self.plugin = plugin
         self.backend_instance = backend_instance
         self.pipeline = pipeline
         self.model_id = plugin.identity.model_id
+        self.state = state
 
     def execute_single(self, image: Any, transforms: list[ResultTransform] | None) -> ModelResult:
         try:
@@ -96,12 +99,73 @@ class InferenceEngine:
         except Exception as exc:
             raise SessionError(f"Inference failed for model '{self.model_id}': {exc}") from exc
 
+        return self.postprocess_and_audit(raw_output, transforms)
+
+    def postprocess_and_audit(self, raw_output: Any, transforms: list[ResultTransform] | None) -> ModelResult:
+        """Handles postprocessing, result transforms, and runtime metadata auditing safely."""
         try:
             result = self.plugin.postprocess(raw_output)
         except Exception as exc:
             raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
 
-        return self.pipeline.apply(result, transforms)
+        # Run transforms
+        final_result = self.pipeline.apply(result, transforms)
+
+        # region Metadata Audit
+        capabilities = self.plugin.capabilities
+
+        # Audit Output Categories (TagResult only)
+        if is_tag_result(final_result):
+            undocumented_cats = set(final_result.tags.keys()) - set(capabilities.output_categories)
+            if undocumented_cats:
+                self.state.warn_once(
+                    key=f"metadata-cats-{self.model_id}",
+                    message=(
+                        f"Metadata mismatch for model '{self.model_id}': returned undocumented categories {undocumented_cats}. "
+                        "Please add them to ModelCapabilities.output_categories."
+                    ),
+                    level=logging.ERROR,
+                )
+
+        # Audit Top-Level Extras
+        if final_result.extras:
+            undocumented_extras = set(final_result.extras.keys()) - set(capabilities.output_extras.keys())
+            if undocumented_extras:
+                self.state.warn_once(
+                    key=f"metadata-extras-{self.model_id}",
+                    message=(
+                        f"Metadata mismatch for model '{self.model_id}': returned undocumented top-level extras {undocumented_extras}. "
+                        "Please add them to ModelCapabilities.output_extras."
+                    ),
+                    level=logging.ERROR,
+                )
+
+        # Audit Entry-Level Extras
+        undocumented_entry_extras = set()
+        declared_entry_extras = set(capabilities.entry_extras.keys())
+
+        if is_tag_result(final_result):
+            for entries in final_result.tags.values():
+                for entry in entries:
+                    if entry.extras:
+                        undocumented_entry_extras.update(set(entry.extras.keys()) - declared_entry_extras)
+        elif is_multi_score_result(final_result):
+            for entry in final_result.entries:
+                if entry.extras:
+                    undocumented_entry_extras.update(set(entry.extras.keys()) - declared_entry_extras)
+
+        if undocumented_entry_extras:
+            self.state.warn_once(
+                key=f"metadata-entry-extras-{self.model_id}",
+                message=(
+                    f"Metadata mismatch for model '{self.model_id}': returned undocumented entry extras {undocumented_entry_extras}. "
+                    "Please add them to ModelCapabilities.entry_extras."
+                ),
+                level=logging.ERROR,
+            )
+        # endregion
+
+        return final_result
 
 
 class BatchRunner:
@@ -179,9 +243,5 @@ class BatchRunner:
         results = []
         for sample_output in split_batch_output(raw_output, len(chunk_images), self.engine.model_id):
             self.state.check_cancelled()
-            try:
-                result = self.engine.plugin.postprocess(sample_output)
-            except Exception as exc:
-                raise SessionError(f"Postprocessing failed for model '{self.engine.model_id}': {exc}") from exc
-            results.append(self.engine.pipeline.apply(result, transforms))
+            results.append(self.engine.postprocess_and_audit(sample_output, transforms))
         return results
