@@ -114,6 +114,17 @@ class InferenceEngine:
         # region Metadata Audit
         capabilities = self.plugin.capabilities
 
+        # Audit Output Type
+        if final_result.output_type != capabilities.output_type:
+            self.state.warn_once(
+                key=f"metadata-type-{self.model_id}",
+                message=(
+                    f"Metadata mismatch for model '{self.model_id}': declared output_type "
+                    f"is '{capabilities.output_type.value}', but postprocess returned '{final_result.output_type.value}'."
+                ),
+                level=logging.ERROR,
+            )
+
         # Audit Output Categories (TagResult only)
         if is_tag_result(final_result):
             undocumented_cats = set(final_result.tags.keys()) - set(capabilities.output_categories)
