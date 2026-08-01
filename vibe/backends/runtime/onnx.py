@@ -11,14 +11,16 @@ import ctypes
 import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from vibe import Backend
+from vibe.backends.base import ExecutionRequest
 from vibe.devices import normalize_device_string
-from vibe.precision import parse_precision
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +92,7 @@ def _providers_from_env() -> list[str] | None:
 
 
 def _device_prefers_accelerator(device: str) -> tuple[bool, int]:
-    value = normalize_device_string(device, backend="onnx")
+    value = normalize_device_string(device, backend=Backend.ONNX)
     if not value or value == "auto":
         return True, 0
     if value == "cpu":
@@ -183,7 +185,7 @@ def resolve_onnx_provider_chain(
 
 def _wants_accelerator(device: str) -> bool:
     try:
-        value = normalize_device_string(device, backend="onnx")
+        value = normalize_device_string(device, backend=Backend.ONNX)
     except ValueError:
         return False
     return value not in {"cpu", "auto"}
@@ -191,13 +193,13 @@ def _wants_accelerator(device: str) -> bool:
 
 def _requested_onnx_provider_name(device: str) -> str | None:
     try:
-        value = normalize_device_string(device, backend="onnx")
+        value = normalize_device_string(device, backend=Backend.ONNX)
     except ValueError:
         return None
 
     if value in {"gpu", "cuda"}:
         return "CUDAExecutionProvider"
-    if value.startswith("gpu:") or value.startswith("cuda:"):
+    if value.startswith(("gpu:", "cuda:")):
         return "CUDAExecutionProvider"
     if value.startswith("rocm"):
         return "ROCMExecutionProvider"
@@ -336,29 +338,21 @@ class ONNXBackend:
         self._requested_providers: list[str] = []
         self._provider_options: list[dict[str, Any]] = []
         self._requested_precision: str = "auto"
+        self._run_lock = threading.RLock()
 
     def load(
         self,
-        weights_path: Path,
-        providers: list[str] | None = None,
-        device: str = "auto",
-        precision: str = "auto",
+        model_path: Path,
+        request: ExecutionRequest,
     ) -> None:
-        """
-        Load an ONNX model. Raises if onnxruntime is not installed.
-
-        providers:   Override the provider list.
-                 If omitted, resolves from env and device preference.
-        device:      Logical device selector for auto-provider selection
-                 (e.g. "auto", "cpu", "gpu", "gpu1", "cuda:0"). 'cuda' and 'gpu' are interchangeable.
-        """
+        """Load a plugin-selected ONNX graph for execution."""
         started_at = time.perf_counter()
-        logger.debug("Loading ONNX model from %s", weights_path)
-        self._requested_precision = parse_precision(precision).value
+        logger.debug("Loading ONNX model from %s", model_path)
+        self._requested_precision = request.precision
         prepare_onnxruntime_environment()
 
         try:
-            import onnxruntime as ort
+            import onnxruntime as ort  # ty:ignore[unresolved-import]
         except ImportError as exc:
             raise RuntimeError(
                 "onnxruntime is required to use the onnx backend. "
@@ -367,8 +361,8 @@ class ONNXBackend:
             ) from exc
 
         resolved_providers, resolved_provider_options = resolve_onnx_provider_chain(
-            device=device,
-            requested_providers=providers,
+            device=request.device,
+            requested_providers=list(request.onnx_providers) if request.onnx_providers is not None else None,
             ort_module=ort,
         )
 
@@ -376,7 +370,7 @@ class ONNXBackend:
         self._providers = resolved_providers
         self._provider_options = resolved_provider_options or []
         self._session = ort.InferenceSession(
-            str(weights_path),
+            str(model_path),
             providers=resolved_providers,
             provider_options=resolved_provider_options,
         )
@@ -411,18 +405,18 @@ class ONNXBackend:
         self._providers = session_providers
         primary_provider = self._providers[0] if self._providers else "CPUExecutionProvider"
 
-        requested_provider = _requested_onnx_provider_name(device)
+        requested_provider = _requested_onnx_provider_name(request.device)
         requested_has_accelerator = _has_accelerator_provider(self._requested_providers)
         session_has_accelerator = _has_accelerator_provider(session_providers)
 
-        if requested_has_accelerator and not session_has_accelerator and _wants_accelerator(device):
+        if requested_has_accelerator and not session_has_accelerator and _wants_accelerator(request.device):
             raise RuntimeError(
-                f"ONNX provider request '{device}' ({requested_provider or 'requested provider'}) could not be satisfied; "
+                f"ONNX provider request '{request.device}' ({requested_provider or 'requested provider'}) could not be satisfied; "
                 f"session loaded only with {session_providers}."
             )
 
-        if requested_has_accelerator and not session_has_accelerator and device.strip().lower() == "auto":
-            fallback_message = _fallback_warning_message(device, self._requested_providers, primary_provider)
+        if requested_has_accelerator and not session_has_accelerator and request.device.strip().lower() == "auto":
+            fallback_message = _fallback_warning_message(request.device, self._requested_providers, primary_provider)
             logger.warning(fallback_message)
             import warnings
 
@@ -493,7 +487,8 @@ class ONNXBackend:
         # TODO: support selecting a specific output name/index per model to avoid
         # fetching all outputs when only one tensor is needed.
         try:
-            outputs = self._session.run(self._output_names, {self._input_name: array})
+            with self._run_lock:
+                outputs = self._session.run(self._output_names, {self._input_name: array})
         except Exception:
             logger.error(
                 "ONNX inference failed input_name=%s input_shape=%s expected_input_shape=%s",

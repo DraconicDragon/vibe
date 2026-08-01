@@ -7,31 +7,24 @@ interface so the session layer doesn't need to know which backend is active.
 
 from __future__ import annotations
 
-import inspect
 import logging
 import os
-from pathlib import Path
+import threading
 from typing import Any
 
 import numpy as np
 
-from vibe.precision import parse_precision
+from vibe.backends.base import ExecutionRequest
 
 logger = logging.getLogger(__name__)
 
 
 class PyTorchBackend:
     """
-    Loads and runs a PyTorch model.
+    Runs a fully constructed PyTorch `nn.Module`.
 
-    Supported weight formats:
-      - .pt / .pth         (torch.load)
-      - .safetensors       (safetensors.torch)
-
-    The model is expected to be a full nn.Module saved with torch.save,
-    or a state dict that can be loaded into a provided architecture.
-    In practice, most HF tagger repos ship the full model — if you need
-    state-dict loading, override _load_model in a plugin subclass.
+    Model construction and artifact interpretation are deliberately owned by
+    the plugin. This class only owns framework placement and execution.
     """
 
     def __init__(self) -> None:
@@ -41,13 +34,14 @@ class PyTorchBackend:
         self._resolved_precision: str = "fp32"
         self._weight_dtype: Any = None
         self._compute_dtype: Any = None
+        self._run_lock = threading.RLock()
 
-    def load(self, weights_path: Path, device: str = "cpu", precision: str = "auto") -> None:
-        """Load weights from disk. Raises if torch is not installed."""
-        logger.debug("Loading PyTorch model")
-        logger.debug("PyTorch weights path=%s", weights_path)
+    def load(self, model: Any, request: ExecutionRequest) -> None:
+        """Prepare a plugin-constructed module for execution."""
+        logger.debug("Preparing PyTorch runtime")
         try:
             import torch
+            from torch import nn
         except ImportError as exc:
             raise RuntimeError(
                 "PyTorch is required to use the pytorch backend. Install it with: pip install torch"
@@ -61,91 +55,19 @@ class PyTorchBackend:
             torch.backends.cudnn.enabled = True
             logger.debug("cuDNN enabled (VIBE_DISABLE_CUDNN not set or false)")
 
-        self._device = device
-        self._requested_precision = parse_precision(precision).value
-        suffix = weights_path.suffix.lower()
-
-        if suffix == ".safetensors":
-            try:
-                from safetensors.torch import load_file
-            except ImportError as exc:
-                raise RuntimeError(
-                    "safetensors is required to load .safetensors weights. Install it with: pip install safetensors"
-                ) from exc
-            # Always load raw state dicts to CPU, not the target device.
-            # A bare dict is never run directly
-            # the plugin builds the architecture and casts/moves it later,
-            # Loading to GPU directly would cause VRAM spikes if dtype has to be casted
-            state = load_file(str(weights_path), device="cpu")
-            # We just store the state dict here; the plugin is responsible
-            # for building the architecture and calling load_state_dict.
-            # See note in ModelPlugin.load_ancillary.
-            self._model = state
-            logger.debug("Loaded safetensors state dict to CPU (target device=%s)", device)
-        else:
-            # .pt / .pth — attempt full model load first
-            self._model = torch.load(
-                weights_path,
-                map_location="cpu",
-                weights_only=False,
-            )
-            logger.debug("Loaded torch checkpoint device=%s", device)
-
-        # Put in eval mode if it's an nn.Module
-        try:
-            from torch import nn
-
-            if isinstance(self._model, nn.Module):
-                self._model.eval()
-                self._model.to(device)
-                self._apply_precision_plan(torch)
-                try:
-                    forward_params = list(inspect.signature(self._model.forward).parameters.keys())
-                except Exception:
-                    forward_params = []
-                first_param = next(self._model.parameters(), None)
-                if first_param is not None:
-                    logger.debug(
-                        "PyTorch model ready device=%s requested_precision=%s resolved_precision=%s weight_dtype=%s compute_dtype=%s",
-                        device,
-                        self._requested_precision,
-                        self._resolved_precision,
-                        first_param.dtype,
-                        self._compute_dtype,
-                    )
-                logger.debug("PyTorch model input_names=%s", forward_params or ["input"])
-                logger.debug("PyTorch model class=%s", self._model.__class__.__name__)
-        except Exception:
-            pass  # state dict case — handled by plugin
-
-    @property
-    def raw(self) -> Any:
-        """Direct access to the loaded model/state dict for plugins that need it."""
-        return self._model
-
-    def attach_model(self, model: Any) -> None:
-        """Attach a pre-built nn.Module to this backend and apply the precision plan.
-
-        The model may already be on the target device and dtype (e.g. loaded by
-        a plugin via load_model), but we still run _apply_precision_plan so that
-        user-requested precision (fp16, bf16, fp32) is honoured consistently.
-        """
-        try:
-            from torch import nn
-        except ImportError as exc:
-            raise RuntimeError("PyTorch is not installed.") from exc
-
-        if not isinstance(model, nn.Module):
-            raise TypeError("attach_model expects a torch.nn.Module instance.")
-
         self._model = model
-        import torch as torch_module
+        self._device = request.device
+        self._requested_precision = request.precision
+        if not isinstance(self._model, nn.Module):
+            raise TypeError("PyTorchBackend requires a fully constructed torch.nn.Module.")
 
-        self._apply_precision_plan(torch_module)
+        self._model.eval()
+        self._model.to(self._device)
+        self._apply_precision_plan(torch)
 
         logger.debug(
             "Attached pre-built model class=%s device=%s weight_dtype=%s compute_dtype=%s",
-            model.__class__.__name__,
+            self._model.__class__.__name__,
             self._device,
             self._weight_dtype,
             self._compute_dtype,
@@ -169,11 +91,7 @@ class PyTorchBackend:
         from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
 
         if not isinstance(self._model, nn.Module):
-            raise TypeError(
-                "Model is a state dict, not an nn.Module. "
-                "The plugin must build the architecture and call "
-                "backend.raw to get the state dict, then construct the model itself."
-            )
+            raise TypeError("PyTorchBackend has no loaded torch.nn.Module.")
 
         if isinstance(tensor, JTPHydraBatch):
             # NaFlex three-input forward pass.
@@ -196,7 +114,7 @@ class PyTorchBackend:
             logger.debug("PyTorch run input_shape=%s input_dtype=%s", tensor.shape, tensor.dtype)
             args = (tensor.to(device=self._device, dtype=self._compute_dtype),)
 
-        with torch.no_grad():
+        with self._run_lock, torch.no_grad():
             try:
                 output = self._model(*args)
             except Exception:
