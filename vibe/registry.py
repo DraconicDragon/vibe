@@ -13,10 +13,10 @@ import warnings
 from typing import TYPE_CHECKING
 
 from vibe.exceptions import RegistryError
-from vibe.result_transforms import ResultTransform, TransformInfo
 
 if TYPE_CHECKING:
     from vibe.backends.base import ModelDescriptor, ModelPlugin
+    from vibe.result_transforms import ResultTransform, TransformInfo
 
 
 class ModelRegistry:
@@ -153,7 +153,12 @@ class ModelRegistry:
 
 
 class TransformRegistry:
-    """Central index for registering and looking up ResultTransform classes."""
+    """Registry for result-transform classes.
+
+    This module intentionally does not import `result_transforms` at module
+    load time. Transform subclasses import this already-created registry while
+    they are defined, avoiding the former import cycle.
+    """
 
     def __init__(self) -> None:
         self._transforms: dict[str, type[ResultTransform]] = {}
