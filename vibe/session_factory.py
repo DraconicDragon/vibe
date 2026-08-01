@@ -339,19 +339,17 @@ def _acquire_backend(
                 return instance, lambda: _release_backend(key)
 
         try:
-            primary_weights = weight_paths[0]
-
             if backend == Backend.PYTORCH:
                 instance = pytorch_cls()
                 instance.load(
-                    primary_weights,
+                    weight_paths,
                     device=device,
                     precision=precision,
                 )
             else:
                 instance = onnx_cls()
                 instance.load(
-                    primary_weights,
+                    weight_paths,
                     providers=providers,
                     device=device,
                     precision=precision,
