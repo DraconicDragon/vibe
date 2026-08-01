@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from vibe.backends.base import ArtifactMap, Backend, FileRole, ModelPlugin, ModelVariant
+from vibe.backends.base import ArtifactMap, Backend, ExecutionRequest, ModelPlugin
 from vibe.devices import normalize_device_string
 from vibe.exceptions import SessionError
 from vibe.hf_downloader import get_auto_download_default
@@ -18,8 +18,8 @@ from vibe.session import ModelSession
 
 logger = logging.getLogger(__name__)
 
-_BACKEND_POOL_LOCK = threading.RLock()
-_BACKEND_POOL: dict[tuple[Any, ...], tuple[Any, int]] = {}
+_RUNTIME_POOL_LOCK = threading.RLock()
+_RUNTIME_POOL: dict[tuple[Any, ...], tuple[Any, int]] = {}
 _LOADING_LOCKS: dict[tuple[Any, ...], threading.Lock] = {}
 
 
@@ -136,9 +136,6 @@ def _attempt_session_build(
     backend_candidates: list[Backend],
     auto_resolution_failures: list[tuple[Backend, str]],
 ) -> ModelSession | None:
-    from vibe.backends.runtime.onnx import ONNXBackend
-    from vibe.backends.runtime.pytorch import PyTorchBackend
-
     model_id = plugin_cls.identity.model_id
 
     try:
@@ -206,38 +203,36 @@ def _attempt_session_build(
         auto_resolution_failures.append((candidate_backend, str(exc)))
         return None
 
-    weight_paths = _get_weight_paths(variant, file_map)
-    logger.debug("Resolved model weights for model_id=%s paths=%s", model_id, weight_paths)
-
-    pool_key = _make_backend_pool_key(
+    request = ExecutionRequest(
         backend=candidate_backend,
-        weight_paths=weight_paths,
         device=normalized_device,
-        providers=onnx_providers,
         precision=normalized_precision,
-    )
-    rt, release_backend = _acquire_backend(
-        key=pool_key,
-        backend=candidate_backend,
-        weight_paths=weight_paths,
-        device=normalized_device,
-        providers=onnx_providers,
-        precision=normalized_precision,
-        pytorch_cls=PyTorchBackend,
-        onnx_cls=ONNXBackend,
+        onnx_providers=tuple(onnx_providers) if onnx_providers is not None else None,
     )
 
+    # Plugin metadata belongs to the session, not to the pooled runtime. This
+    # permits independent transform state and avoids sharing plugin mutation.
     try:
         plugin = plugin_cls()
-        plugin.configure(
-            auto_download=effective_auto_download,
-            backend=candidate_backend,
-            backend_instance=rt,
-            device=normalized_device,
-            precision=normalized_precision,
-            source=source,
-        )
         plugin.load_ancillary(file_map)
+    except Exception as exc:
+        raise SessionError(f"Plugin '{model_id}' failed to initialize artifacts: {exc}") from exc
+
+    pool_key = _make_runtime_pool_key(
+        plugin_cls=plugin_cls,
+        artifacts=file_map,
+        request=request,
+    )
+    try:
+        runtime, release_runtime = _acquire_runtime(
+            key=pool_key,
+            model_id=model_id,
+            build=lambda: plugin.build_runtime(file_map, request),
+        )
+    except Exception as exc:
+        raise SessionError(f"Plugin '{model_id}' failed to build its runtime: {exc}") from exc
+
+    try:
         if candidate_backend == Backend.ONNX and normalized_precision in {"fp16", "bf16"}:
             logger.warning(
                 "Precision '%s' requested while running ONNX backend; runtime casting is provider/model dependent.",
@@ -247,20 +242,20 @@ def _attempt_session_build(
         logger.debug("Session ready model_id=%s", model_id)
         return ModelSession(
             plugin=plugin,
-            backend_instance=rt,
+            backend_instance=runtime,
             backend=candidate_backend,
             file_map=file_map,
             source=source,
             auto_download=effective_auto_download,
             memory_tracking=memory_tracking,
-            backend_release=release_backend,
+            backend_release=release_runtime,
         )
     except SessionError:
-        release_backend()
+        release_runtime()
         raise
     except Exception as exc:
-        release_backend()
-        raise SessionError(f"Plugin '{model_id}' failed to load ancillary files: {exc}") from exc
+        release_runtime()
+        raise SessionError(f"Plugin '{model_id}' failed to build a session: {exc}") from exc
 
 
 def _next_backend_candidate(candidates: list[Backend], current: Backend) -> Backend | None:
@@ -273,57 +268,41 @@ def _next_backend_candidate(candidates: list[Backend], current: Backend) -> Back
     return candidates[index + 1]
 
 
-def _get_weight_paths(variant: ModelVariant, file_map: ArtifactMap) -> tuple[Path, ...]:
-    """Return all resolved paths for artifacts designated as weights."""
-    paths = []
-    for spec in variant.artifacts:
-        if spec.role == FileRole.WEIGHTS:
-            path = file_map.get_optional(spec.id)
-            if path is not None:
-                paths.append(path)
-
-    if not paths:
-        raise SessionError(
-            f"No weights files found for backend '{variant.backend.value}'. Check the plugin's artifacts declaration."
-        )
-    return tuple(paths)
-
-
-def _make_backend_pool_key(
+def _make_runtime_pool_key(
     *,
-    backend: Backend,
-    weight_paths: tuple[Path, ...],
-    device: str,
-    providers: list[str] | None,
-    precision: str,
+    plugin_cls: type[ModelPlugin],
+    artifacts: ArtifactMap,
+    request: ExecutionRequest,
 ) -> tuple[Any, ...]:
-    # Hash all weight paths to ensure multi-weight models don't collide
-    resolved_paths = tuple(str(p.resolve()) for p in weight_paths)
-    if backend == Backend.PYTORCH:
-        return (backend.value, resolved_paths, device, precision)
-    provider_key = tuple(providers) if providers is not None else ("AUTO",)
-    return (backend.value, resolved_paths, provider_key, device, precision)
+    """Key a completed runtime by all inputs which can affect its construction."""
+    artifact_key = tuple(
+        sorted((artifact_id, str(path.resolve())) for artifact_id, path in artifacts.as_path_dict().items())
+    )
+    return (
+        plugin_cls.__module__,
+        plugin_cls.__qualname__,
+        artifact_key,
+        request.backend.value,
+        request.device,
+        request.precision,
+        request.onnx_providers,
+    )
 
 
-def _acquire_backend(
+def _acquire_runtime(
     *,
     key: tuple[Any, ...],
-    backend: Backend,
-    weight_paths: tuple[Path, ...],
-    device: str,
-    providers: list[str] | None,
-    precision: str,
-    pytorch_cls: Any,
-    onnx_cls: Any,
+    model_id: str,
+    build: Callable[[], Any],
 ) -> tuple[Any, Callable[[], None]]:
 
     # 1. Double-Checked Fast Path: Check if already loaded
-    with _BACKEND_POOL_LOCK:
-        if key in _BACKEND_POOL:
-            instance, refcount = _BACKEND_POOL[key]
-            _BACKEND_POOL[key] = (instance, refcount + 1)
-            logger.debug("Reusing pooled backend instance backend=%s refcount=%s", backend.value, refcount + 1)
-            return instance, lambda: _release_backend(key)
+    with _RUNTIME_POOL_LOCK:
+        if key in _RUNTIME_POOL:
+            instance, refcount = _RUNTIME_POOL[key]
+            _RUNTIME_POOL[key] = (instance, refcount + 1)
+            logger.debug("Reusing pooled runtime model_id=%s refcount=%s", model_id, refcount + 1)
+            return instance, lambda: _release_runtime(key)
 
         # Get or create a lock specific to this model key to avoid blocking other models
         if key not in _LOADING_LOCKS:
@@ -332,57 +311,43 @@ def _acquire_backend(
 
     # 2. Acquire model-specific lock
     with model_lock:
-        with _BACKEND_POOL_LOCK:
-            if key in _BACKEND_POOL:
-                instance, refcount = _BACKEND_POOL[key]
-                _BACKEND_POOL[key] = (instance, refcount + 1)
-                return instance, lambda: _release_backend(key)
+        with _RUNTIME_POOL_LOCK:
+            if key in _RUNTIME_POOL:
+                instance, refcount = _RUNTIME_POOL[key]
+                _RUNTIME_POOL[key] = (instance, refcount + 1)
+                return instance, lambda: _release_runtime(key)
 
         try:
-            if backend == Backend.PYTORCH:
-                instance = pytorch_cls()
-                instance.load(
-                    weight_paths,
-                    device=device,
-                    precision=precision,
-                )
-            else:
-                instance = onnx_cls()
-                instance.load(
-                    weight_paths,
-                    providers=providers,
-                    device=device,
-                    precision=precision,
-                )
+            instance = build()
 
-            with _BACKEND_POOL_LOCK:
-                _BACKEND_POOL[key] = (instance, 1)
+            with _RUNTIME_POOL_LOCK:
+                _RUNTIME_POOL[key] = (instance, 1)
 
-            logger.info("Backend ready backend=%s device=%s", backend.value, device)
-            return instance, lambda: _release_backend(key)
+            logger.info("Runtime ready model_id=%s", model_id)
+            return instance, lambda: _release_runtime(key)
 
         finally:
-            with _BACKEND_POOL_LOCK:
+            with _RUNTIME_POOL_LOCK:
                 _LOADING_LOCKS.pop(key, None)
 
 
 # endregion
 
 
-def _release_backend(key: tuple[Any, ...]) -> None:
+def _release_runtime(key: tuple[Any, ...]) -> None:
     instance: Any | None = None
-    with _BACKEND_POOL_LOCK:
-        cached = _BACKEND_POOL.get(key)
+    with _RUNTIME_POOL_LOCK:
+        cached = _RUNTIME_POOL.get(key)
         if cached is None:
             return
 
         instance, refcount = cached
         if refcount > 1:
-            _BACKEND_POOL[key] = (instance, refcount - 1)
-            logger.debug("Released pooled backend key=%s refcount=%s", key, refcount - 1)
+            _RUNTIME_POOL[key] = (instance, refcount - 1)
+            logger.debug("Released pooled runtime key=%s refcount=%s", key, refcount - 1)
             return
 
-        popped = _BACKEND_POOL.pop(key, None)
+        popped = _RUNTIME_POOL.pop(key, None)
         if popped is not None:
             instance, _ = popped
         else:
@@ -394,7 +359,7 @@ def _release_backend(key: tuple[Any, ...]) -> None:
     close_fn = getattr(instance, "close", None)
     if callable(close_fn):
         close_fn()
-    logger.debug("Closed pooled backend key=%s", key)
+    logger.debug("Closed pooled runtime key=%s", key)
 
 
 def _auto_select_backend(plugin_cls: type[ModelPlugin], *, requested_device: str = "auto") -> Backend:
@@ -486,22 +451,3 @@ def _auto_select_pytorch_device() -> str:
             return "mps"
 
     return "cpu"
-
-
-def _find_weights(
-    plugin_cls: type[ModelPlugin],
-    variant: ModelVariant,
-    file_map: ArtifactMap,
-) -> Path:
-    """Find the weights file from the resolved ArtifactMap for the selected variant."""
-    for spec in variant.artifacts:
-        if spec.role == FileRole.WEIGHTS:
-            path = file_map.get_optional(spec.id)
-            if path is not None:
-                return path
-
-    raise SessionError(
-        f"No weights file found for model '{plugin_cls.identity.model_id}' "
-        f"with backend '{variant.backend.value}'. "
-        f"Check the plugin's artifacts declaration."
-    )
