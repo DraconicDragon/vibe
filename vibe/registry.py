@@ -164,10 +164,9 @@ class TransformRegistry:
         self._transforms: dict[str, type[ResultTransform]] = {}
 
     def register(self, transform_cls: type[ResultTransform]) -> None:
-        tid = getattr(transform_cls, "transform_id", None)
-        if not tid:
-            return
-        self._transforms[tid] = transform_cls
+        transform_id = getattr(transform_cls, "transform_id", None)
+        if transform_id:
+            self._transforms[transform_id] = transform_cls
 
     def get(self, transform_id: str) -> type[ResultTransform]:
         if transform_id not in self._transforms:
@@ -175,7 +174,7 @@ class TransformRegistry:
         return self._transforms[transform_id]
 
     def list_all(self) -> list[TransformInfo]:
-        return [cls.describe() for cls in self._transforms.values()]
+        return [transform_cls.describe() for transform_cls in self._transforms.values()]
 
 
 model_registry = ModelRegistry()
