@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Protocol, Self
 
 from vibe.results import ModelResult, OutputType
 
@@ -28,6 +28,26 @@ class FileRole(str, Enum):
 class Backend(str, Enum):
     PYTORCH = "pytorch"
     ONNX = "onnx"
+
+
+@dataclass(frozen=True)
+class ExecutionRequest:
+    """Resolved execution settings passed to a plugin's runtime builder."""
+
+    backend: Backend
+    device: str
+    precision: str
+    onnx_providers: tuple[str, ...] | None = None
+
+
+class RuntimeExecutor(Protocol):
+    """The small contract the inference layer needs from a loaded runtime."""
+
+    def run(self, inputs: Any) -> Any: ...
+
+    def close(self) -> None: ...
+
+    def supports_true_batching(self) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -153,8 +173,6 @@ class ModelPlugin(ABC):
     default_repo_id: str
     variants: tuple[ModelVariant, ...]
 
-    _backend: Backend | None = None
-
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
@@ -188,12 +206,24 @@ class ModelPlugin(ABC):
 
             warnings.warn(str(exc), stacklevel=2)
 
-    def configure(self, **kwargs: Any) -> None:
-        """Store session configuration. Base implementation saves active backend."""
-        self._backend = kwargs.get("backend")
-
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
-        """Load tag lists, mappings, etc., using strict artifact IDs."""
+        """Initialize plugin-local metadata from resolved artifacts.
+
+        This hook must not configure or mutate a runtime executor. It remains
+        separate from `build_runtime` so every session has its own plugin
+        state even when a completed runtime is shared from the pool.
+        """
+
+    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
+        """Build a fully initialized runtime for this model and request.
+
+        This is intentionally not abstract during the metadata migration:
+        making it abstract would make old concrete plugins unimportable before
+        they can be migrated.
+        """
+        raise NotImplementedError(
+            f"Plugin '{self.identity.model_id}' has not migrated to the build_runtime() contract."
+        )
 
     @abstractmethod
     def preprocess(self, image: Any) -> Any:
