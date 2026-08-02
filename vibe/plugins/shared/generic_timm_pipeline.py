@@ -1,36 +1,111 @@
+"""Reusable timm pipeline mixin handling config parsing, preprocessing, and runtime building."""
+
 from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 from PIL import Image
 
-from vibe.backends.base import Backend
+from vibe.backends.base import ArtifactMap, Backend, ExecutionRequest, RuntimeExecutor
+from vibe.backends.runtime.onnx import ONNXBackend
+from vibe.backends.runtime.pytorch import PyTorchBackend
 
 logger = logging.getLogger(__name__)
 
 
 class TimmPipelineMixin:
-    """Reusable timm config, preprocess, and PyTorch state-dict bootstrap helpers."""
+    """Reusable timm config, preprocess, and runtime builder helpers."""
 
-    model_id: str = ""
-    default_hf_repo: str | None = None
-    FALLBACK_TIMM_MODEL_ARGS: dict[str, Any] = {}
+    model_id: str
+    default_repo_id: str
+    FALLBACK_TIMM_MODEL_ARGS: ClassVar[dict[str, Any]] = {}
 
-    _backend: Backend | None = None
-    _backend_instance: Any | None = None
+    # Class-level fallback overrides when config.json lacks mean/std
+    FALLBACK_MEAN: tuple[float, float, float] | None = None
+    FALLBACK_STD: tuple[float, float, float] | None = None
+
     _runtime_preprocess_steps: list[dict[str, Any]]
     _runtime_timm_transform: Any | None = None
+    _active_backend: Backend | None = None
 
-    def configure(self, **kwargs: Any) -> None:
-        super_configure = getattr(super(), "configure", None)
-        if callable(super_configure):
-            super_configure(**kwargs)
-        self._backend = kwargs.get("backend")
-        self._backend_instance = kwargs.get("backend_instance")
+    # region Runtime Builder
+
+    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
+        """Build an ONNX or PyTorch runtime executor for a timm model."""
+        self._active_backend = request.backend
+
+        if request.backend == Backend.ONNX:
+            onnx_path = artifacts.get("model_onnx")
+            backend = ONNXBackend()
+            backend.load(onnx_path, request)
+            return backend
+
+        if request.backend == Backend.PYTORCH:
+            config_path = artifacts.get_optional("config")
+            config = self.read_timm_config_json(config_path) if config_path else None
+
+            weights_path = artifacts.get("model_pt")
+            num_classes = getattr(self, "_num_classes", None)
+
+            model = self.build_timm_pytorch_model(
+                weights_path=weights_path,
+                config=config,
+                num_classes=num_classes,
+            )
+            backend = PyTorchBackend()
+            backend.load(model, request)
+            return backend
+
+        raise ValueError(f"Unsupported backend '{request.backend}' for timm pipeline.")
+
+    def build_timm_pytorch_model(
+        self,
+        *,
+        weights_path: Path,
+        config: dict[str, Any] | None,
+        num_classes: int | None = None,
+    ) -> Any:
+        """Construct a PyTorch nn.Module from timm architecture and load state dict."""
+        architecture = self.resolve_timm_architecture(config)
+        if not architecture:
+            raise RuntimeError(
+                f"Could not resolve timm architecture for model '{self.model_id}'. "
+                "Provide config.json with an architecture/model_type field."
+            )
+
+        model_args = self.resolve_timm_model_args(config)
+        if num_classes is not None:
+            model_args["num_classes"] = int(num_classes)
+
+        try:
+            import timm
+        except ImportError as exc:
+            raise RuntimeError("timm is required to build PyTorch models.") from exc
+
+        logger.info("Loading PyTorch weights from %s", weights_path)
+        if weights_path.suffix.lower() == ".safetensors":
+            from safetensors.torch import load_file
+
+            state_dict = load_file(weights_path, device="cpu")
+        else:
+            import torch
+
+            state_dict = torch.load(weights_path, map_location="cpu")
+
+        model = self.create_timm_model(timm, architecture, model_args)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing:
+            logger.warning("timm load_state_dict missing keys for model_id=%s: %s", self.model_id, missing[:8])
+        if unexpected:
+            logger.warning("timm load_state_dict unexpected keys for model_id=%s: %s", self.model_id, unexpected[:8])
+
+        return model
+
+    # endregion Runtime Builder
 
     # region Config Parsing
 
@@ -42,18 +117,18 @@ class TimmPipelineMixin:
                 return parsed
             raise RuntimeError(f"config.json at '{config_path}' is not a JSON object")
         except Exception as exc:
-            raise RuntimeError(f"failed to parse config.json at '{config_path}': {exc}") from exc
+            raise RuntimeError(f"Failed to parse config.json at '{config_path}': {exc}") from exc
 
     def read_timm_preprocess_json(self, preprocess_path: Path) -> list[dict[str, Any]]:
         try:
             with preprocess_path.open("r", encoding="utf-8") as handle:
                 parsed = json.load(handle)
             if not isinstance(parsed, dict):
-                raise RuntimeError(f"preprocess.json at '{preprocess_path}' is not a JSON object")
+                raise RuntimeError(f"preprocess.json at '{preprocess_path}' is not a JSON object")  # noqa: TRY004
 
             raw_steps = parsed.get("test")
             if not isinstance(raw_steps, list):
-                raise RuntimeError(f"preprocess.json at '{preprocess_path}' missing required 'test' list")
+                raise RuntimeError(f"preprocess.json at '{preprocess_path}' missing required 'test' list")  # noqa: TRY004
 
             steps = [dict(item) for item in raw_steps if isinstance(item, dict)]
             if not steps:
@@ -62,7 +137,7 @@ class TimmPipelineMixin:
             logger.info("Using preprocess.json inference pipeline (test) for model_id=%s", self.model_id)
             return steps
         except Exception as exc:
-            raise RuntimeError(f"failed to parse preprocess.json at '{preprocess_path}': {exc}") from exc
+            raise RuntimeError(f"Failed to parse preprocess.json at '{preprocess_path}': {exc}") from exc
 
     def resolve_timm_preprocess_steps(
         self,
@@ -82,20 +157,29 @@ class TimmPipelineMixin:
 
         input_size = cfg.get("input_size") or cfg.get("test_input_size")
         crop_pct = _float_or_none(cfg.get("crop_pct"))
-        mean = _triplet_or_none(cfg.get("mean")) or (0.485, 0.456, 0.406)
-        std = _triplet_or_none(cfg.get("std")) or (0.229, 0.224, 0.225)
+
+        # Resolve mean/std: 1) config.json -> 2) class attribute -> 3) ImageNet default with warning
+        mean = _triplet_or_none(cfg.get("mean")) or self.FALLBACK_MEAN
+        std = _triplet_or_none(cfg.get("std")) or self.FALLBACK_STD
+
+        if mean is None or std is None:
+            logger.warning(
+                "Model '%s' config.json lacks mean/std and no class FALLBACK_MEAN/STD defined. "
+                "Defaulting to standard ImageNet normalization.",
+                self.model_id,
+            )
+            mean = mean or (0.485, 0.456, 0.406)
+            std = std or (0.229, 0.224, 0.225)
+
         interpolation = str(cfg.get("interpolation", "bicubic"))
 
         image_size = _image_size_from_input_size(input_size)
         if image_size is None:
-            raise RuntimeError(
-                "Could not resolve timm preprocess size from config.json. "
-                "Expected pretrained_cfg.input_size or pretrained_cfg.test_input_size."
-            )
+            raise RuntimeError(f"Could not resolve timm preprocess size from config.json for model '{self.model_id}'.")
 
         resize_size = image_size
         if crop_pct and 0 < crop_pct < 1:
-            resize_size = int(round(image_size / crop_pct))
+            resize_size = round(image_size / crop_pct)
 
         steps: list[dict[str, Any]] = [
             {"type": "resize", "size": resize_size, "interpolation": interpolation},
@@ -137,25 +221,13 @@ class TimmPipelineMixin:
             )
             return False
 
-        model = None
-        backend = self._backend_instance
-        if backend is not None:
-            raw = getattr(backend, "raw", None)
-            try:
-                from torch import nn
-
-                if isinstance(raw, nn.Module):
-                    model = raw
-            except ImportError:
-                model = None
-
         try:
             cfg = config.get("pretrained_cfg")
             if not isinstance(cfg, dict):
                 cfg = config.get("pretrained_cfg_overlay")
             if not isinstance(cfg, dict):
                 cfg = config
-            data_config = resolve_data_config(cfg, model=model)
+            data_config = resolve_data_config(cfg)
             self._runtime_timm_transform = create_transform(**data_config)
             logger.info("Using native timm preprocessing for model_id=%s", self.model_id)
             return True
@@ -168,76 +240,6 @@ class TimmPipelineMixin:
             return False
 
     # endregion Native timm
-
-    # region PyTorch bootstrap
-
-    def maybe_prepare_timm_pytorch_model(
-        self,
-        *,
-        config: dict[str, Any] | None,
-        num_classes: int | None = None,
-    ) -> None:
-        if self._backend != Backend.PYTORCH:
-            return
-        backend = self._backend_instance
-        if backend is None:
-            return
-
-        try:
-            import torch
-            from torch import nn
-        except ImportError:
-            return
-
-        model_or_state = getattr(backend, "raw", None)
-        if isinstance(model_or_state, nn.Module):
-            return
-        if not isinstance(model_or_state, dict):
-            return
-
-        architecture = self.resolve_timm_architecture(config)
-        if not architecture:
-            raise RuntimeError(
-                "Could not resolve timm architecture for PyTorch model reconstruction. "
-                "Provide config.json with an architecture/model_type field."
-            )
-
-        model_args = self.resolve_timm_model_args(config)
-        if num_classes is not None:
-            model_args["num_classes"] = int(num_classes)
-
-        try:
-            import timm
-        except ImportError as exc:
-            raise RuntimeError(
-                "timm is required to build PyTorch architectures from timm .safetensors state dicts."
-            ) from exc
-
-        logger.info(
-            "Building timm model for model_id=%s architecture=%s num_classes=%s",
-            self.model_id,
-            architecture,
-            model_args.get("num_classes"),
-        )
-        model = self.create_timm_model(timm, architecture, model_args)
-
-        missing, unexpected = model.load_state_dict(model_or_state, strict=False)
-        if missing:
-            logger.warning("timm load_state_dict missing keys for model_id=%s: %s", self.model_id, missing[:8])
-        if unexpected:
-            logger.warning("timm load_state_dict unexpected keys for model_id=%s: %s", self.model_id, unexpected[:8])
-
-        backend._model = model
-
-        apply_precision = getattr(backend, "_apply_precision_plan", None)
-        if callable(apply_precision):
-            apply_precision(torch)
-        else:
-            device = getattr(backend, "device", "cpu")
-            model.to(device=device)
-            model.eval()
-
-    # endregion PyTorch bootstrap
 
     # region Model helpers
 
@@ -265,7 +267,7 @@ class TimmPipelineMixin:
                 if isinstance(value, str) and value.strip():
                     return value.strip()
 
-        repo = getattr(self, "default_hf_repo", None) or ""
+        repo = getattr(self, "default_repo_id", None) or ""
         suffix = repo.split("/", 1)[-1]
         if ".dbv" in suffix:
             fallback_arch = suffix.split(".dbv", 1)[0]
@@ -290,9 +292,9 @@ class TimmPipelineMixin:
     # region Preprocess
 
     def preprocess(self, image: Any) -> np.ndarray:
-        if self._runtime_timm_transform is not None:
+        if getattr(self, "_runtime_timm_transform", None) is not None:
             return self.preprocess_with_native_timm(image, self._runtime_timm_transform)
-        return self.preprocess_with_timm_steps(image, self._runtime_preprocess_steps)
+        return self.preprocess_with_timm_steps(image, getattr(self, "_runtime_preprocess_steps", []))
 
     def preprocess_with_native_timm(self, image: Any, transform: Any) -> np.ndarray:
         if not isinstance(image, Image.Image):
@@ -342,8 +344,6 @@ class TimmPipelineMixin:
             elif step_type == "normalize":
                 normalize_mean = _triplet_or_none(step.get("mean"))
                 normalize_std = _triplet_or_none(step.get("std"))
-            elif step_type == "maybe_to_tensor":
-                continue
 
         arr = np.asarray(image, dtype=np.float32) / 255.0
         if normalize_mean is not None and normalize_std is not None:
@@ -383,8 +383,8 @@ class TimmPipelineMixin:
         if source_w <= 0 or source_h <= 0 or target_w <= 0 or target_h <= 0:
             return image
         ratio = min(target_w / source_w, target_h / source_h)
-        resized_w = max(1, int(round(source_w * ratio)))
-        resized_h = max(1, int(round(source_h * ratio)))
+        resized_w = max(1, round(source_w * ratio))
+        resized_h = max(1, round(source_h * ratio))
         resized = image.resize((resized_w, resized_h), self._pil_interpolation(interpolation))
         result = Image.new("RGB", (target_w, target_h), self._resolve_background_color(background_color))
         result.paste(resized, ((target_w - resized_w) // 2, (target_h - resized_h) // 2))
@@ -397,8 +397,8 @@ class TimmPipelineMixin:
             if source_w <= 0 or source_h <= 0:
                 return image
             if source_w < source_h:
-                return image.resize((size, max(1, int(round((source_h / source_w) * size)))), resample)
-            return image.resize((max(1, int(round((source_w / source_h) * size))), size), resample)
+                return image.resize((size, max(1, round((source_h / source_w) * size))), resample)
+            return image.resize((max(1, round((source_w / source_h) * size)), size), resample)
         if isinstance(size, (list, tuple)) and len(size) == 2:
             return image.resize((max(1, int(size[1])), max(1, int(size[0]))), resample)
         return image
@@ -441,21 +441,7 @@ class TimmPipelineMixin:
     # endregion Image Helpers
 
 
-# region Output Helpers
-
-
-def flatten_timm_output(raw_output: Any) -> np.ndarray:
-    if isinstance(raw_output, (list, tuple)):
-        raw_output = raw_output[0]
-    arr = np.asarray(raw_output)
-    if arr.ndim == 0:
-        arr = arr.reshape(1)
-    elif arr.ndim > 1:
-        arr = arr.reshape(arr.shape[0], -1)[0]
-    return arr.astype(np.float32, copy=False)
-
-
-# endregion Output Helpers
+# region Helper Functions
 
 
 def _triplet_or_none(raw: Any) -> tuple[float, float, float] | None:
@@ -482,3 +468,6 @@ def _image_size_from_input_size(raw: Any) -> int | None:
         if len(values) >= 2:
             return values[-1]
     return None
+
+
+# endregion Helper Functions

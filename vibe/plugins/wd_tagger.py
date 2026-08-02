@@ -79,7 +79,7 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
     _character_indices: list[int]
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
-        """Load tag metadata from selected_tags.csv and handle PyTorch bootstrapping."""
+        """Load tag metadata from selected_tags.csv."""
         csv_path = artifacts.get("tag_list")
 
         logger.info("Loading tag list from %s", csv_path)
@@ -93,25 +93,24 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
 
         logger.info(
             "Loaded WD tags: total=%d general=%d character=%d rating=%d",
-            len(self._raw_tag_names),
+            len(self._raw_tag_names), # num classes
             len(self._general_indices),
             len(self._character_indices),
             len(self._rating_indices),
         )
 
-        # If PyTorch variant, use timm
-        if self._backend == Backend.PYTORCH:
-            config_path = artifacts.get("config")
+        config_path = artifacts.get_optional("config")
+        if config_path:
             config = self.read_timm_config_json(config_path)
-            self.maybe_prepare_timm_pytorch_model(config=config, num_classes=len(self._raw_tag_names))
+            self.prepare_timm_runtime_preprocess(config)
 
     def preprocess(self, image: Any) -> np.ndarray:
         """Convert image to layout expected by the active backend."""
         # NOTE: PyTorch - models expect standard (1, C, H, W) NCHW format
         # NOTE: ONNX - models expect (1, H, W, C) NHWC format
-        layout = "NCHW" if self._backend == Backend.PYTORCH else "NHWC"
+        layout = "NCHW" if self._active_backend == Backend.PYTORCH else "NHWC"
 
-        if self._backend == Backend.PYTORCH:
+        if self._active_backend == Backend.PYTORCH:
             # NOTE: PyTorch expects BGR normalized to [-1, 1] range: (x - 127.5) / 127.5
             return preprocess_tagger_image(
                 image,
@@ -122,16 +121,16 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
                 mean=(0.5, 0.5, 0.5),
                 std=(0.5, 0.5, 0.5),
             )
-        else:
-            # NOTE: ONNX expects unnormalized, raw BGR [0, 255] float32
-            arr = preprocess_tagger_image(
-                image,
-                image_size=self.IMAGE_SIZE,
-                input_layout=layout,
-                rgb_to_bgr=True,
-                normalize_to_unit=False,
-            )
-            return np.ascontiguousarray(arr)
+
+        # NOTE: ONNX expects unnormalized, raw BGR [0, 255] float32
+        arr = preprocess_tagger_image(
+            image,
+            image_size=self.IMAGE_SIZE,
+            input_layout=layout,
+            rgb_to_bgr=True,
+            normalize_to_unit=False,
+        )
+        return np.ascontiguousarray(arr)
 
     def postprocess(self, raw_output: Any) -> TagResult:
         """Return full scored output grouped by WD tag category."""
