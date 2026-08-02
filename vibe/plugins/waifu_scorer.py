@@ -9,20 +9,26 @@ from vibe.backends.base import (
     ArtifactMap,
     ArtifactSpec,
     Backend,
+    ExecutionRequest,
     FileRole,
     ModelCapabilities,
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
+    RuntimeExecutor,
 )
+from vibe.backends.runtime.pytorch import PyTorchBackend
 from vibe.plugins.shared.scores_utils import normalize_scalar
 from vibe.results import OutputType, ScoreResult
 
 logger = logging.getLogger(__name__)
 
 
+# region Runtime Model Definition
+
+
 def _get_runtime_model_cls(nn_module: Any) -> type:
-    """Dynamically define and return the WaifuScorerRuntimeModel class given torch.nn."""
+    """Dynamically define the combined CLIP + MLP scorer module."""
 
     class WaifuScorerRuntimeModel(nn_module.Module):
         """Combined CLIP image encoder + MLP scorer."""
@@ -38,6 +44,12 @@ def _get_runtime_model_cls(nn_module: Any) -> type:
             return self.mlp(features).clamp(0, 10)
 
     return WaifuScorerRuntimeModel
+
+
+# endregion
+
+
+# region Plugin Base
 
 
 class WaifuScorerBasePlugin(ModelPlugin):
@@ -89,73 +101,68 @@ class WaifuScorerBasePlugin(ModelPlugin):
         ),
     )
 
-    _backend: Backend | None = None
-    _backend_instance: Any | None = None
-    _clip_model: Any | None = None
     _clip_preprocess: Any | None = None
 
-    def configure(self, **kwargs: Any) -> None:
-        self._backend = kwargs.get("backend")
-        self._backend_instance = kwargs.get("backend_instance")
-
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
-        if self._backend != Backend.PYTORCH:
-            return
-
-        backend = self._backend_instance
-        if backend is None:
-            return
+        """Initialize the CLIP preprocessor for image normalization."""
+        clip_weights = artifacts.get("clip_weights")
+        clip_dir = clip_weights.parent
 
         try:
-            import torch
-            from torch import nn
+            from transformers import CLIPImageProcessor
         except ImportError as exc:
-            raise RuntimeError("PyTorch is required to use the waifu scorer plugin.") from exc
+            raise RuntimeError("transformers is required for WaifuScorer.") from exc
 
-        model_or_state = getattr(backend, "raw", None)
-        if isinstance(model_or_state, nn.Module):
-            return
-        if not isinstance(model_or_state, dict):
-            raise TypeError("Waifu scorer weights must be a PyTorch state dict or nn.Module.")
+        self._clip_preprocess = CLIPImageProcessor.from_pretrained(str(clip_dir), local_files_only=True)
 
-        device = getattr(backend, "device", "cpu")
-        clip_model, clip_preprocess = self._load_clip_model(device, artifacts)
-        mlp = self._build_mlp()
-        normalized_state = self._normalize_mlp_state_dict(model_or_state)
-        self._load_state_dict(mlp, normalized_state)
+    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
+        """Construct the combined PyTorch model graph and return a PyTorchBackend executor."""
+        if request.backend != Backend.PYTORCH:
+            raise ValueError(f"WaifuScorer only supports PyTorch backend, got '{request.backend}'.")
 
-        # Build class dynamically without importing torch at module import time
+        try:
+            from safetensors.torch import load_file
+            from torch import nn
+            from transformers import CLIPModel
+        except ImportError as exc:
+            raise RuntimeError("PyTorch, safetensors, and transformers are required.") from exc
+
+        # Load CLIP Model
+        clip_weights = artifacts.get("clip_weights")
+        clip_dir = clip_weights.parent
+        clip_model = CLIPModel.from_pretrained(str(clip_dir), local_files_only=True)
+        clip_model.eval()
+        clip_model.requires_grad_(False)
+
+        # Build MLP Head
+        mlp = self._build_mlp(nn)
+        mlp_path = artifacts.get("mlp_weights")
+        mlp_state = load_file(mlp_path, device="cpu")
+        normalized_state = self._normalize_mlp_state_dict(mlp_state)
+        mlp.load_state_dict(normalized_state, strict=True)
+        mlp.eval()
+
+        # Assemble Combined Runtime Model
         runtime_cls = _get_runtime_model_cls(nn)
         model = runtime_cls(clip_model=clip_model, mlp=mlp)
-        backend._model = model
 
-        apply_precision = getattr(backend, "_apply_precision_plan", None)
-        if callable(apply_precision):
-            apply_precision(torch)
-        else:
-            model.to(device=device)
-
-        model.eval()
-
-        self._clip_model = clip_model
-        self._clip_preprocess = clip_preprocess
+        backend = PyTorchBackend()
+        backend.load(model, request)
+        return backend
 
     def preprocess(self, image: Any) -> Any:
         if self._clip_preprocess is None:
-            raise RuntimeError("Waifu scorer preprocess is unavailable until the plugin is loaded.")
+            raise RuntimeError("Waifu scorer preprocessor is not loaded.")
 
         try:
             batch = self._clip_preprocess(image, return_tensors="pt")
             return batch["pixel_values"]
         except Exception as exc:
-            raise RuntimeError("Waifu scorer preprocess could not prepare image tensors.") from exc
+            raise RuntimeError(f"Waifu scorer preprocess failed: {exc}") from exc
 
     def postprocess(self, raw_output: Any) -> ScoreResult:
         scores = np.asarray(raw_output, dtype=np.float32).reshape(-1)
-        if scores.size == 0:
-            score = 0.0
-        else:
-            score = float(np.clip(scores[0], self.SCORE_MIN, self.SCORE_MAX))
+        score = 0.0 if scores.size == 0 else float(np.clip(scores[0], self.SCORE_MIN, self.SCORE_MAX))
 
         return ScoreResult(
             score=score,
@@ -164,41 +171,10 @@ class WaifuScorerBasePlugin(ModelPlugin):
             normalized_score=normalize_scalar(score, self.SCORE_MIN, self.SCORE_MAX),
         )
 
-    def _load_clip_model(self, device: str, artifacts: ArtifactMap) -> tuple[Any, Any]:
-        try:
-            from transformers import CLIPImageProcessor, CLIPModel
-        except ImportError as exc:
-            raise RuntimeError(
-                "transformers could not be imported for the waifu scorer model. "
-                "This is usually a dependency mismatch between transformers and huggingface_hub. "
-                "Try upgrading or reinstalling both packages together."
-            ) from exc
-
-        clip_weights = artifacts.get("clip_weights")
-        clip_config = artifacts.get("clip_config")
-        clip_preprocessor = artifacts.get("clip_preprocessor")
-
-        clip_dir = clip_weights.parent
-        if clip_config.parent != clip_dir or clip_preprocessor.parent != clip_dir:
-            raise RuntimeError(
-                "CLIP files must be located in the same folder to load locally. "
-                "Use source_map or file_name_map to align file locations."
-            )
-
-        processor = CLIPImageProcessor.from_pretrained(str(clip_dir), local_files_only=True)
-        clip_model = CLIPModel.from_pretrained(str(clip_dir), local_files_only=True)
-        clip_model = clip_model.to(device=device)  # ty:ignore[missing-argument]
-        clip_model.eval()
-        clip_model.requires_grad_(False)
-
-        return clip_model, processor
-
     def _normalize_mlp_state_dict(self, state_dict: dict[str, Any]) -> dict[str, Any]:
         if not state_dict:
             return state_dict
 
-        # MLP state dict from reference script defines self.layers = nn.Sequential(...)
-        # So we strip 'layers.' to map it to our unwrapped nn.Sequential head:
         if any(key.startswith("layers.") for key in state_dict):
             state_dict = {
                 key[len("layers.") :]: value for key, value in state_dict.items() if key.startswith("layers.")
@@ -207,16 +183,9 @@ class WaifuScorerBasePlugin(ModelPlugin):
         if all(key.startswith("model.") for key in state_dict):
             state_dict = {key[len("model.") :]: value for key, value in state_dict.items()}
 
-        # Remove num_batches_tracked so strict loading works since our Sequential model may not track them
-        # identically or HF checkpoint has them extra.
         return {k: v for k, v in state_dict.items() if not k.endswith(".num_batches_tracked")}
 
-    def _build_mlp(self) -> Any:
-        try:
-            from torch import nn
-        except ImportError as exc:
-            raise RuntimeError("PyTorch is required to build the waifu scorer MLP.") from exc
-
+    def _build_mlp(self, nn: Any) -> Any:
         return nn.Sequential(
             nn.Linear(self.INPUT_SIZE, 2048),
             nn.ReLU(),
@@ -239,19 +208,11 @@ class WaifuScorerBasePlugin(ModelPlugin):
             nn.Linear(32, 1),
         )
 
-    def _load_state_dict(self, model: Any, state_dict: dict[str, Any]) -> None:
-        try:
-            missing, unexpected = model.load_state_dict(state_dict, strict=True)
-        except RuntimeError as exc:
-            raise RuntimeError(f"Failed to load waifu scorer weights: {exc}") from exc
 
-        if missing:
-            logger.warning("Waifu scorer missing keys for model_id=%s: %s", self.identity.model_id, missing[:8])
-        if unexpected:
-            logger.warning("Waifu scorer unexpected keys for model_id=%s: %s", self.identity.model_id, unexpected[:8])
+# endregion
 
 
-# region Model Variants
+# region Concrete Plugins
 
 
 class WaifuScorerV3Plugin(WaifuScorerBasePlugin):
@@ -272,4 +233,4 @@ class WaifuScorerV4Plugin(WaifuScorerBasePlugin):
     default_repo_id = "Eugeoter/waifu-scorer-v4-beta"
 
 
-# endregion Model Variants
+# endregion
