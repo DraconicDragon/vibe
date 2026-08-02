@@ -462,49 +462,28 @@ class ONNXBackend:
             getattr(output_meta, "type", None),
         )
 
-    def run(self, array: np.ndarray) -> np.ndarray:
-        """
-        Run a forward pass.
-
-        array should be a float32 numpy array of shape (1, C, H, W)
-        or (1, H, W, C) depending on the model — the plugin's preprocess
-        method is responsible for the correct layout.
-
-        Returns the first output tensor as a numpy array.
-        """
+    def run(self, inputs: Any) -> np.ndarray:
+        """Run a forward pass on array or dictionary inputs."""
         if self._session is None:
-            raise RuntimeError("ONNXBackend.load() has not been called.")
+            raise RuntimeError("ONNXBackend has not been loaded.")
 
         logger.debug("ONNX run input_shape=%s input_dtype=%s", array.shape, array.dtype)
-        if array.ndim == 0:
-            logger.error(
-                "ONNX input is scalar for input_name=%s expected_shape=%s actual_shape=%s",
-                self._input_name,
-                self.input_shape(),
-                array.shape,
-            )
 
-        # TODO: support selecting a specific output name/index per model to avoid
-        # fetching all outputs when only one tensor is needed.
+        if isinstance(inputs, dict):
+            input_feed = inputs
+        else:
+            array = np.asarray(inputs)
+            input_feed = {self._input_name: array}
+
         try:
             with self._run_lock:
-                outputs = self._session.run(self._output_names, {self._input_name: array})
+                outputs = self._session.run(self._output_names, input_feed)
         except Exception:
-            logger.error(
-                "ONNX inference failed input_name=%s input_shape=%s expected_input_shape=%s",
-                self._input_name,
-                array.shape,
-                self.input_shape(),
-            )
+            logger.error("ONNX inference failed input_keys=%s", list(input_feed.keys()))
             raise
-        if outputs:
-            first = outputs[0]
-            logger.debug(
-                "ONNX run output_shape=%s output_dtype=%s",
-                getattr(first, "shape", None),
-                getattr(first, "dtype", None),
-            )
-        return outputs[0]
+
+        # TODO: ModelPlugins should specify which output to use if multiple exist (embeddings, logits, etc)
+        return outputs[0] if outputs else np.array([])
 
     def close(self) -> None:
         """Release runtime references so memory can be reclaimed promptly."""

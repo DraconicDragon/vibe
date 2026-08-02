@@ -1,8 +1,7 @@
 """
 PyTorch inference backend.
 
-Wraps a loaded torch model and provides a uniform .run(tensor) → ndarray
-interface so the session layer doesn't need to know which backend is active.
+Wraps a loaded torch model and provides a uniform .run(inputs) -> ndarray interface.
 """
 
 from __future__ import annotations
@@ -23,8 +22,8 @@ class PyTorchBackend:
     """
     Runs a fully constructed PyTorch `nn.Module`.
 
-    Model construction and artifact interpretation are deliberately owned by
-    the plugin. This class only owns framework placement and execution.
+    Model construction and artifact interpretation are owned by the plugin via build_runtime().
+    This class only owns framework placement and execution.
     """
 
     def __init__(self) -> None:
@@ -73,50 +72,22 @@ class PyTorchBackend:
             self._compute_dtype,
         )
 
-    def run(self, tensor: Any) -> np.ndarray:
-        """Run a forward pass. Returns a numpy array of raw model output.
-
-        Accepts either:
-        - a standard torch.Tensor / ndarray for normal single-input models
-        - a JTPHydraBatch (NamedTuple with patches/sizes) for
-            the NaFlex multi-input forward pass
-        """
+    def run(self, inputs: Any) -> np.ndarray:
+        """Run a forward pass on generic tensor, tuple, or dict inputs."""
         try:
             import torch
             from torch import nn
         except ImportError as exc:
             raise RuntimeError("PyTorch is not installed.") from exc
 
-        # Lazy import to avoid circular dependency at module level.
-        from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
-
         if not isinstance(self._model, nn.Module):
             raise TypeError("PyTorchBackend has no loaded torch.nn.Module.")
 
-        if isinstance(tensor, JTPHydraBatch):
-            # NaFlex three-input forward pass.
-            patches = tensor.patches if tensor.patches.ndim == 3 else tensor.patches.unsqueeze(0)
-            sizes = tensor.sizes if tensor.sizes.ndim == 2 else tensor.sizes.unsqueeze(0)
-            logger.debug(
-                "PyTorch JTP-3 / Hydra run batch_size=%s patches_shape=%s sizes_shape=%s",
-                patches.shape[0] if patches.ndim > 0 else None,
-                patches.shape,
-                sizes.shape,
-            )
-            p = patches.to(device=self._device, dtype=self._compute_dtype).div(127.5).sub(1.0)
-            sz = sizes.to(device=self._device, dtype=torch.int32)
-            args = (p, sz)
-        else:
-            if isinstance(tensor, np.ndarray):
-                tensor = torch.from_numpy(tensor)
-            elif not isinstance(tensor, torch.Tensor):
-                tensor = torch.as_tensor(tensor)
-            logger.debug("PyTorch run input_shape=%s input_dtype=%s", tensor.shape, tensor.dtype)
-            args = (tensor.to(device=self._device, dtype=self._compute_dtype),)
+        args, kwargs = self._prepare_inputs(inputs, torch)
 
         with self._run_lock, torch.no_grad():
             try:
-                output = self._model(*args)
+                output = self._model(*args, **kwargs)
             except Exception:
                 if self._compute_dtype != torch.float32:
                     logger.warning(
@@ -127,23 +98,8 @@ class PyTorchBackend:
                     self._compute_dtype = torch.float32
                     self._resolved_precision = "fp32"
                     self._model.to(device=self._device, dtype=torch.float32)
-                    args = tuple(
-                        a.to(dtype=torch.float32) if isinstance(a, torch.Tensor) and a.dtype.is_floating_point else a
-                        for a in args
-                    )
-                    output = self._model(*args)
-                elif self._weight_dtype not in {None, torch.float32}:
-                    logger.debug(
-                        "FP32 compute with weight_dtype=%s on device=%s; temporarily promoting weights.",
-                        self._weight_dtype,
-                        self._device,
-                    )
-                    original_weight_dtype = self._weight_dtype
-                    self._model.to(device=self._device, dtype=torch.float32)
-                    try:
-                        output = self._model(*args)
-                    finally:
-                        self._model.to(device=self._device, dtype=original_weight_dtype)
+                    args, kwargs = self._prepare_inputs(inputs, torch)
+                    output = self._model(*args, **kwargs)
                 else:
                     logger.error(
                         "PyTorch inference failed args[0].shape=%s device=%s",
@@ -152,24 +108,53 @@ class PyTorchBackend:
                     )
                     raise
 
-        if isinstance(output, torch.Tensor):
-            logger.debug("PyTorch run output_shape=%s output_dtype=%s", output.shape, output.dtype)
+        return self._tensor_to_numpy(output, torch)
+
+    def _prepare_inputs(self, inputs: Any, torch_module: Any) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        """Generic input unpacker for Tensor, tuple, dict, or structured object."""
+
+        def _to_dev(val: Any) -> Any:
+            if isinstance(val, np.ndarray):
+                val = torch_module.from_numpy(val)
+            if isinstance(val, torch_module.Tensor):
+                if val.dtype.is_floating_point:
+                    return val.to(device=self._device, dtype=self._compute_dtype)
+                return val.to(device=self._device)
+            return val
+
+        if isinstance(inputs, dict):
+            return (), {k: _to_dev(v) for k, v in inputs.items()}
+
+        if isinstance(inputs, (tuple, list)):
+            return tuple(_to_dev(v) for v in inputs), {}
+
+        # Structured container with named fields (e.g. NaFlex batch patches/sizes)
+        if hasattr(inputs, "_fields"):
+            args = tuple(_to_dev(getattr(inputs, field_name)) for field_name in inputs._fields)
+            return args, {}
+
+        return (_to_dev(inputs),), {}
+
+    def _tensor_to_numpy(self, output: Any, torch_module: Any) -> np.ndarray:
+        if isinstance(output, torch_module.Tensor):
             out = output.detach().cpu()
-            if out.dtype == torch.bfloat16:
-                out = out.to(torch.float32)
+            if out.dtype == torch_module.bfloat16:
+                out = out.to(torch_module.float32)
             return out.numpy()
+
         if isinstance(output, (tuple, list)):
             first = output[0]
-            if isinstance(first, torch.Tensor):
+            if isinstance(first, torch_module.Tensor):
                 first = first.detach().cpu()
-                if first.dtype == torch.bfloat16:
-                    first = first.to(torch.float32)
+                if first.dtype == torch_module.bfloat16:
+                    first = first.to(torch_module.float32)
                 return first.numpy()
             return np.array(first)
+
         return np.array(output)
 
     def close(self) -> None:
-        """Release model references and try to free backend-side cache."""
+        """Release model references and clear GPU cache."""
         logger.debug("Closing PyTorch backend device=%s", self._device)
         self._model = None
         try:
@@ -218,13 +203,6 @@ class PyTorchBackend:
         }
         target_dtype = dtype_map.get(resolved, torch_module.float32)
 
-        if self._device == "cpu" and resolved in {"fp16", "bf16"}:
-            logger.info(
-                "Requested %s on CPU; keeping requested weight/compute dtype where possible. "
-                "If ops are unsupported at runtime, backend will retry with fp32.",
-                resolved,
-            )
-
         if hasattr(self._model, "apply_precision"):
             logger.debug("Delegating precision casting to model custom apply_precision hook")
             self._model.apply_precision(
@@ -235,6 +213,7 @@ class PyTorchBackend:
             )
         else:
             self._model.to(device=self._device, dtype=target_dtype)
+
         self._resolved_precision = resolved
         self._weight_dtype = target_dtype
         self._compute_dtype = torch_module.float32
