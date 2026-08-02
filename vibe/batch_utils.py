@@ -1,3 +1,7 @@
+"""Model-agnostic tensor and batch collation utilities."""
+
+from __future__ import annotations
+
 import logging
 from typing import Any
 
@@ -8,17 +12,9 @@ from vibe.exceptions import SessionError
 logger = logging.getLogger(__name__)
 
 
-try:
-    from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
-except ImportError:
-    JTPHydraBatch = None  # type: ignore[assignment]
-
-
-def _is_structured_jtp3_batch(item: Any) -> bool:
-    if JTPHydraBatch is not None and isinstance(item, JTPHydraBatch):
-        return True
-
-    return all(hasattr(item, field) for field in ("patches", "sizes"))
+def _is_structured_container(item: Any) -> bool:
+    """Check if an item is a custom batch container (e.g. NaFlex/JTP batch)."""
+    return hasattr(item, "patches") and hasattr(item, "sizes")
 
 
 def _describe_preprocessed_sample(item: Any) -> dict[str, Any]:
@@ -42,31 +38,37 @@ def _describe_preprocessed_sample(item: Any) -> dict[str, Any]:
 
 
 def stack_batch(chunk: list[Any], model_id: str) -> Any:
+    """Collate a list of preprocessed samples into a single batch data structure."""
+    if not chunk:
+        raise SessionError("Cannot stack an empty batch chunk.")
+
     first = chunk[0]
-    if _is_structured_jtp3_batch(first):
+    cls = type(first)
+
+    # 1. Generic Structured Batch Containers (e.g., NaFlex / SigLIP2)
+    if _is_structured_container(first):
         try:
             import torch
 
             patches = torch.stack([item.patches for item in chunk], dim=0)
             sizes = torch.stack([item.sizes for item in chunk], dim=0)
             logger.debug(
-                "Stacked JTP-3 / Hydra batch batch_size=%d patches_shape=%s sizes_shape=%s",
+                "Stacked structured batch model_id=%s batch_size=%d patches_shape=%s sizes_shape=%s",
+                model_id,
                 len(chunk),
                 patches.shape,
                 sizes.shape,
             )
-            return JTPHydraBatch(patches, sizes)
+            return cls(patches, sizes)
         except Exception as exc:
             logger.error(
-                "Failed to stack JTP-3 / Hydra batch for model_id=%s sample_descriptions=%s",
+                "Failed to stack structured batch for model_id=%s sample_descriptions=%s",
                 model_id,
                 [_describe_preprocessed_sample(item) for item in chunk],
             )
-            raise SessionError(
-                "Could not build a true JTP-3 / Hydra batch. This usually means preprocessed "
-                f"patch tensors have incompatible shapes for stacking. Details: {exc}"
-            ) from exc
+            raise SessionError(f"Could not collate structured batch for model '{model_id}': {exc}") from exc
 
+    # 2. NumPy Arrays
     if isinstance(first, np.ndarray):
         try:
             stacked = np.concatenate(chunk, axis=0)
@@ -78,12 +80,9 @@ def stack_batch(chunk: list[Any], model_id: str) -> Any:
                 model_id,
                 [getattr(item, "shape", None) for item in chunk],
             )
-            raise SessionError(
-                "Could not build a true batch tensor. This usually means preprocessed "
-                f"samples have incompatible shapes for concatenation. Details: {exc}"
-            ) from exc
+            raise SessionError(f"Could not concatenate NumPy samples for model '{model_id}': {exc}") from exc
 
-    # Torch-like tensor handling without hard dependency.
+    # 3. PyTorch Tensors
     try:
         import torch
 
@@ -99,10 +98,11 @@ def stack_batch(chunk: list[Any], model_id: str) -> Any:
         model_id,
         [_describe_preprocessed_sample(item) for item in chunk],
     )
-    raise SessionError("Unsupported preprocessed tensor type for true batching. Use batch_method='sequential'.")
+    raise SessionError(f"Unsupported preprocessed tensor type '{cls.__name__}' for batching.")
 
 
 def split_batch_output(raw_output: Any, expected: int, model_id: str) -> list[Any]:
+    """Split a batched raw model output back into per-sample raw outputs."""
     shape = getattr(raw_output, "shape", None)
     ndim = getattr(raw_output, "ndim", None)
 
