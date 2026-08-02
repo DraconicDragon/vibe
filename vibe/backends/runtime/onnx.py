@@ -467,8 +467,6 @@ class ONNXBackend:
         if self._session is None:
             raise RuntimeError("ONNXBackend has not been loaded.")
 
-        logger.debug("ONNX run input_shape=%s input_dtype=%s", array.shape, array.dtype)
-
         if isinstance(inputs, dict):
             input_feed = inputs
         else:
