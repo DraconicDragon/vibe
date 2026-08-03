@@ -62,7 +62,7 @@ from vibe.memory_stats import (
     MemorySnapshot,
     MemoryTrackerStats,
 )
-from vibe.precision import parse_precision
+from vibe.precision import PrecisionPolicy, PrecisionRequest, ResolvedPrecisionPlan, parse_precision
 from vibe.registry import model_registry, transform_registry
 from vibe.result_transforms import (
     CharacterIPMapping,
@@ -109,7 +109,7 @@ def _load_internal(
     source_map: Mapping[str, str] | None,
     backend: str | Backend | None,
     device: str,
-    precision: str,
+    precision: str | PrecisionRequest,
     hf_revision: str | None,
     hf_cache_dir: str | None,
     onnx_providers: list[str] | None,
@@ -119,7 +119,7 @@ def _load_internal(
     is_custom: bool,
 ) -> ModelSession:
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
-    normalized_precision = parse_precision(precision).value
+    precision_request = parse_precision(precision)
     resolved_source = _resolve_source(source, plugin_cls)
 
     if is_custom:
@@ -144,7 +144,7 @@ def _load_internal(
             memory_tracking,
         )
 
-    logger.debug("Load precision request=%s normalized=%s", precision, normalized_precision)
+    logger.debug("Load precision request=%s", precision_request)
 
     return build_session(
         plugin_cls=plugin_cls,
@@ -152,7 +152,7 @@ def _load_internal(
         source_map=source_map,
         backend=backend,
         device=device,
-        precision=normalized_precision,
+        precision=precision_request,
         onnx_providers=onnx_providers,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
@@ -169,7 +169,7 @@ def load(
     source_map: Mapping[str, str] | None = None,
     backend: str | Backend | None = None,
     device: str = "auto",
-    precision: str = "auto",
+    precision: str | PrecisionRequest = "auto",
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
     onnx_providers: list[str] | None = None,
@@ -253,7 +253,7 @@ def load_custom(
     plugin: str,
     backend: str | Backend | None = None,
     device: str = "auto",
-    precision: str = "auto",
+    precision: str | PrecisionRequest = "auto",
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
     onnx_providers: list[str] | None = None,
@@ -449,6 +449,9 @@ __all__ = [
     "set_auto_download_default",
     "get_auto_download_default",
     "parse_precision",
+    "PrecisionPolicy",
+    "PrecisionRequest",
+    "ResolvedPrecisionPlan",
 ]
 
 # endregion Public re-Exports

@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, Self
 
+from vibe.precision import PrecisionRequest
 from vibe.results import ModelResult, OutputType
 
 if TYPE_CHECKING:
@@ -36,7 +37,7 @@ class ExecutionRequest:
 
     backend: Backend
     device: str
-    precision: str
+    precision: PrecisionRequest
     onnx_providers: tuple[str, ...] | None = None
 
 
