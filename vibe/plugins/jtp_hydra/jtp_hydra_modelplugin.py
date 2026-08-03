@@ -205,12 +205,6 @@ class JTP3Plugin(JTPHydraBasePlugin):
                     hf_subdir="models",
                 ),
                 ArtifactSpec(
-                    id="tag_list",
-                    name="jtp-3-hydra-tags.csv",
-                    role=FileRole.TAG_LIST,
-                    hf_subdir="data",
-                ),
-                ArtifactSpec(
                     id="val_csv",
                     name="jtp-3-hydra-val.csv",
                     role=FileRole.TAG_LIST,
