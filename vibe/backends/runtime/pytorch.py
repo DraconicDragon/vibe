@@ -190,11 +190,16 @@ class PyTorchBackend:
         # 2. Hardware Fallbacks for Compute
         if compute_policy == PrecisionPolicy.BF16 and not bf16_supported:
             if request.fallback_allowed:
-                logger.warning(
-                    "Device '%s' does not support bfloat16 natively. Falling back compute to fp16.",
-                    self._device,
+                # CPU should fall back to fp32. GPUs fall back to fp16.
+                fallback_target = (
+                    PrecisionPolicy.FP16 if self._autocast_device_type in ("cuda", "mps") else PrecisionPolicy.FP32
                 )
-                compute_policy = PrecisionPolicy.FP16
+                logger.warning(
+                    "Device '%s' does not support bfloat16 natively. Falling back compute to %s.",
+                    self._device,
+                    fallback_target.value,
+                )
+                compute_policy = fallback_target
             else:
                 raise RuntimeError(f"Strict precision request failed: Device {self._device} does not support bf16.")
 
