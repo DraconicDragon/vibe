@@ -13,7 +13,7 @@ from vibe.devices import normalize_device_string
 from vibe.exceptions import SessionError
 from vibe.hf_downloader import get_auto_download_default
 from vibe.loader import resolve_variant_artifacts
-from vibe.precision import PrecisionRequest, parse_precision
+from vibe.precision import PrecisionPolicy, PrecisionRequest, parse_precision
 from vibe.session import ModelSession
 
 logger = logging.getLogger(__name__)
@@ -227,10 +227,13 @@ def _attempt_session_build(
         raise SessionError(f"Plugin '{model_id}' failed to build its runtime: {exc}") from exc
 
     try:
-        if candidate_backend == Backend.ONNX and precision_request in {"fp16", "bf16"}:
+        if candidate_backend == Backend.ONNX and precision_request.compute in {
+            PrecisionPolicy.FP16,
+            PrecisionPolicy.BF16,
+        }:
             logger.warning(
                 "Precision '%s' requested while running ONNX backend; runtime casting is provider/model dependent.",
-                precision_request,
+                precision_request.compute.value,
             )
 
         logger.debug("Session ready model_id=%s", model_id)
