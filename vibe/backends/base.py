@@ -31,12 +31,46 @@ class Backend(str, Enum):
     ONNX = "onnx"
 
 
+class HardwareIntent(str, Enum):
+    AUTO = "auto"
+    CPU = "cpu"
+    ACCELERATOR = "accelerator"
+
+
+@dataclass(frozen=True)
+class ExecutionPreference:
+    """Universal hardware intent, replacing framework-specific device strings."""
+
+    intent: HardwareIntent
+    ordinal: int | None = None
+    hint: str | None = None  # Preserves specific framework hints like "mps" or "rocm"
+
+    @classmethod
+    def parse(cls, value: str | None) -> ExecutionPreference:
+        if not value:
+            return cls(HardwareIntent.AUTO)
+
+        val = str(value).strip().lower()
+        if val in ("auto", ""):
+            return cls(HardwareIntent.AUTO)
+        if val == "cpu":
+            return cls(HardwareIntent.CPU)
+
+        # Parse legacy/framework strings (e.g. "cuda:0", "gpu:1", "mps", "rocm")
+        parts = val.split(":", 1)
+        base = parts[0]
+        ordinal = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+
+        hint = base if base not in ("gpu", "cuda") else None
+        return cls(HardwareIntent.ACCELERATOR, ordinal=ordinal, hint=hint)
+
+
 @dataclass(frozen=True)
 class ExecutionRequest:
     """Resolved execution settings passed to a plugin's runtime builder."""
 
     backend: Backend
-    device: str
+    preference: ExecutionPreference
     precision: PrecisionRequest
     onnx_providers: tuple[str, ...] | None = None
 

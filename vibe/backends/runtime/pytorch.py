@@ -13,10 +13,38 @@ from typing import Any
 
 import numpy as np
 
-from vibe.backends.base import ExecutionRequest
+from vibe.backends.base import ExecutionPreference, ExecutionRequest, HardwareIntent
 from vibe.precision import PrecisionPolicy, PrecisionRequest, ResolvedPrecisionPlan
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_pytorch_device(preference: ExecutionPreference, torch_module: Any) -> str:
+    if preference.intent == HardwareIntent.CPU:
+        return "cpu"
+
+    has_cuda = bool(getattr(torch_module.cuda, "is_available", lambda: False)())
+    has_mps = False
+    mps_backend = getattr(torch_module.backends, "mps", None)
+    if mps_backend and callable(getattr(mps_backend, "is_available", None)):
+        has_mps = bool(mps_backend.is_available())
+
+    if preference.intent == HardwareIntent.AUTO:
+        if has_cuda:
+            return "cuda"
+        if has_mps:
+            return "mps"
+        return "cpu"
+
+    # Explicit ACCELERATOR requested
+    if has_cuda:
+        return f"cuda:{preference.ordinal}" if preference.ordinal is not None else "cuda"
+    if has_mps:
+        return "mps"
+
+    raise RuntimeError(
+        f"Accelerator requested ({preference.hint or 'gpu'}), but neither CUDA nor MPS is available in PyTorch."
+    )
 
 
 class PyTorchBackend:
@@ -56,9 +84,9 @@ class PyTorchBackend:
             logger.debug("cuDNN enabled (VIBE_DISABLE_CUDNN not set or false)")
 
         self._model = model
-        self._device = request.device
+        self._device = _resolve_pytorch_device(request.preference, torch)
 
-        if self._device.startswith(("cuda", "gpu")):
+        if self._device.startswith("cuda"):
             self._autocast_device_type = "cuda"
         elif self._device.startswith("mps"):
             self._autocast_device_type = "mps"
@@ -111,10 +139,10 @@ class PyTorchBackend:
                 val = torch_module.from_numpy(val)
             if isinstance(val, torch_module.Tensor):
                 if val.dtype.is_floating_point:
-                    # If autocast is off, inputs must exactly match the model's weight dtype
+                    # If autocast is off, inputs must match weight dtype
                     if not plan.autocast_enabled and self._weight_dtype is not None:
                         return val.to(device=self._device, dtype=self._weight_dtype)
-                    # If autocast is on, leave it as fp32 on the correct device; autocast handles it internally
+                    # If autocast is on, leave as float32 on the device
                     return val.to(device=self._device)
                 return val.to(device=self._device)
             return val
@@ -138,15 +166,15 @@ class PyTorchBackend:
             if out.dtype in (torch_module.bfloat16, torch_module.float16):
                 out = out.to(torch_module.float32)
             return out.numpy()
-        
+
         # Preserve dictionary outputs
         if isinstance(output, dict):
             return {k: self._tensor_to_numpy(v, torch_module) for k, v in output.items()}
-        
+
         # Preserve tuple/list outputs natively instead of taking [0]
         if isinstance(output, (tuple, list)):
             return type(output)(self._tensor_to_numpy(v, torch_module) for v in output)
-            
+
         return np.array(output)
 
     def close(self) -> None:
@@ -205,7 +233,6 @@ class PyTorchBackend:
         # 3. Resolve Weight Policy
         weight_policy = request.weight
         if weight_policy == PrecisionPolicy.AUTO:
-            # Historically 'auto' meant 'cast weights to match compute' to save VRAM
             weight_policy = compute_policy
 
         dtype_map = {

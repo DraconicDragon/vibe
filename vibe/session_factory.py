@@ -5,11 +5,16 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, Mapping
-from pathlib import Path
 from typing import Any
 
-from vibe.backends.base import ArtifactMap, Backend, ExecutionRequest, ModelPlugin
-from vibe.devices import normalize_device_string
+from vibe.backends.base import (
+    ArtifactMap,
+    Backend,
+    ExecutionPreference,
+    ExecutionRequest,
+    HardwareIntent,
+    ModelPlugin,
+)
 from vibe.exceptions import SessionError
 from vibe.hf_downloader import get_auto_download_default
 from vibe.loader import resolve_variant_artifacts
@@ -61,7 +66,10 @@ def build_session(
         try:
             selected_backend = Backend(backend.lower())
         except ValueError:
-            raise SessionError(f"Unknown backend '{backend}'. Choose from: {[b.value for b in Backend]}")
+            valid_backends = [b.value for b in supported_backends]
+            raise SessionError(
+                f"Unknown backend '{backend}'. Choose from: {valid_backends}" if valid_backends else ""
+            ) from None
     else:
         selected_backend = backend
 
@@ -132,13 +140,9 @@ def _attempt_session_build(
     model_id = plugin_cls.identity.model_id
 
     try:
-        normalized_device = normalize_device_string(device, backend=candidate_backend)
+        preference = ExecutionPreference.parse(device)
     except ValueError as exc:
         raise SessionError(str(exc)) from exc
-
-    if candidate_backend == Backend.PYTORCH and normalized_device == "auto":
-        normalized_device = _auto_select_pytorch_device()
-        logger.info("PyTorch device auto-selected: %s", normalized_device)
 
     try:
         precision_request = parse_precision(precision)
@@ -154,10 +158,10 @@ def _attempt_session_build(
         )
 
     logger.debug(
-        "Session backend selected model_id=%s backend=%s device=%s precision=%s",
+        "Session backend selected model_id=%s backend=%s preference=%s precision=%s",
         model_id,
         candidate_backend.value,
-        normalized_device,
+        preference,
         precision_request,
     )
 
@@ -192,13 +196,11 @@ def _attempt_session_build(
 
     request = ExecutionRequest(
         backend=candidate_backend,
-        device=normalized_device,
+        preference=preference,
         precision=precision_request,
         onnx_providers=tuple(onnx_providers) if onnx_providers is not None else None,
     )
 
-    # Plugin metadata belongs to the session, not to the pooled runtime. This
-    # permits independent transform state and avoids sharing plugin mutation.
     try:
         plugin = plugin_cls()
         plugin.load_ancillary(file_map)
@@ -273,8 +275,8 @@ def _make_runtime_pool_key(
         plugin_cls.__qualname__,
         artifact_key,
         request.backend.value,
-        request.device,
-        # Serialize the structured dataclass cleanly for hashing
+        request.preference.intent.value,
+        request.preference.ordinal,
         request.precision.weight.value,
         request.precision.compute.value,
         request.onnx_providers,
@@ -287,8 +289,6 @@ def _acquire_runtime(
     model_id: str,
     build: Callable[[], Any],
 ) -> tuple[Any, Callable[[], None]]:
-
-    # 1. Double-Checked Fast Path: Check if already loaded
     with _RUNTIME_POOL_LOCK:
         if key in _RUNTIME_POOL:
             instance, refcount = _RUNTIME_POOL[key]
@@ -296,12 +296,10 @@ def _acquire_runtime(
             logger.debug("Reusing pooled runtime model_id=%s refcount=%s", model_id, refcount + 1)
             return instance, lambda: _release_runtime(key)
 
-        # Get or create a lock specific to this model key to avoid blocking other models
         if key not in _LOADING_LOCKS:
             _LOADING_LOCKS[key] = threading.Lock()
         model_lock = _LOADING_LOCKS[key]
 
-    # 2. Acquire model-specific lock
     with model_lock:
         with _RUNTIME_POOL_LOCK:
             if key in _RUNTIME_POOL:
@@ -321,9 +319,6 @@ def _acquire_runtime(
         finally:
             with _RUNTIME_POOL_LOCK:
                 _LOADING_LOCKS.pop(key, None)
-
-
-# endregion
 
 
 def _release_runtime(key: tuple[Any, ...]) -> None:
@@ -357,7 +352,6 @@ def _release_runtime(key: tuple[Any, ...]) -> None:
 def _auto_select_backend(plugin_cls: type[ModelPlugin], *, requested_device: str = "auto") -> Backend:
     """Select backend using runtime availability + accelerator preference."""
     supported = [v.backend for v in plugin_cls.variants]
-    model_id = plugin_cls.identity.model_id
 
     onnx_runtime_ok, onnx_has_accel = _onnx_runtime_capabilities()
     torch_runtime_ok, torch_has_accel = _pytorch_runtime_capabilities()
@@ -366,20 +360,22 @@ def _auto_select_backend(plugin_cls: type[ModelPlugin], *, requested_device: str
     torch_candidate = Backend.PYTORCH in supported and torch_runtime_ok
 
     if onnx_candidate and torch_candidate:
-        requested = str(requested_device or "auto").strip().lower()
-        if requested in {"mps"}:
-            logger.info("Backend auto-selection chose PyTorch due to requested device '%s'.", requested)
+        preference = ExecutionPreference.parse(requested_device)
+
+        if preference.hint == "mps":
+            logger.info("Backend auto-selection chose PyTorch due to requested device hint 'mps'.")
             return Backend.PYTORCH
-        if requested in {"rocm", "dml"} or requested.startswith(("rocm:", "dml:")):
-            logger.info("Backend auto-selection chose ONNX due to requested device '%s'.", requested)
+        if preference.hint in {"rocm", "dml"}:
+            logger.info("Backend auto-selection chose ONNX due to requested device hint '%s'.", preference.hint)
             return Backend.ONNX
 
-        if onnx_has_accel and not torch_has_accel:
-            logger.info("Backend auto-selection chose ONNX (accelerator available, PyTorch accelerator unavailable).")
-            return Backend.ONNX
-        if torch_has_accel and not onnx_has_accel:
-            logger.info("Backend auto-selection chose PyTorch (accelerator available, ONNX accelerator unavailable).")
-            return Backend.PYTORCH
+        if preference.intent == HardwareIntent.ACCELERATOR:
+            if onnx_has_accel and not torch_has_accel:
+                logger.info("Backend auto-selection chose ONNX (accelerator available).")
+                return Backend.ONNX
+            if torch_has_accel and not onnx_has_accel:
+                logger.info("Backend auto-selection chose PyTorch (accelerator available).")
+                return Backend.PYTORCH
 
         logger.info("Backend auto-selection chose ONNX (default preference when capabilities are equivalent).")
         return Backend.ONNX
@@ -391,7 +387,9 @@ def _auto_select_backend(plugin_cls: type[ModelPlugin], *, requested_device: str
         logger.info("Backend auto-selection chose PyTorch (runtime available).")
         return Backend.PYTORCH
 
-    raise SessionError(f"No supported backend available for '{model_id}'. Install onnxruntime or torch.")
+    raise SessionError(
+        f"No supported backend available for model '{plugin_cls.identity.model_id}'. Install onnxruntime or torch."
+    )
 
 
 def _onnx_runtime_capabilities() -> tuple[bool, bool]:
@@ -426,20 +424,3 @@ def _pytorch_runtime_capabilities() -> tuple[bool, bool]:
         has_mps = bool(mps_backend.is_available())
 
     return True, (has_cuda or has_mps)
-
-
-def _auto_select_pytorch_device() -> str:
-    try:
-        import torch
-    except ImportError:
-        return "cpu"
-
-    if bool(torch.cuda.is_available()):
-        return "cuda"
-
-    mps_backend = getattr(torch.backends, "mps", None)
-    if mps_backend is not None and callable(getattr(mps_backend, "is_available", None)):
-        if bool(mps_backend.is_available()):
-            return "mps"
-
-    return "cpu"

@@ -18,9 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from vibe import Backend
-from vibe.backends.base import ExecutionRequest
-from vibe.devices import normalize_device_string
+from vibe.backends.base import ExecutionPreference, ExecutionRequest, HardwareIntent
 from vibe.precision import PrecisionPolicy
 
 logger = logging.getLogger(__name__)
@@ -92,25 +90,6 @@ def _providers_from_env() -> list[str] | None:
     return None
 
 
-def _device_prefers_accelerator(device: str) -> tuple[bool, int]:
-    value = normalize_device_string(device, backend=Backend.ONNX)
-    if not value or value == "auto":
-        return True, 0
-    if value == "cpu":
-        return False, 0
-    if value in {"gpu", "cuda", "rocm", "dml"}:
-        return True, 0
-
-    for prefix in ("gpu:", "cuda:", "rocm:", "dml:"):
-        if value.startswith(prefix):
-            try:
-                return True, max(0, int(value.split(":", 1)[1]))
-            except ValueError:
-                return True, 0
-
-    return value != "cpu", 0
-
-
 def _available_onnx_providers(ort_module: Any) -> list[str]:
     get_available = getattr(ort_module, "get_available_providers", None)
     if callable(get_available):
@@ -120,111 +99,57 @@ def _available_onnx_providers(ort_module: Any) -> list[str]:
 
 def resolve_onnx_provider_chain(
     *,
-    device: str,
+    preference: ExecutionPreference,
     requested_providers: list[str] | None,
     ort_module: Any,
 ) -> tuple[list[str], list[dict[str, Any]] | None]:
     """Resolve providers and provider options from request/env/device state."""
-    available = _available_onnx_providers(ort_module)
-    available_set = set(available)
+    available_set = set(_available_onnx_providers(ort_module))
 
-    explicit = requested_providers
-    if explicit is None:
-        explicit = _providers_from_env()
+    explicit = requested_providers if requested_providers is not None else _providers_from_env()
 
-    wants_accelerator, device_id = _device_prefers_accelerator(device)
+    wants_accelerator = preference.intent in (HardwareIntent.ACCELERATOR, HardwareIntent.AUTO)
+    must_accelerator = preference.intent == HardwareIntent.ACCELERATOR
 
     if explicit is not None:
-        providers = _normalize_provider_list([str(p) for p in explicit])
-        if available:
-            providers = [p for p in providers if p in available_set]
+        providers = [p for p in _normalize_provider_list([str(p) for p in explicit]) if p in available_set]
         if not providers and "CPUExecutionProvider" in available_set:
             providers = ["CPUExecutionProvider"]
     else:
         if wants_accelerator:
             preferred = [p for p in ONNX_AUTO_PROVIDER_PRIORITY if p != "CPUExecutionProvider"]
-            if available:
-                providers = [p for p in preferred if p in available_set]
-            else:
-                providers = preferred
+            providers = [p for p in preferred if p in available_set]
 
-            if available:
-                if "CPUExecutionProvider" in available_set and "CPUExecutionProvider" not in providers:
+            if not providers:
+                if must_accelerator:
+                    raise RuntimeError(
+                        f"Accelerator requested, but no ONNX accelerator providers are available. (Available: {available_set})"
+                    )
+                if "CPUExecutionProvider" in available_set:
                     providers.append("CPUExecutionProvider")
-            elif "CPUExecutionProvider" not in providers:
+            elif "CPUExecutionProvider" in available_set:
                 providers.append("CPUExecutionProvider")
         else:
-            if available:
-                providers = ["CPUExecutionProvider"] if "CPUExecutionProvider" in available_set else []
-            else:
-                providers = ["CPUExecutionProvider"]
+            providers = ["CPUExecutionProvider"] if "CPUExecutionProvider" in available_set else []
 
     if not providers:
         providers = ["CPUExecutionProvider"]
 
     provider_options: list[dict[str, Any]] = []
     for provider in providers:
-        if provider in _GPU_CLASS_PROVIDERS:
-            provider_options.append({"device_id": str(device_id)})
+        if provider in _GPU_CLASS_PROVIDERS and preference.ordinal is not None:
+            provider_options.append({"device_id": str(preference.ordinal)})
         else:
             provider_options.append({})
 
     has_non_empty_options = any(bool(options) for options in provider_options)
-    logger.debug(
-        "ONNX providers resolved device=%s providers=%s",
-        device,
-        providers,
-    )
-    logger.debug(
-        "ONNX provider resolution details available=%s explicit=%s provider_options=%s",
-        available,
-        explicit,
-        provider_options if has_non_empty_options else None,
-    )
+    logger.debug("ONNX providers resolved preference=%s providers=%s", preference, providers)
     return providers, provider_options if has_non_empty_options else None
-
-
-def _wants_accelerator(device: str) -> bool:
-    try:
-        value = normalize_device_string(device, backend=Backend.ONNX)
-    except ValueError:
-        return False
-    return value not in {"cpu", "auto"}
-
-
-def _requested_onnx_provider_name(device: str) -> str | None:
-    try:
-        value = normalize_device_string(device, backend=Backend.ONNX)
-    except ValueError:
-        return None
-
-    if value in {"gpu", "cuda"}:
-        return "CUDAExecutionProvider"
-    if value.startswith(("gpu:", "cuda:")):
-        return "CUDAExecutionProvider"
-    if value.startswith("rocm"):
-        return "ROCMExecutionProvider"
-    if value.startswith("dml"):
-        return "DmlExecutionProvider"
-    if value == "mps":
-        return "CoreMLExecutionProvider"
-    return None
 
 
 def _has_accelerator_provider(providers: list[str]) -> bool:
     accelerator_eps = _GPU_CLASS_PROVIDERS | {"CoreMLExecutionProvider", "DirectMLExecutionProvider"}
     return any(p in accelerator_eps for p in providers)
-
-
-def _fallback_warning_message(device: str, resolved_providers: list[str], session_provider: str) -> str:
-    requested_provider = _requested_onnx_provider_name(device)
-    if requested_provider is None and resolved_providers:
-        requested_provider = resolved_providers[0]
-    requested_label = requested_provider or device.strip() or "auto"
-    return (
-        f"ONNX backend fell back to {session_provider} after ORT could not load the requested "
-        f"provider {requested_label}."
-    )
 
 
 def _iter_candidate_nvidia_lib_dirs() -> list[Path]:
@@ -361,7 +286,7 @@ class ONNXBackend:
             ) from exc
 
         resolved_providers, resolved_provider_options = resolve_onnx_provider_chain(
-            device=request.device,
+            preference=request.preference,
             requested_providers=list(request.onnx_providers) if request.onnx_providers is not None else None,
             ort_module=ort,
         )
@@ -380,7 +305,7 @@ class ONNXBackend:
         self._input_name = inputs[0].name
         input_meta = inputs[0]
 
-        # Find the most appropriate output tensor if multiple exist
+        # Capture all output names. The plugin's postprocess owns selecting outputs.
         self._output_names = [o.name for o in outputs] if outputs else []
         output_meta = outputs[0] if outputs else None
 
@@ -388,28 +313,29 @@ class ONNXBackend:
         self._providers = session_providers
         primary_provider = self._providers[0] if self._providers else "CPUExecutionProvider"
 
-        requested_provider = _requested_onnx_provider_name(request.device)
-        requested_has_accelerator = _has_accelerator_provider(self._requested_providers)
-        session_has_accelerator = _has_accelerator_provider(session_providers)
+        # Fallback diagnostics
+        wants_accel = request.preference.intent in (HardwareIntent.ACCELERATOR, HardwareIntent.AUTO)
+        has_accel = any(p != "CPUExecutionProvider" for p in session_providers)
 
-        if requested_has_accelerator and not session_has_accelerator and _wants_accelerator(request.device):
+        if request.preference.intent == HardwareIntent.ACCELERATOR and not has_accel:
             raise RuntimeError(
-                f"ONNX provider request '{request.device}' ({requested_provider or 'requested provider'}) could not be satisfied; "
-                f"session loaded only with {session_providers}."
+                f"Accelerator requested, but ONNX runtime loaded with CPU fallback only: {session_providers}."
             )
 
-        if requested_has_accelerator and not session_has_accelerator and request.device.strip().lower() == "auto":
-            fallback_message = _fallback_warning_message(request.device, self._requested_providers, primary_provider)
+        if wants_accel and not has_accel and request.preference.intent == HardwareIntent.AUTO:
+            fallback_message = (
+                f"ONNX backend fell back to {primary_provider} (no accelerator execution provider available)."
+            )
             logger.warning(fallback_message)
             import warnings
 
             warnings.warn(fallback_message, RuntimeWarning, stacklevel=2)
 
-        # precision setting not particularly useful for ONNX
+        # Precision setting warning
         compute_prec = request.precision.compute
         if compute_prec in (PrecisionPolicy.FP16, PrecisionPolicy.BF16, PrecisionPolicy.FP32):
             logger.warning(
-                "ONNX precision request '%s' is advisory only; most precision behavior is defined by model graph "
+                "ONNX precision request '%s' is advisory only; precision behavior is defined by model graph "
                 "and execution provider kernels.",
                 compute_prec.value,
             )

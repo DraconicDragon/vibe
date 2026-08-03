@@ -42,16 +42,18 @@ from vibe.backends.base import (
     ArtifactMap,
     ArtifactSpec,
     Backend,
+    ExecutionPreference,
     ExecutionRequest,
     FileRole,
+    HardwareIntent,
     ModelCapabilities,
     ModelDescriptor,
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
 )
-from vibe.devices import list_available_devices
 from vibe.exceptions import InferenceCancelled, RegistryError, SessionError, TransformError
+from vibe.hardware import list_available_devices
 from vibe.hf_downloader import (
     get_auto_download_default,
     set_auto_download_default,
@@ -452,6 +454,8 @@ __all__ = [
     "PrecisionPolicy",
     "PrecisionRequest",
     "ResolvedPrecisionPlan",
+    "ExecutionPreference",
+    "HardwareIntent",
 ]
 
 # endregion Public re-Exports
