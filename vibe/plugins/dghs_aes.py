@@ -13,12 +13,16 @@ from vibe.backends.base import (
     ArtifactMap,
     ArtifactSpec,
     Backend,
+    ExecutionRequest,
     FileRole,
     ModelCapabilities,
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
+    RuntimeExecutor,
 )
+from vibe.backends.runtime.onnx import ONNXBackend
+from vibe.backends.runtime.pytorch import PyTorchBackend
 from vibe.plugins.shared.scores_utils import (
     get_weighted_mean,
     interp_percentile,
@@ -74,10 +78,9 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
 
     capabilities = ModelCapabilities(
         output_type=OutputType.MULTI_SCORE,
-        output_extras={"percentile": "Score percentile calibrated against the model's training dataset samples."},
+        output_extras={"percentile": "Score percentile calibrated against training dataset samples."},
     )
 
-    _samples_percentiles: tuple[np.ndarray, np.ndarray] | None = None
     _labels: list[str]
     _mark_table: tuple[np.ndarray, np.ndarray] | None = None
     _image_size: int
@@ -89,15 +92,38 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
         labels = meta.get("labels")
         if not isinstance(labels, list) or not all(isinstance(label, str) for label in labels):
             raise RuntimeError("meta.json must contain a list of label strings.")
-        labels = meta.get("labels")
-        if not isinstance(labels, list) or not all(isinstance(label, str) for label in labels):
-            raise RuntimeError("meta.json must contain a list of label strings.")
         self._labels = [str(label) for label in labels]
 
         self._image_size = self._resolve_image_size(meta)
 
         samples_path = artifacts.get("samples")
         self._mark_table = load_samples_file(samples_path)
+
+    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
+        if request.backend == Backend.ONNX:
+            onnx_path = artifacts.get("model_onnx")
+            backend = ONNXBackend()
+            backend.load(onnx_path, request)
+            return backend
+
+        if request.backend == Backend.PYTORCH:
+            ckpt_path = artifacts.get("model_pt")
+            try:
+                import torch
+            except ImportError as exc:
+                raise RuntimeError("PyTorch is required.") from exc
+
+            # DeepGHS checkpoints are compiled TorchScript modules (.ckpt)
+            try:
+                model = torch.jit.load(str(ckpt_path), map_location="cpu")
+            except Exception as exc:
+                raise RuntimeError(f"Failed to load DeepGHS TorchScript checkpoint '{ckpt_path}': {exc}") from exc
+
+            backend = PyTorchBackend()
+            backend.load(model, request)
+            return backend
+
+        raise ValueError(f"Unsupported backend '{request.backend}'.")
 
     def preprocess(self, image: Any) -> np.ndarray:
         from PIL import Image
@@ -116,8 +142,7 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
         mean = np.asarray([0.5], dtype=np.float32).reshape((-1, 1, 1))
         std = np.asarray([0.5], dtype=np.float32).reshape((-1, 1, 1))
         image_array = (image_array - mean) / std
-        image_array = np.expand_dims(image_array, axis=0)
-        return image_array
+        return np.expand_dims(image_array, axis=0)
 
     def postprocess(self, raw_output: Any) -> MultiScoreResult:
         scores = self._flatten_scores(raw_output)
