@@ -125,6 +125,7 @@ class JTPHydraBasePlugin(ModelPlugin):
     _raw_tag_names: list[str]
     _category_indices: dict[str, list[int]]
     _seqlen: int = _DEFAULT_SEQLEN
+    _preloaded_model: Any | None = None
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         """Parse tag labels and category indices from weights or CSV metadata."""
@@ -135,31 +136,35 @@ class JTPHydraBasePlugin(ModelPlugin):
 
         from .model import load_model
 
-        # Temporary CPU load to read labels dynamically
+        # Load PyTorch model once to extract metadata and store for build_runtime()
         model = load_model(str(weights_path), logit=True, legacy_metadata_dir=legacy_dir)
         self._raw_tag_names = [label.label for label in model.labels]
 
         cat_to_name = {cat_id: str(name) for cat_id, name in E621_CATEGORY_LABELS.items()}
         self._category_indices = {}
         for idx, label in enumerate(model.labels):
-            # If the category is unknown, gracefully fall back to its raw ID string
             cat_name = cat_to_name.get(label.category, str(label.category))
             self._category_indices.setdefault(cat_name, []).append(idx)
 
         self._seqlen = _resolve_seqlen()
+        self._preloaded_model = model
 
     def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
         """Build the native JTP-3 / Hydra model graph."""
         if request.backend != Backend.PYTORCH:
             raise ValueError(f"JTP/Hydra models only support PyTorch, got '{request.backend}'.")
 
-        weights_path = artifacts.get("model_pt")
-        csv_path = artifacts.get_optional("tag_list")
-        legacy_dir = str(csv_path.parent) if csv_path is not None else None
+        if self._preloaded_model is not None:
+            model = self._preloaded_model
+            self._preloaded_model = None
+        else:
+            weights_path = artifacts.get("model_pt")
+            csv_path = artifacts.get_optional("tag_list")
+            legacy_dir = str(csv_path.parent) if csv_path is not None else None
 
-        from .model import load_model
+            from .model import load_model
 
-        model = load_model(str(weights_path), logit=True, legacy_metadata_dir=legacy_dir)
+            model = load_model(str(weights_path), logit=True, legacy_metadata_dir=legacy_dir)
 
         attn_pool = getattr(model, "attn_pool", None)
         inference_fn = getattr(attn_pool, "inference", None)
