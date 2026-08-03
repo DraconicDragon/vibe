@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from vibe.results import TagEntry
+from vibe.results import TagEntry, TagResult
 from vibe.tag_categories import DanbooruTagCategory
 
 
@@ -150,6 +150,46 @@ def build_entries_for_indices(
 
     entries.sort(key=lambda item: item.score, reverse=True)
     return entries
+
+
+def logits_to_probabilities(raw_output: Any) -> np.ndarray:
+    """Convert raw logits (from numpy or torch) to float32 sigmoid probabilities."""
+    if isinstance(raw_output, np.ndarray):
+        scores = raw_output.ravel().astype(np.float32)
+    else:
+        try:
+            import torch
+
+            if isinstance(raw_output, torch.Tensor):
+                scores = raw_output.float().cpu().numpy().ravel()
+            else:
+                raise TypeError(f"Unexpected output type {type(raw_output).__name__}")
+        except ImportError:
+            raise TypeError(f"Unexpected output type {type(raw_output).__name__} and torch is not installed.")
+
+    return 1.0 / (1.0 + np.exp(-scores))
+
+
+def build_categorized_tag_result(
+    tag_names: list[str],
+    scores: np.ndarray,
+    category_indices: dict[str, list[int]],
+) -> TagResult:
+    """Safely build a TagResult from raw arrays using pre-mapped category indices."""
+    usable_count = min(len(scores), len(tag_names))
+    result_tags = {}
+
+    for cat_name, indices in category_indices.items():
+        if not indices:
+            continue
+        result_tags[cat_name] = build_entries_for_indices(
+            tag_names=tag_names,
+            indices=indices,
+            scores=scores,
+            usable_count=usable_count,
+        )
+
+    return TagResult(tags=result_tags)
 
 
 def _to_rgb_with_background(image: Any) -> Any:

@@ -17,13 +17,13 @@ from vibe.backends.base import (
 )
 from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.tagger_shared import (
-    build_entries_for_indices,
+    build_categorized_tag_result,
     load_tag_metadata,
     normalize_output_scores,
     preprocess_tagger_image,
 )
 from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds
-from vibe.results import OutputType, TagEntry, TagResult
+from vibe.results import OutputType, TagResult
 from vibe.tag_categories import DanbooruTagCategory, TagCategory
 
 logger = logging.getLogger(__name__)
@@ -73,10 +73,7 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
 
     # Internal state loaded by load_ancillary()
     _raw_tag_names: list[str]
-    _per_tag_thresholds: list[float | None]
-    _rating_indices: list[int]
-    _general_indices: list[int]
-    _character_indices: list[int]
+    _category_indices: dict[str, list[int]]
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         """Load tag metadata from selected_tags.csv."""
@@ -86,18 +83,11 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
         metadata = load_tag_metadata(csv_path)
 
         self._raw_tag_names = metadata.raw_tag_names
-        self._per_tag_thresholds = metadata.per_tag_thresholds
-        self._rating_indices = metadata.indices_for(int(DanbooruTagCategory.RATING))
-        self._general_indices = metadata.indices_for(int(DanbooruTagCategory.GENERAL))
-        self._character_indices = metadata.indices_for(int(DanbooruTagCategory.CHARACTER))
-
-        logger.info(
-            "Loaded WD tags: total=%d general=%d character=%d rating=%d",
-            len(self._raw_tag_names), # num classes
-            len(self._general_indices),
-            len(self._character_indices),
-            len(self._rating_indices),
-        )
+        self._category_indices = {
+            str(TagCategory.RATING): metadata.indices_for(int(DanbooruTagCategory.RATING)),
+            str(TagCategory.GENERAL): metadata.indices_for(int(DanbooruTagCategory.GENERAL)),
+            str(TagCategory.CHARACTER): metadata.indices_for(int(DanbooruTagCategory.CHARACTER)),
+        }
 
         config_path = artifacts.get_optional("config")
         if config_path:
@@ -135,39 +125,7 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
     def postprocess(self, raw_output: Any) -> TagResult:
         """Return full scored output grouped by WD tag category."""
         scores = normalize_output_scores(raw_output)
-
-        usable_count = min(len(scores), len(self._raw_tag_names))
-        if usable_count != len(self._raw_tag_names):
-            logger.error(
-                "Score length mismatch: got %d scores for %d tags.",
-                len(scores),
-                len(self._raw_tag_names),
-            )
-
-        rating = self._entries_for_indices(self._rating_indices, scores, usable_count)
-        general = self._entries_for_indices(self._general_indices, scores, usable_count)
-        character = self._entries_for_indices(self._character_indices, scores, usable_count)
-
-        return TagResult(
-            tags={
-                TagCategory.RATING: rating,
-                TagCategory.GENERAL: general,
-                TagCategory.CHARACTER: character,
-            }
-        )
-
-    def _entries_for_indices(
-        self,
-        indices: list[int],
-        scores: np.ndarray,
-        usable_count: int,
-    ) -> list[TagEntry]:
-        return build_entries_for_indices(
-            tag_names=self._raw_tag_names,
-            indices=indices,
-            scores=scores,
-            usable_count=usable_count,
-        )
+        return build_categorized_tag_result(self._raw_tag_names, scores, self._category_indices)
 
 
 # region Model Variants

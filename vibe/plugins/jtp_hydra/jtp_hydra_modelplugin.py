@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 
-from vibe import TagEntry
 from vibe.backends.base import (
     ArtifactMap,
     ArtifactSpec,
@@ -22,7 +21,10 @@ from vibe.backends.base import (
     RuntimeExecutor,
 )
 from vibe.backends.runtime.pytorch import PyTorchBackend
-from vibe.plugins.shared.tagger_shared import build_entries_for_indices
+from vibe.plugins.shared.tagger_shared import (
+    build_categorized_tag_result,
+    logits_to_probabilities,
+)
 from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds
 from vibe.results import OutputType, TagResult
 from vibe.tag_categories import E621_CATEGORY_LABELS, TagCategory
@@ -121,7 +123,7 @@ class JTPHydraBasePlugin(ModelPlugin):
     )
 
     _raw_tag_names: list[str]
-    _indices_by_category: dict[int, list[int]]
+    _category_indices: dict[str, list[int]]
     _seqlen: int = _DEFAULT_SEQLEN
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
@@ -137,11 +139,12 @@ class JTPHydraBasePlugin(ModelPlugin):
         model = load_model(str(weights_path), logit=True, legacy_metadata_dir=legacy_dir)
         self._raw_tag_names = [label.label for label in model.labels]
 
-        cat_to_id = {name: cat_id for cat_id, name in E621_CATEGORY_LABELS.items()}
-        self._indices_by_category = {}
+        cat_to_name = {cat_id: str(name) for cat_id, name in E621_CATEGORY_LABELS.items()}
+        self._category_indices = {}
         for idx, label in enumerate(model.labels):
-            cat_id = cat_to_id.get(label.category, -1)
-            self._indices_by_category.setdefault(cat_id, []).append(idx)
+            # If the category is unknown, gracefully fall back to its raw ID string
+            cat_name = cat_to_name.get(label.category, str(label.category))
+            self._category_indices.setdefault(cat_name, []).append(idx)
 
         self._seqlen = _resolve_seqlen()
 
@@ -171,32 +174,8 @@ class JTPHydraBasePlugin(ModelPlugin):
         return _preprocess_image_jtp3(image, self._seqlen)
 
     def postprocess(self, raw_output: Any) -> TagResult:
-        if isinstance(raw_output, np.ndarray):
-            scores_np = raw_output.ravel().astype(np.float32)
-        else:
-            import torch
-
-            if isinstance(raw_output, torch.Tensor):
-                scores_np = raw_output.float().cpu().numpy().ravel()
-            else:
-                raise TypeError(f"Unexpected raw output type {type(raw_output).__name__}.")
-
-        # Raw logits -> Sigmoid probabilities
-        scores_np = 1.0 / (1.0 + np.exp(-scores_np))
-        usable_count = min(len(scores_np), len(self._raw_tag_names))
-
-        result_tags: dict[str, list[TagEntry]] = {
-            str(name): build_entries_for_indices(
-                tag_names=self._raw_tag_names,
-                indices=indices,
-                scores=scores_np,
-                usable_count=usable_count,
-            )
-            for cat_id, name in E621_CATEGORY_LABELS.items()
-            if (indices := self._indices_by_category.get(int(cat_id)))
-        }
-
-        return TagResult(tags=result_tags)
+        probs = logits_to_probabilities(raw_output)
+        return build_categorized_tag_result(self._raw_tag_names, probs, self._category_indices)
 
 
 # endregion

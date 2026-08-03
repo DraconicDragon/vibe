@@ -24,9 +24,12 @@ from vibe.backends.base import (
     RuntimeExecutor,
 )
 from vibe.backends.runtime.pytorch import PyTorchBackend
-from vibe.plugins.shared.tagger_shared import build_entries_for_indices
+from vibe.plugins.shared.tagger_shared import (
+    build_categorized_tag_result,
+    logits_to_probabilities,
+)
 from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds
-from vibe.results import OutputType, TagEntry, TagResult
+from vibe.results import OutputType, TagResult
 from vibe.tag_categories import E621_CATEGORY_LABELS, TagCategory
 
 logger = logging.getLogger(__name__)
@@ -92,7 +95,7 @@ class TaggerinePlugin(ModelPlugin):
     )
 
     _raw_tag_names: list[str]
-    _indices_by_category: dict[int, list[int]]
+    _category_indices: dict[str, list[int]]
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         """Parse vocabulary JSON to populate labels and categories."""
@@ -102,20 +105,23 @@ class TaggerinePlugin(ModelPlugin):
             vocab_data = json.load(handle)
 
         self._raw_tag_names = vocab_data.get("idx2tag", [])
-        self._indices_by_category = {}
+        self._category_indices = {}
+
+        cat_to_name = {cat_id: str(name) for cat_id, name in E621_CATEGORY_LABELS.items()}
 
         # Look for tag2category mapping first
         if "tag2category" in vocab_data:
             tag2category = vocab_data["tag2category"]
             for idx, tag in enumerate(self._raw_tag_names):
-                cat_id = tag2category.get(tag, 0)  # Default to 0 (general) if tag isn't mapped
-                self._indices_by_category.setdefault(int(cat_id), []).append(idx)
+                cat_id = tag2category.get(tag, 0)
+                cat_name = cat_to_name.get(int(cat_id), str(cat_id))
+                self._category_indices.setdefault(cat_name, []).append(idx)
         elif "idx2category" in vocab_data:
             for idx, cat_id in enumerate(vocab_data["idx2category"]):
-                self._indices_by_category.setdefault(int(cat_id), []).append(idx)
+                cat_name = cat_to_name.get(int(cat_id), str(cat_id))
+                self._category_indices.setdefault(cat_name, []).append(idx)
         else:
-            # Fallback if categories are not provided: put everything in general (0)
-            self._indices_by_category[0] = list(range(len(self._raw_tag_names)))
+            self._category_indices[str(TagCategory.GENERAL)] = list(range(len(self._raw_tag_names)))
 
         logger.info("Taggerine vocab loaded: %d tags", len(self._raw_tag_names))
 
@@ -187,29 +193,5 @@ class TaggerinePlugin(ModelPlugin):
         return torch.from_numpy(arr).unsqueeze(0)
 
     def postprocess(self, raw_output: Any) -> TagResult:
-        if isinstance(raw_output, np.ndarray):
-            scores_np = raw_output.ravel().astype(np.float32)
-        else:
-            import torch
-
-            if isinstance(raw_output, torch.Tensor):
-                scores_np = raw_output.float().cpu().numpy().ravel()
-            else:
-                raise TypeError(f"Unexpected output type {type(raw_output).__name__}.")
-
-        # Raw logits -> Sigmoid probabilities
-        scores_np = 1.0 / (1.0 + np.exp(-scores_np))
-        usable_count = min(len(scores_np), len(self._raw_tag_names))
-
-        result_tags: dict[str, list[TagEntry]] = {
-            str(name): build_entries_for_indices(
-                tag_names=self._raw_tag_names,
-                indices=indices,
-                scores=scores_np,
-                usable_count=usable_count,
-            )
-            for cat_id, name in E621_CATEGORY_LABELS.items()
-            if (indices := self._indices_by_category.get(int(cat_id)))
-        }
-
-        return TagResult(tags=result_tags)
+        probs = logits_to_probabilities(raw_output)
+        return build_categorized_tag_result(self._raw_tag_names, probs, self._category_indices)

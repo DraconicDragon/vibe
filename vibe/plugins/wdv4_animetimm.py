@@ -8,8 +8,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import numpy as np
-
 from vibe.backends.base import (
     ArtifactMap,
     ArtifactSpec,
@@ -22,12 +20,12 @@ from vibe.backends.base import (
 )
 from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.tagger_shared import (
-    build_entries_for_indices,
+    build_categorized_tag_result,
     load_tag_metadata,
     normalize_output_scores,
 )
 from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds, TagLevelThresholds
-from vibe.results import OutputType, TagEntry, TagResult
+from vibe.results import OutputType, TagResult
 from vibe.tag_categories import DanbooruTagCategory, TagCategory
 
 logger = logging.getLogger(__name__)
@@ -80,10 +78,7 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
     _raw_tag_names: list[str]
     _num_classes: int
-    _rating_indices: list[int]
-    _general_indices: list[int]
-    _character_indices: list[int]
-    _artist_indices: list[int]
+    _category_indices: dict[str, list[int]]
 
     # region Session Lifecycle
 
@@ -95,12 +90,15 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
         self._raw_tag_names = metadata.raw_tag_names
         self._num_classes = len(self._raw_tag_names)
-        self._rating_indices = metadata.indices_for(int(DanbooruTagCategory.RATING))
-        self._general_indices = metadata.indices_for(int(DanbooruTagCategory.GENERAL))
-        self._character_indices = metadata.indices_for(int(DanbooruTagCategory.CHARACTER))
-        self._artist_indices = metadata.indices_for(int(DanbooruTagCategory.ARTIST))
 
-        config_path = artifacts.get("config")
+        self._category_indices = {
+            str(TagCategory.RATING): metadata.indices_for(int(DanbooruTagCategory.RATING)),
+            str(TagCategory.GENERAL): metadata.indices_for(int(DanbooruTagCategory.GENERAL)),
+            str(TagCategory.CHARACTER): metadata.indices_for(int(DanbooruTagCategory.CHARACTER)),
+            str(TagCategory.ARTIST): metadata.indices_for(int(DanbooruTagCategory.ARTIST)),
+        }
+
+        config_path = artifacts.get_optional("config")
         preprocess_path = artifacts.get_optional("preprocess")
         if config_path:
             config = self.read_timm_config_json(config_path)
@@ -110,10 +108,10 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             "Loaded AnimeTimm tags for %s: total=%d general=%d artist=%d character=%d rating=%d",
             self.identity.model_id if hasattr(self, "identity") else "base",
             self._num_classes,
-            len(self._general_indices),
-            len(self._artist_indices),
-            len(self._character_indices),
-            len(self._rating_indices),
+            len(self._category_indices.get(str(TagCategory.GENERAL), [])),
+            len(self._category_indices.get(str(TagCategory.ARTIST), [])),
+            len(self._category_indices.get(str(TagCategory.CHARACTER), [])),
+            len(self._category_indices.get(str(TagCategory.RATING), [])),
         )
 
     # endregion Session Lifecycle
@@ -123,41 +121,7 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
     def postprocess(self, raw_output: Any) -> TagResult:
         """Return full scored output grouped by AnimeTimm categories."""
         scores = normalize_output_scores(raw_output)
-
-        usable_count = min(len(scores), len(self._raw_tag_names))
-        if usable_count != len(self._raw_tag_names):
-            logger.error(
-                "Score length mismatch: got %d scores for %d tags.",
-                len(scores),
-                len(self._raw_tag_names),
-            )
-
-        rating = self._entries_for_indices(self._rating_indices, scores, usable_count)
-        general = self._entries_for_indices(self._general_indices, scores, usable_count)
-        character = self._entries_for_indices(self._character_indices, scores, usable_count)
-        artist = self._entries_for_indices(self._artist_indices, scores, usable_count)
-
-        return TagResult(
-            tags={
-                TagCategory.RATING: rating,
-                TagCategory.GENERAL: general,
-                TagCategory.CHARACTER: character,
-                TagCategory.ARTIST: artist,
-            }
-        )
-
-    def _entries_for_indices(
-        self,
-        indices: list[int],
-        scores: np.ndarray,
-        usable_count: int,
-    ) -> list[TagEntry]:
-        return build_entries_for_indices(
-            tag_names=self._raw_tag_names,
-            indices=indices,
-            scores=scores,
-            usable_count=usable_count,
-        )
+        return build_categorized_tag_result(self._raw_tag_names, scores, self._category_indices)
 
     # endregion Postprocess
 
