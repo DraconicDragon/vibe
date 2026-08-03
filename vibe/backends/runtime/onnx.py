@@ -381,24 +381,8 @@ class ONNXBackend:
         input_meta = inputs[0]
 
         # Find the most appropriate output tensor if multiple exist
-        self._output_names = None
+        self._output_names = [o.name for o in outputs] if outputs else []
         output_meta = outputs[0] if outputs else None
-        if outputs:
-            out_names = [o.name for o in outputs]
-            target_name = out_names[0]
-            if len(out_names) > 1:
-                # Prioritize prediction/logits over embeddings
-                for pref in (
-                    "prediction",
-                    "predictions",
-                    "probs",
-                    "probabilities",
-                ):
-                    if pref in out_names:
-                        target_name = pref
-                        break
-            self._output_names = [target_name]
-            output_meta = next((o for o in outputs if o.name == target_name), outputs[0])
 
         session_providers = _normalize_provider_list([str(provider) for provider in self._session.get_providers()])
         self._providers = session_providers
@@ -457,7 +441,7 @@ class ONNXBackend:
             getattr(output_meta, "type", None),
         )
 
-    def run(self, inputs: Any) -> np.ndarray:
+    def run(self, inputs: Any) -> Any:
         """Run a forward pass on array or dictionary inputs."""
         if self._session is None:
             raise RuntimeError("ONNXBackend has not been loaded.")
@@ -475,8 +459,8 @@ class ONNXBackend:
             logger.error("ONNX inference failed input_keys=%s", list(input_feed.keys()))
             raise
 
-        # TODO: ModelPlugins should specify which output to use if multiple exist (embeddings, logits, etc)
-        return outputs[0] if outputs else np.array([])
+        # Plugin owns output selection. Return the full list of output arrays.
+        return outputs if outputs else []
 
     def close(self) -> None:
         """Release runtime references so memory can be reclaimed promptly."""

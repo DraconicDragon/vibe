@@ -110,6 +110,11 @@ def preprocess_tagger_image(
 
 def normalize_output_scores(raw_output: Any) -> np.ndarray:
     """Flatten model output into probabilities in [0, 1]."""
+
+    # Plugin explicitly selects the primary output if the model returned a tuple/list
+    if isinstance(raw_output, (tuple, list)):
+        raw_output = raw_output[0]
+
     scores = np.asarray(raw_output, dtype=np.float32)
 
     if scores.ndim == 0:
@@ -154,6 +159,9 @@ def build_entries_for_indices(
 
 def logits_to_probabilities(raw_output: Any) -> np.ndarray:
     """Convert raw logits (from numpy or torch) to float32 sigmoid probabilities."""
+    if isinstance(raw_output, (tuple, list)):
+        raw_output = raw_output[0]
+
     if isinstance(raw_output, np.ndarray):
         scores = raw_output.ravel().astype(np.float32)
     else:

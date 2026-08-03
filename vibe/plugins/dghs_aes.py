@@ -193,6 +193,9 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
         return self.IMAGE_SIZE
 
     def _flatten_scores(self, raw_output: Any) -> np.ndarray:
+        if isinstance(raw_output, (tuple, list)):
+            raw_output = raw_output[0]
+
         scores = np.asarray(raw_output, dtype=np.float32)
         if scores.ndim == 0:
             scores = scores.reshape(1)

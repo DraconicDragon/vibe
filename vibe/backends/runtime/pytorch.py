@@ -78,7 +78,7 @@ class PyTorchBackend:
             self._plan,
         )
 
-    def run(self, inputs: Any) -> np.ndarray:
+    def run(self, inputs: Any) -> Any:
         """Run a forward pass on generic tensor, tuple, or dict inputs."""
         try:
             import torch
@@ -132,22 +132,21 @@ class PyTorchBackend:
 
         return (_to_dev(inputs),), {}
 
-    def _tensor_to_numpy(self, output: Any, torch_module: Any) -> np.ndarray:
+    def _tensor_to_numpy(self, output: Any, torch_module: Any) -> Any:
         if isinstance(output, torch_module.Tensor):
             out = output.detach().cpu()
             if out.dtype in (torch_module.bfloat16, torch_module.float16):
                 out = out.to(torch_module.float32)
             return out.numpy()
-
+        
+        # Preserve dictionary outputs
+        if isinstance(output, dict):
+            return {k: self._tensor_to_numpy(v, torch_module) for k, v in output.items()}
+        
+        # Preserve tuple/list outputs natively instead of taking [0]
         if isinstance(output, (tuple, list)):
-            first = output[0]
-            if isinstance(first, torch_module.Tensor):
-                first = first.detach().cpu()
-                if first.dtype in (torch_module.bfloat16, torch_module.float16):
-                    first = first.to(torch_module.float32)
-                return first.numpy()
-            return np.array(first)
-
+            return type(output)(self._tensor_to_numpy(v, torch_module) for v in output)
+            
         return np.array(output)
 
     def close(self) -> None:
