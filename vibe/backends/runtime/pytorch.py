@@ -24,26 +24,40 @@ def _resolve_pytorch_device(preference: ExecutionPreference, torch_module: Any) 
         return "cpu"
 
     has_cuda = bool(getattr(torch_module.cuda, "is_available", lambda: False)())
+
+    xpu_mod = getattr(torch_module, "xpu", None)
+    has_xpu = bool(xpu_mod and callable(getattr(xpu_mod, "is_available", None)) and xpu_mod.is_available())
+
     has_mps = False
     mps_backend = getattr(torch_module.backends, "mps", None)
     if mps_backend and callable(getattr(mps_backend, "is_available", None)):
         has_mps = bool(mps_backend.is_available())
 
+    # User explicitly hinted a device class
+    if preference.hint == "xpu":
+        if not has_xpu:
+            raise RuntimeError("Intel GPU (xpu) requested, but torch.xpu is not available.")
+        return f"xpu:{preference.ordinal}" if preference.ordinal is not None else "xpu"
+
     if preference.intent == HardwareIntent.AUTO:
         if has_cuda:
             return "cuda"
+        if has_xpu:
+            return "xpu"
         if has_mps:
             return "mps"
         return "cpu"
 
-    # Explicit ACCELERATOR requested
+    # Explicit ACCELERATOR requested (general)
     if has_cuda:
         return f"cuda:{preference.ordinal}" if preference.ordinal is not None else "cuda"
+    if has_xpu:
+        return f"xpu:{preference.ordinal}" if preference.ordinal is not None else "xpu"
     if has_mps:
         return "mps"
 
     raise RuntimeError(
-        f"Accelerator requested ({preference.hint or 'gpu'}), but neither CUDA nor MPS is available in PyTorch."
+        f"Accelerator requested ({preference.hint or 'gpu'}), but no CUDA, XPU, or MPS device is available in PyTorch."
     )
 
 
@@ -88,6 +102,8 @@ class PyTorchBackend:
 
         if self._device.startswith("cuda"):
             self._autocast_device_type = "cuda"
+        elif self._device.startswith("xpu"):
+            self._autocast_device_type = "xpu"
         elif self._device.startswith("mps"):
             self._autocast_device_type = "mps"
         else:
@@ -199,10 +215,18 @@ class PyTorchBackend:
 
     def _apply_precision_plan(self, torch_module: Any, request: PrecisionRequest) -> None:
         has_cuda = bool(getattr(torch_module.cuda, "is_available", lambda: False)())
+        xpu_mod = getattr(torch_module, "xpu", None)
+        has_xpu = bool(xpu_mod and callable(getattr(xpu_mod, "is_available", None)) and xpu_mod.is_available())
+
         bf16_supported = False
         if has_cuda and callable(getattr(torch_module.cuda, "is_bf16_supported", None)):
             try:
                 bf16_supported = bool(torch_module.cuda.is_bf16_supported())
+            except Exception:
+                pass
+        elif has_xpu and callable(getattr(xpu_mod, "is_bf16_supported", None)):
+            try:
+                bf16_supported = bool(xpu_mod.is_bf16_supported())
             except Exception:
                 pass
 

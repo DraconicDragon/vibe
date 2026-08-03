@@ -362,10 +362,10 @@ def _auto_select_backend(plugin_cls: type[ModelPlugin], *, requested_device: str
     if onnx_candidate and torch_candidate:
         preference = ExecutionPreference.parse(requested_device)
 
-        if preference.hint == "mps":
-            logger.info("Backend auto-selection chose PyTorch due to requested device hint 'mps'.")
+        if preference.hint in {"mps", "xpu"}:
+            logger.info("Backend auto-selection chose PyTorch due to requested device hint '%s'.", preference.hint)
             return Backend.PYTORCH
-        if preference.hint in {"rocm", "dml"}:
+        if preference.hint in {"rocm", "dml", "openvino"}:
             logger.info("Backend auto-selection chose ONNX due to requested device hint '%s'.", preference.hint)
             return Backend.ONNX
 
@@ -418,9 +418,11 @@ def _pytorch_runtime_capabilities() -> tuple[bool, bool]:
         return False, False
 
     has_cuda = bool(torch.cuda.is_available())
-    mps_backend = getattr(torch.backends, "mps", None)
-    has_mps = False
-    if mps_backend is not None and callable(getattr(mps_backend, "is_available", None)):
-        has_mps = bool(mps_backend.is_available())
 
-    return True, (has_cuda or has_mps)
+    xpu_mod = getattr(torch, "xpu", None)
+    has_xpu = bool(xpu_mod and callable(getattr(xpu_mod, "is_available", None)) and xpu_mod.is_available())
+
+    mps_backend = getattr(torch.backends, "mps", None)
+    has_mps = bool(mps_backend and callable(getattr(mps_backend, "is_available", None)) and mps_backend.is_available())
+
+    return True, (has_cuda or has_xpu or has_mps)

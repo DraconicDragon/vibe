@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 ONNX_AUTO_PROVIDER_PRIORITY: tuple[str, ...] = (
     "CUDAExecutionProvider",
     "ROCMExecutionProvider",
-    # todo: add intel GPU EP, onednn or something?
+    "MIGraphXExecutionProvider",
+    "OpenVINOExecutionProvider",
     "DmlExecutionProvider",
     "CoreMLExecutionProvider",
     "CPUExecutionProvider",
@@ -37,6 +38,8 @@ _GPU_CLASS_PROVIDERS: frozenset[str] = frozenset(
     {
         "CUDAExecutionProvider",
         "ROCMExecutionProvider",
+        "MIGraphXExecutionProvider",
+        "OpenVINOExecutionProvider",
     }
 )
 
@@ -111,6 +114,10 @@ def resolve_onnx_provider_chain(
     wants_accelerator = preference.intent in (HardwareIntent.ACCELERATOR, HardwareIntent.AUTO)
     must_accelerator = preference.intent == HardwareIntent.ACCELERATOR
 
+    # If user explicitly specified openvino hint
+    if preference.hint == "openvino" and explicit is None and "OpenVINOExecutionProvider" in available_set:
+        explicit = ["OpenVINOExecutionProvider", "CPUExecutionProvider"]
+
     if explicit is not None:
         providers = [p for p in _normalize_provider_list([str(p) for p in explicit]) if p in available_set]
         if not providers and "CPUExecutionProvider" in available_set:
@@ -137,7 +144,11 @@ def resolve_onnx_provider_chain(
 
     provider_options: list[dict[str, Any]] = []
     for provider in providers:
-        if provider in _GPU_CLASS_PROVIDERS and preference.ordinal is not None:
+        if provider == "OpenVINOExecutionProvider":
+            # OpenVINO EP configuration options
+            device_type = f"GPU.{preference.ordinal}" if preference.ordinal is not None else "GPU"
+            provider_options.append({"device_type": device_type})
+        elif provider in _GPU_CLASS_PROVIDERS and preference.ordinal is not None:
             provider_options.append({"device_id": str(preference.ordinal)})
         else:
             provider_options.append({})
