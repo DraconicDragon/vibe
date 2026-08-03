@@ -4,26 +4,36 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
-import torch
-from PIL import Image
-from torch import Tensor
 
-from vibe import ScoreThresholds
-from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe import TagEntry
+from vibe.backends.base import (
+    ArtifactMap,
+    ArtifactSpec,
+    Backend,
+    ExecutionRequest,
+    FileRole,
+    ModelCapabilities,
+    ModelIdentity,
+    ModelPlugin,
+    ModelVariant,
+    RuntimeExecutor,
+)
+from vibe.backends.runtime.pytorch import PyTorchBackend
 from vibe.plugins.shared.tagger_shared import build_entries_for_indices
-from vibe.result_processors import CharacterIPMapping, CleanTags
+from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds
 from vibe.results import OutputType, TagResult
-from vibe.tag_categories import E621_CATEGORY_LABELS
+from vibe.tag_categories import E621_CATEGORY_LABELS, TagCategory
+
+if TYPE_CHECKING:
+    from torch import Tensor
 
 logger = logging.getLogger(__name__)
 
-# region constants
+# region Constants & Helpers
 
-_PATCH_SIZE: int = 16
 _DEFAULT_SEQLEN: int = 1024
 _SEQLEN_MIN: int = 64
 _SEQLEN_MAX: int = 2048
@@ -47,22 +57,26 @@ def _resolve_seqlen() -> int:
             _DEFAULT_SEQLEN,
         )
         return _DEFAULT_SEQLEN
-    if value != _DEFAULT_SEQLEN:
-        logger.info("JTP_HYDRA_SEQLEN override: using seqlen=%d (default=%d).", value, _DEFAULT_SEQLEN)
     return value
 
 
 class JTPHydraBatch(NamedTuple):
     """Preprocessed image data ready for JTP-3 Hydra inference."""
 
-    patches: Tensor  # uint8, shape (max_seq, patch_size*patch_size*3)
-    sizes: Tensor  # uint16, shape (2,)
+    patches: Tensor  # uint8; shape (max_seq, patch_size*patch_size*3)
+    sizes: Tensor  # uint16; shape (2,)
 
 
-def _preprocess_image_jtp3(image: Image.Image, seqlen: int) -> JTPHydraBatch:
-    """Convert a PIL Image to a JTPHydraBatch using the NaFlex patch pipeline."""
+def _preprocess_image_jtp3(image: Any, seqlen: int) -> JTPHydraBatch:
+    """Convert an Image to a JTPHydraBatch using the NaFlex patch pipeline."""
+    import torch
+    from PIL import Image
+
     from .image import stack
     from .model import ImageConfig, open_image
+
+    if not isinstance(image, Image.Image):
+        image = Image.fromarray(np.asarray(image))
 
     config = ImageConfig({"classifier.background": "black", "classifier.resize": "lanczos"})
     config.max_seqlen = seqlen
@@ -76,122 +90,103 @@ def _preprocess_image_jtp3(image: Image.Image, seqlen: int) -> JTPHydraBatch:
     return JTPHydraBatch(patches.squeeze(0), sizes.squeeze(0))
 
 
+# endregion
+
+
+# region Abstract Base Plugin
+
+
 class JTPHydraBasePlugin(ModelPlugin):
     """Shared implementation for JTP 3 / Hydra taggers by RedRocket."""
 
-    _abstract = True
     family_name = "RedRocket JTP Hydra Taggers"
 
-    output_type = OutputType.TAGS
-    supported_backends = (Backend.PYTORCH,)
-    supported_processors = (
-        CleanTags,
-        CharacterIPMapping,
-        ScoreThresholds,
+    capabilities = ModelCapabilities(
+        output_type=OutputType.TAGS,
+        output_categories=(
+            TagCategory.GENERAL,
+            TagCategory.ARTIST,
+            TagCategory.CONTRIBUTOR,
+            TagCategory.COPYRIGHT,
+            TagCategory.CHARACTER,
+            TagCategory.SPECIES,
+            TagCategory.META,
+            TagCategory.LORE,
+        ),
+        transforms=(
+            CleanTags,
+            CharacterIPMapping,
+            ScoreThresholds(threshold=0.35),
+        ),
     )
 
     _raw_tag_names: list[str]
     _indices_by_category: dict[int, list[int]]
-    _backend_instance: Any | None
-    _jtp3_model: Any
-    _device: str
-    _seqlen: int
+    _seqlen: int = _DEFAULT_SEQLEN
 
-    def configure(self, **kwargs: Any) -> None:
-        self._device = str(kwargs.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
-        self._backend_instance = kwargs.get("backend_instance")
+    def load_ancillary(self, artifacts: ArtifactMap) -> None:
+        """Parse tag labels and category indices from weights or CSV metadata."""
+        weights_path = artifacts.get("model_pt")
+        csv_path = artifacts.get_optional("tag_list")
 
-        env_seqlen = _resolve_seqlen()
-        if env_seqlen != _DEFAULT_SEQLEN:
-            self._seqlen = env_seqlen
-        elif "seqlen" in kwargs:
-            self._seqlen = int(kwargs["seqlen"])
-        else:
-            self._seqlen = _DEFAULT_SEQLEN
-
-    def load_ancillary(self, file_map: dict[str, Path]) -> None:
-        """Load target files and build the architecture natively."""
-        # Find model weights
-        weights_path = next((p for p in file_map.values() if p.suffix.lower() == ".safetensors"), None)
-        if weights_path is None:
-            raise RuntimeError("No weights file (.safetensors) resolved in file_map.")
-
-        logger.info("Loading model weights from %s", weights_path)
-
-        # Look for tag/validation CSV files in the resolved file map (JTP-3 fallback)
-        csv_path = next((p for p in file_map.values() if p.suffix.lower() == ".csv"), None)
-        if csv_path is not None:
-            # We found a CSV. JTP-3 calibration is required, so pass the data folder
-            legacy_dir = str(csv_path.parent)
-            logger.info("JTP-3 tag lists found in %s; legacy metadata enabled.", legacy_dir)
-        else:
-            # No CSV found. Hydra 3.5 uses built-in safetensors metadata
-            legacy_dir = None
-            logger.info("No legacy metadata directory provided; loading directly from safetensors.")
-
-        if not hasattr(self, "_device"):
-            self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        legacy_dir = str(csv_path.parent) if csv_path is not None else None
 
         from .model import load_model
 
-        # Load the architecture natively using the official loader
-        model = load_model(
-            str(weights_path),
-            logit=True,  # Get raw logits for postprocessing
-            legacy_metadata_dir=legacy_dir,  # Points to CSV folder for JTP-3, or None for Hydra 3.5
-        )
-
-        # Extract the official labels parsed directly by the model
+        # Temporary CPU load to read labels dynamically
+        model = load_model(str(weights_path), logit=True, legacy_metadata_dir=legacy_dir)
         self._raw_tag_names = [label.label for label in model.labels]
 
-        # Re-build self._indices_by_category dynamically from the loaded model labels
-        from vibe.tag_categories import E621_CATEGORY_LABELS
-
         cat_to_id = {name: cat_id for cat_id, name in E621_CATEGORY_LABELS.items()}
-
         self._indices_by_category = {}
         for idx, label in enumerate(model.labels):
             cat_id = cat_to_id.get(label.category, -1)
             self._indices_by_category.setdefault(cat_id, []).append(idx)
 
-        # Safely activate pool inference mode
-        if hasattr(model, "attn_pool") and hasattr(model.attn_pool, "inference"):
-            model.attn_pool.inference()  # ty:ignore[call-non-callable]
+        self._seqlen = _resolve_seqlen()
 
-        self._jtp3_model = model
+    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
+        """Build the native JTP-3 / Hydra model graph."""
+        if request.backend != Backend.PYTORCH:
+            raise ValueError(f"JTP/Hydra models only support PyTorch, got '{request.backend}'.")
 
-        # Hand the model to the shared backend so run() can use it.
-        backend = getattr(self, "_backend_instance", None)
-        if backend is not None:
-            backend.attach_model(model)
-        else:
-            logger.warning("JTP-3 load_ancillary: no backend_instance available; model stored on plugin only.")
+        weights_path = artifacts.get("model_pt")
+        csv_path = artifacts.get_optional("tag_list")
+        legacy_dir = str(csv_path.parent) if csv_path is not None else None
 
-        logger.info("Model ready: device=%s seqlen=%d labels=%d", self._device, self._seqlen, len(model.labels))
+        from .model import load_model
+
+        model = load_model(str(weights_path), logit=True, legacy_metadata_dir=legacy_dir)
+
+        attn_pool = getattr(model, "attn_pool", None)
+        inference_fn = getattr(attn_pool, "inference", None)
+        if callable(inference_fn):
+            inference_fn()
+
+        backend = PyTorchBackend()
+        backend.load(model, request)
+        return backend
 
     def preprocess(self, image: Any) -> JTPHydraBatch:
-        if not isinstance(image, Image.Image):
-            image = Image.fromarray(np.asarray(image))
-
-        seqlen = getattr(self, "_seqlen", _DEFAULT_SEQLEN)
-        return _preprocess_image_jtp3(image, seqlen)
+        return _preprocess_image_jtp3(image, self._seqlen)
 
     def postprocess(self, raw_output: Any) -> TagResult:
         if isinstance(raw_output, np.ndarray):
             scores_np = raw_output.ravel().astype(np.float32)
-        elif isinstance(raw_output, Tensor):
-            scores_np = raw_output.float().cpu().numpy().ravel()
         else:
-            raise TypeError(f"JTP 3 / Hydra postprocess received unexpected type {type(raw_output).__name__}.")
+            import torch
 
+            if isinstance(raw_output, torch.Tensor):
+                scores_np = raw_output.float().cpu().numpy().ravel()
+            else:
+                raise TypeError(f"Unexpected raw output type {type(raw_output).__name__}.")
+
+        # Raw logits -> Sigmoid probabilities
         scores_np = 1.0 / (1.0 + np.exp(-scores_np))
-
         usable_count = min(len(scores_np), len(self._raw_tag_names))
-        if usable_count != len(self._raw_tag_names):
-            logger.error("Score length mismatch: got %d scores for %d tags.", len(scores_np), len(self._raw_tag_names))
 
-        result_tags = {
-            name: build_entries_for_indices(
+        result_tags: dict[str, list[TagEntry]] = {
+            str(name): build_entries_for_indices(
                 tag_names=self._raw_tag_names,
                 indices=indices,
                 scores=scores_np,
@@ -204,33 +199,46 @@ class JTPHydraBasePlugin(ModelPlugin):
         return TagResult(tags=result_tags)
 
 
-# region Model Variants
+# endregion
+
+
+# region Concrete Plugins
 
 
 class JTP3Plugin(JTPHydraBasePlugin):
     """JTP-3 Hydra tagger."""
 
-    model_id = "jtp-3"
-    display_name = "JTP-3 Hydra"
-    description = "E621 tag prediction using JTP-3 Hydra."
-    default_hf_repo = "RedRocket/Hydra"
+    identity = ModelIdentity(
+        model_id="jtp-3",
+        display_name="JTP-3 Hydra",
+        description="E621 tag prediction using JTP-3 Hydra.",
+    )
+    default_repo_id = "RedRocket/Hydra"
 
-    required_files = (
-        FileSpec(
-            name="jtp-3-hydra.safetensors",
-            role=FileRole.WEIGHTS,
-            backends=(Backend.PYTORCH,),
-            hf_subdir="models",
-        ),
-        FileSpec(
-            name="jtp-3-hydra-tags.csv",
-            role=FileRole.TAG_LIST,
-            hf_subdir="data",
-        ),
-        FileSpec(
-            name="jtp-3-hydra-val.csv",
-            role=FileRole.TAG_LIST,
-            hf_subdir="data",
+    variants = (
+        ModelVariant(
+            backend=Backend.PYTORCH,
+            artifacts=(
+                ArtifactSpec(
+                    id="model_pt",
+                    name="jtp-3-hydra.safetensors",
+                    role=FileRole.WEIGHTS,
+                    hf_subdir="models",
+                ),
+                ArtifactSpec(
+                    id="tag_list",
+                    name="jtp-3-hydra-tags.csv",
+                    role=FileRole.TAG_LIST,
+                    hf_subdir="data",
+                ),
+                ArtifactSpec(
+                    id="val_csv",
+                    name="jtp-3-hydra-val.csv",
+                    role=FileRole.TAG_LIST,
+                    hf_subdir="data",
+                    required=False,
+                ),
+            ),
         ),
     )
 
@@ -238,23 +246,26 @@ class JTP3Plugin(JTPHydraBasePlugin):
 class Hydra35Plugin(JTPHydraBasePlugin):
     """Hydra 3.5 Tagger - successor to JTP 3 Hydra."""
 
-    model_id = "hydra-3.5"
-    display_name = "Hydra 3.5"
-    description = "E621 tag prediction using Hydra 3.5 - successor to JTP 3 Hydra."
-    default_hf_repo = "RedRocket/Hydra"
-
-    required_files = (
-        FileSpec(
-            name="hydra-3.5.safetensors",
-            role=FileRole.WEIGHTS,
-            backends=(Backend.PYTORCH,),
-            hf_subdir="models",
-        ),
-        # NOTE: hydra3.5 has tag meta inside the safetensors, makes sense since the arch also actually requires the tag meta
-        # Leaving this here because in theory i can support both i guess
-        # FileSpec(
-        #     name="jtp-3.5-hydra-tags.csv",
-        #     role=FileRole.TAG_LIST,
-        #     hf_subdir="data",
-        # ),
+    identity = ModelIdentity(
+        model_id="hydra-3.5",
+        display_name="Hydra 3.5",
+        description="E621 tag prediction using Hydra 3.5 - successor to JTP 3 Hydra.",
     )
+    default_repo_id = "RedRocket/Hydra"
+
+    variants = (
+        ModelVariant(
+            backend=Backend.PYTORCH,
+            artifacts=(
+                ArtifactSpec(
+                    id="model_pt",
+                    name="hydra-3.5.safetensors",
+                    role=FileRole.WEIGHTS,
+                    hf_subdir="models",
+                ),
+            ),
+        ),
+    )
+
+
+# endregion

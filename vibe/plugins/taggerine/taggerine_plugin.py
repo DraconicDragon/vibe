@@ -1,30 +1,38 @@
-"""Taggerine ModelPlugin implementation.
-
-DINOv3 ViT-H/16+ Tagger by lodestones.
-Uses an unpadded, aspect-ratio preserving approach.
+"""
+Taggerine ModelPlugin implementation.
+DINOv3 ViT-H/16+ with an added linear projection head by lodestones.
 """
 
 from __future__ import annotations
-from vibe import ScoreThresholds
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 import numpy as np
-import torch
-from PIL import Image
 
-from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.backends.base import (
+    ArtifactMap,
+    ArtifactSpec,
+    Backend,
+    ExecutionRequest,
+    FileRole,
+    ModelCapabilities,
+    ModelIdentity,
+    ModelPlugin,
+    ModelVariant,
+    RuntimeExecutor,
+)
+from vibe.backends.runtime.pytorch import PyTorchBackend
 from vibe.plugins.shared.tagger_shared import build_entries_for_indices
-from vibe.result_processors import CharacterIPMapping, CleanTags
-from vibe.results import OutputType, TagResult
-from vibe.tag_categories import E621_CATEGORY_LABELS
+from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds
+from vibe.results import OutputType, TagEntry, TagResult
+from vibe.tag_categories import E621_CATEGORY_LABELS, TagCategory
 
 logger = logging.getLogger(__name__)
 
-# Taggerine constants
+# region Constants
+
 _MAX_SIZE = 1024
 _PATCH_SIZE = 16
 _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -35,47 +43,63 @@ def _snap(x: int, m: int) -> int:
     return max(m, (x // m) * m)
 
 
-class TaggerinePlugin(ModelPlugin):
-    model_id = "taggerine"
-    display_name = "Taggerine"
-    description = "E621 + Danbooru tagger by Lodestone."
-    default_hf_repo = "lodestones/taggerine"
+# endregion
 
-    output_type = OutputType.TAGS
-    supported_backends = (Backend.PYTORCH,)
-    supported_processors = (
-        CleanTags,
-        CharacterIPMapping,
-        ScoreThresholds,
+
+class TaggerinePlugin(ModelPlugin):
+    identity = ModelIdentity(
+        model_id="taggerine",
+        display_name="Taggerine",
+        description="E621 + Danbooru tagger by Lodestones using DINOv3 ViT-H/16+.",
+    )
+    default_repo_id = "lodestones/taggerine"
+
+    capabilities = ModelCapabilities(
+        output_type=OutputType.TAGS,
+        output_categories=(
+            TagCategory.GENERAL,
+            TagCategory.ARTIST,
+            TagCategory.CONTRIBUTOR,
+            TagCategory.COPYRIGHT,
+            TagCategory.CHARACTER,
+            TagCategory.SPECIES,
+            TagCategory.META,
+            TagCategory.LORE,
+        ),
+        transforms=(
+            CleanTags,
+            CharacterIPMapping,
+            ScoreThresholds(threshold=0.35),
+        ),
     )
 
-    required_files = (
-        FileSpec(
-            name="tagger_proto.safetensors",
-            role=FileRole.WEIGHTS,
-            backends=(Backend.PYTORCH,),
-        ),
-        FileSpec(
-            name="tagger_vocab_with_categories_and_alias_updated.json",
-            role=FileRole.TAG_LIST,
+    variants = (
+        ModelVariant(
+            backend=Backend.PYTORCH,
+            artifacts=(
+                ArtifactSpec(
+                    id="model_pt",
+                    name="tagger_proto.safetensors",
+                    role=FileRole.WEIGHTS,
+                ),
+                ArtifactSpec(
+                    id="tag_list",
+                    name="tagger_vocab_with_categories_and_alias_updated.json",
+                    role=FileRole.TAG_LIST,
+                ),
+            ),
         ),
     )
 
     _raw_tag_names: list[str]
     _indices_by_category: dict[int, list[int]]
 
-    def configure(self, **kwargs: Any) -> None:
-        self._device = str(kwargs.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
-        self._backend_instance = kwargs.get("backend_instance")
+    def load_ancillary(self, artifacts: ArtifactMap) -> None:
+        """Parse vocabulary JSON to populate labels and categories."""
+        vocab_path = artifacts.get("tag_list")
 
-    def load_ancillary(self, file_map: dict[str, Path]) -> None:
-        # 1. Parse Vocab JSON
-        vocab_path = next((p for p in file_map.values() if p.suffix.lower() == ".json"), None)
-        if not vocab_path:
-            raise RuntimeError("Vocabulary JSON file not resolved in file_map.")
-
-        with vocab_path.open("r", encoding="utf-8") as f:
-            vocab_data = json.load(f)
+        with vocab_path.open("r", encoding="utf-8") as handle:
+            vocab_data = json.load(handle)
 
         self._raw_tag_names = vocab_data.get("idx2tag", [])
         self._indices_by_category = {}
@@ -95,29 +119,25 @@ class TaggerinePlugin(ModelPlugin):
 
         logger.info("Taggerine vocab loaded: %d tags", len(self._raw_tag_names))
 
-        # 2. Build and Load Model Architecture
-        weights_path = next((p for p in file_map.values() if p.suffix.lower() == ".safetensors"), None)
-        if not weights_path:
-            raise RuntimeError("Weights .safetensors file not resolved in file_map.")
+    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
+        """Build the DINOv3Tagger model and load weights."""
+        if request.backend != Backend.PYTORCH:
+            raise ValueError(f"Taggerine only supports PyTorch, got '{request.backend}'.")
 
-        from .model import DINOv3Tagger, _build_head_from_checkpoint, split_and_clean_state_dict
+        weights_path = artifacts.get("model_pt")
 
-        # Reuse the state dict the backend already loaded to CPU, instead of
-        # re-reading the same safetensors file from disk a second time.
-        backend = getattr(self, "_backend_instance", None)
-        sd = getattr(backend, "raw", None)
-        if not isinstance(sd, dict):
+        try:
             from safetensors.torch import load_file
 
-            logger.info("Loading Taggerine weights from %s", weights_path)
-            sd = load_file(weights_path, device="cpu")
-        else:
-            logger.info("Reusing Taggerine weights already loaded in CPU RAM")
+            from .model import DINOv3Tagger, _build_head_from_checkpoint, split_and_clean_state_dict
+        except ImportError as exc:
+            raise RuntimeError("safetensors and torch are required for Taggerine.") from exc
 
+        sd = load_file(weights_path, device="cpu")
         backbone_sd, head_sd = split_and_clean_state_dict(sd)
 
         if not head_sd:
-            raise RuntimeError("Checkpoint contains no non-backbone keys — cannot build head.")
+            raise RuntimeError("Taggerine checkpoint contains no head keys.")
 
         model = DINOv3Tagger()
         head_module, head_sd_remapped = _build_head_from_checkpoint(
@@ -127,16 +147,16 @@ class TaggerinePlugin(ModelPlugin):
 
         model.backbone.load_state_dict(backbone_sd, strict=True)
         model.head.load_state_dict(head_sd_remapped, strict=True)
-
         model.eval()
 
-        backend = getattr(self, "_backend_instance", None)
-        if backend is not None:
-            backend.attach_model(model)
+        backend = PyTorchBackend()
+        backend.load(model, request)
+        return backend
 
-        logger.info("Taggerine model ready: device=%s", self._device)
+    def preprocess(self, image: Any) -> Any:
+        import torch
+        from PIL import Image
 
-    def preprocess(self, image: Any) -> torch.Tensor:
         if not isinstance(image, Image.Image):
             image = Image.fromarray(np.asarray(image))
 
@@ -169,18 +189,20 @@ class TaggerinePlugin(ModelPlugin):
     def postprocess(self, raw_output: Any) -> TagResult:
         if isinstance(raw_output, np.ndarray):
             scores_np = raw_output.ravel().astype(np.float32)
-        elif isinstance(raw_output, torch.Tensor):
-            scores_np = raw_output.float().cpu().numpy().ravel()
         else:
-            raise TypeError(f"Postprocess received unexpected type {type(raw_output).__name__}.")
+            import torch
 
-        # Taggerine outputs raw logits, we apply Sigmoid
+            if isinstance(raw_output, torch.Tensor):
+                scores_np = raw_output.float().cpu().numpy().ravel()
+            else:
+                raise TypeError(f"Unexpected output type {type(raw_output).__name__}.")
+
+        # Raw logits -> Sigmoid probabilities
         scores_np = 1.0 / (1.0 + np.exp(-scores_np))
-
         usable_count = min(len(scores_np), len(self._raw_tag_names))
 
-        result_tags = {
-            name: build_entries_for_indices(
+        result_tags: dict[str, list[TagEntry]] = {
+            str(name): build_entries_for_indices(
                 tag_names=self._raw_tag_names,
                 indices=indices,
                 scores=scores_np,

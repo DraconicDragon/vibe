@@ -6,105 +6,110 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.backends.base import (
+    ArtifactMap,
+    ArtifactSpec,
+    Backend,
+    FileRole,
+    ModelCapabilities,
+    ModelIdentity,
+    ModelPlugin,
+    ModelVariant,
+)
 from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.tagger_shared import (
     build_entries_for_indices,
     load_tag_metadata,
     normalize_output_scores,
 )
-from vibe.result_processors import CharacterIPMapping, CleanTags, ScoreThresholds, TagLevelThresholds
+from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds, TagLevelThresholds
 from vibe.results import OutputType, TagEntry, TagResult
-from vibe.tag_categories import DanbooruTagCategory
+from vibe.tag_categories import DanbooruTagCategory, TagCategory
 
 logger = logging.getLogger(__name__)
+
+
+# region Base Plugin
 
 
 class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
     """Shared implementation for AnimeTimm dbv4-full taggers."""
 
-    _abstract = True
     family_name = "AnimeTimm Taggers (dbv4-full)"
 
-    output_type = OutputType.TAGS
-    supported_backends = (
-        Backend.ONNX,
-        Backend.PYTORCH,
-    )
-    supported_processors = (
-        CleanTags,
-        CharacterIPMapping,
-        ScoreThresholds,
-        TagLevelThresholds,
-    )
-
-    required_files = (
-        FileSpec(
-            name="model.onnx",
-            role=FileRole.WEIGHTS,
-            backends=(Backend.ONNX,),
+    capabilities = ModelCapabilities(
+        output_type=OutputType.TAGS,
+        output_categories=(
+            TagCategory.RATING,
+            TagCategory.GENERAL,
+            TagCategory.CHARACTER,
+            TagCategory.ARTIST,
         ),
-        FileSpec(
-            name="model.safetensors",
-            role=FileRole.WEIGHTS,
-            backends=(Backend.PYTORCH,),
-        ),
-        FileSpec(
-            name="config.json",
-            role=FileRole.CONFIG,
-        ),
-        FileSpec(
-            name="preprocess.json",
-            role=FileRole.CONFIG,
-        ),
-        FileSpec(
-            name="selected_tags.csv",
-            role=FileRole.TAG_LIST,
+        transforms=(
+            CleanTags,
+            ScoreThresholds(threshold=0.35),
+            CharacterIPMapping,
+            TagLevelThresholds,
         ),
     )
 
-    FALLBACK_TIMM_MODEL_ARGS: dict[str, Any] = {}
+    variants = (
+        ModelVariant(
+            backend=Backend.ONNX,
+            artifacts=(
+                ArtifactSpec(id="model_onnx", name="model.onnx", role=FileRole.WEIGHTS),
+                ArtifactSpec(id="config", name="config.json", role=FileRole.CONFIG),
+                ArtifactSpec(id="preprocess", name="preprocess.json", role=FileRole.CONFIG, required=False),
+                ArtifactSpec(id="tag_list", name="selected_tags.csv", role=FileRole.TAG_LIST),
+            ),
+        ),
+        ModelVariant(
+            backend=Backend.PYTORCH,
+            artifacts=(
+                ArtifactSpec(id="model_pt", name="model.safetensors", role=FileRole.WEIGHTS),
+                ArtifactSpec(id="config", name="config.json", role=FileRole.CONFIG),
+                ArtifactSpec(id="preprocess", name="preprocess.json", role=FileRole.CONFIG, required=False),
+                ArtifactSpec(id="tag_list", name="selected_tags.csv", role=FileRole.TAG_LIST),
+            ),
+        ),
+    )
 
     _raw_tag_names: list[str]
+    _num_classes: int
     _rating_indices: list[int]
     _general_indices: list[int]
     _character_indices: list[int]
     _artist_indices: list[int]
-    _backend: Backend | None = None
-    _backend_instance: Any | None = None
-    _runtime_preprocess_steps: list[dict[str, Any]]
 
     # region Session Lifecycle
 
-    def load_ancillary(self, file_map: dict[str, Path]) -> None:
-        csv_path = file_map["selected_tags.csv"]
+    def load_ancillary(self, artifacts: ArtifactMap) -> None:
+        csv_path = artifacts.get("tag_list")
         logger.info("Loading AnimeTimm tag list from %s", csv_path)
 
         metadata = load_tag_metadata(csv_path)
 
         self._raw_tag_names = metadata.raw_tag_names
+        self._num_classes = len(self._raw_tag_names)
         self._rating_indices = metadata.indices_for(int(DanbooruTagCategory.RATING))
         self._general_indices = metadata.indices_for(int(DanbooruTagCategory.GENERAL))
         self._character_indices = metadata.indices_for(int(DanbooruTagCategory.CHARACTER))
         self._artist_indices = metadata.indices_for(int(DanbooruTagCategory.ARTIST))
 
-        config = self.read_timm_config_json(file_map["config.json"])
-        self._runtime_preprocess_steps = self.resolve_timm_preprocess_steps(
-            config,
-            file_map.get("preprocess.json"),
-        )
-
-        self.maybe_prepare_timm_pytorch_model(config=config, num_classes=len(self._raw_tag_names))
+        config_path = artifacts.get("config")
+        preprocess_path = artifacts.get_optional("preprocess")
+        if config_path:
+            config = self.read_timm_config_json(config_path)
+            self.prepare_timm_runtime_preprocess(config, preprocess_path)
 
         logger.info(
-            # todo: update log message to be more model specific maybe
-            "Loaded AnimeTimm tags: total=%d general=%d artist=%d character=%d rating=%d",
-            len(self._raw_tag_names),
+            "Loaded AnimeTimm tags for %s: total=%d general=%d artist=%d character=%d rating=%d",
+            self.identity.model_id if hasattr(self, "identity") else "base",
+            self._num_classes,
             len(self._general_indices),
             len(self._artist_indices),
             len(self._character_indices),
@@ -113,15 +118,7 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
     # endregion Session Lifecycle
 
-    def resolve_timm_model_args(self, config: dict[str, Any] | None) -> dict[str, Any]:
-        if config is not None and isinstance(config.get("model_args"), dict):
-            logger.debug(
-                "Ignoring config.json model_args for model_id=%s to preserve stable PyTorch reconstruction behavior.",
-                self.model_id,
-            )
-        return dict(self.FALLBACK_TIMM_MODEL_ARGS)
-
-    # region Preprocess & Out Mapping
+    # region Postprocess
 
     def postprocess(self, raw_output: Any) -> TagResult:
         """Return full scored output grouped by AnimeTimm categories."""
@@ -142,10 +139,10 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
         return TagResult(
             tags={
-                "rating": rating,
-                "general": general,
-                "character": character,
-                "artist": artist,
+                TagCategory.RATING: rating,
+                TagCategory.GENERAL: general,
+                TagCategory.CHARACTER: character,
+                TagCategory.ARTIST: artist,
             }
         )
 
@@ -162,172 +159,206 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             usable_count=usable_count,
         )
 
-    # endregion Preprocess & Out Mapping
+    # endregion Postprocess
+
+
+# endregion Base Plugin
 
 
 # region Model Variants
 
 
 class ATConvNextV2HugePlugin(AnimeTimmBasePlugin):
-    model_id = "at-convnextv2-huge-dbv4-full"
-    display_name = "AnimeTimm ConvNeXtV2 Huge"
-    description = "Danbooru v4-full tagger using the AnimeTimm ConvNeXtV2 Huge architecture."
-    default_hf_repo = "animetimm/convnextv2_huge.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-convnextv2-huge-dbv4-full",
+        display_name="AnimeTimm ConvNeXtV2 Huge",
+        description="Danbooru v4-full tagger using the AnimeTimm ConvNeXtV2 Huge architecture.",
+    )
+    default_repo_id = "animetimm/convnextv2_huge.dbv4-full"
 
-    supported_backends = (Backend.PYTORCH,)
-
-    required_files = (
-        FileSpec(
-            name="model.safetensors",
-            role=FileRole.WEIGHTS,
-            backends=(Backend.PYTORCH,),
-        ),
-        FileSpec(
-            name="config.json",
-            role=FileRole.CONFIG,
-        ),
-        FileSpec(
-            name="preprocess.json",
-            role=FileRole.CONFIG,
-        ),
-        FileSpec(
-            name="selected_tags.csv",
-            role=FileRole.TAG_LIST,
+    # ConvNeXtV2 Huge repository only provides PyTorch safetensors
+    variants = (
+        ModelVariant(
+            backend=Backend.PYTORCH,
+            artifacts=(
+                ArtifactSpec(id="model_pt", name="model.safetensors", role=FileRole.WEIGHTS),
+                ArtifactSpec(id="config", name="config.json", role=FileRole.CONFIG),
+                ArtifactSpec(id="preprocess", name="preprocess.json", role=FileRole.CONFIG, required=False),
+                ArtifactSpec(id="tag_list", name="selected_tags.csv", role=FileRole.TAG_LIST),
+            ),
         ),
     )
 
 
 class ATCaformerB36Plugin(AnimeTimmBasePlugin):
-    model_id = "at-caformer-b36-dbv4-full"
-    display_name = "AnimeTimm CaFormer B36"
-    description = "Danbooru v4-full tagger using the AnimeTimm CaFormer B36 architecture."
-    default_hf_repo = "animetimm/caformer_b36.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-caformer-b36-dbv4-full",
+        display_name="AnimeTimm CaFormer B36",
+        description="Danbooru v4-full tagger using the AnimeTimm CaFormer B36 architecture.",
+    )
+    default_repo_id = "animetimm/caformer_b36.dbv4-full"
 
 
 class ATCaformerM36Plugin(AnimeTimmBasePlugin):
-    model_id = "at-caformer-m36-dbv4-full"
-    display_name = "AnimeTimm CaFormer M36"
-    description = "Danbooru v4-full tagger using the AnimeTimm CaFormer M36 architecture."
-    default_hf_repo = "animetimm/caformer_m36.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-caformer-m36-dbv4-full",
+        display_name="AnimeTimm CaFormer M36",
+        description="Danbooru v4-full tagger using the AnimeTimm CaFormer M36 architecture.",
+    )
+    default_repo_id = "animetimm/caformer_m36.dbv4-full"
 
 
 class ATCaformerS36Plugin(AnimeTimmBasePlugin):
-    model_id = "at-caformer-s36-dbv4-full"
-    display_name = "AnimeTimm CaFormer S36"
-    description = "Danbooru v4-full tagger using the AnimeTimm CaFormer S36 architecture."
-    default_hf_repo = "animetimm/caformer_s36.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-caformer-s36-dbv4-full",
+        display_name="AnimeTimm CaFormer S36",
+        description="Danbooru v4-full tagger using the AnimeTimm CaFormer S36 architecture.",
+    )
+    default_repo_id = "animetimm/caformer_s36.dbv4-full"
 
 
 class ATCaformerS18Plugin(AnimeTimmBasePlugin):
-    model_id = "at-caformer-s18-dbv4-full"
-    display_name = "AnimeTimm CaFormer S18"
-    description = "Danbooru v4-full tagger using the AnimeTimm CaFormer S18 architecture."
-    default_hf_repo = "animetimm/caformer_s18.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-caformer-s18-dbv4-full",
+        display_name="AnimeTimm CaFormer S18",
+        description="Danbooru v4-full tagger using the AnimeTimm CaFormer S18 architecture.",
+    )
+    default_repo_id = "animetimm/caformer_s18.dbv4-full"
 
 
 class ATConvNextBasePlugin(AnimeTimmBasePlugin):
-    model_id = "at-convnext-base-dbv4-full"
-    display_name = "AnimeTimm ConvNeXt Base"
-    description = "Danbooru v4-full tagger using the AnimeTimm ConvNeXt Base architecture."
-    default_hf_repo = "animetimm/convnext_base.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-convnext-base-dbv4-full",
+        display_name="AnimeTimm ConvNeXt Base",
+        description="Danbooru v4-full tagger using the AnimeTimm ConvNeXt Base architecture.",
+    )
+    default_repo_id = "animetimm/convnext_base.dbv4-full"
 
 
 class ATEva02LargePatch14448Plugin(AnimeTimmBasePlugin):
-    model_id = "at-eva02-large-patch14-448-dbv4-full"
-    display_name = "AnimeTimm Eva02 Large Patch14 448"
-    description = "Danbooru v4-full tagger using the AnimeTimm Eva02 Large Patch14 448 architecture."
-    default_hf_repo = "animetimm/eva02_large_patch14_448.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-eva02-large-patch14-448-dbv4-full",
+        display_name="AnimeTimm Eva02 Large Patch14 448",
+        description="Danbooru v4-full tagger using the AnimeTimm Eva02 Large Patch14 448 architecture.",
+    )
+    default_repo_id = "animetimm/eva02_large_patch14_448.dbv4-full"
 
 
 class ATMobileNetV3Large100Plugin(AnimeTimmBasePlugin):
-    model_id = "at-mobilenetv3-large-100-dbv4-full"
-    display_name = "AnimeTimm MobileNetV3 Large 100"
-    description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 100 architecture."
-    default_hf_repo = "animetimm/mobilenetv3_large_100.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-mobilenetv3-large-100-dbv4-full",
+        display_name="AnimeTimm MobileNetV3 Large 100",
+        description="Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 100 architecture.",
+    )
+    default_repo_id = "animetimm/mobilenetv3_large_100.dbv4-full"
 
 
 class ATMobileNetV3Large150dPlugin(AnimeTimmBasePlugin):
-    model_id = "at-mobilenetv3-large-150d-dbv4-full"
-    display_name = "AnimeTimm MobileNetV3 Large 150d"
-    description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 150d architecture."
-    default_hf_repo = "animetimm/mobilenetv3_large_150d.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-mobilenetv3-large-150d-dbv4-full",
+        display_name="AnimeTimm MobileNetV3 Large 150d",
+        description="Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 150d architecture.",
+    )
+    default_repo_id = "animetimm/mobilenetv3_large_150d.dbv4-full"
 
 
 class ATMobileNetV4ConvAaLargePlugin(AnimeTimmBasePlugin):
-    model_id = "at-mobilenetv4-conv-aa-large-dbv4-full"
-    display_name = "AnimeTimm MobileNetV4 Conv AA Large"
-    description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv AA Large architecture."
-    default_hf_repo = "animetimm/mobilenetv4_conv_aa_large.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-mobilenetv4-conv-aa-large-dbv4-full",
+        display_name="AnimeTimm MobileNetV4 Conv AA Large",
+        description="Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv AA Large architecture.",
+    )
+    default_repo_id = "animetimm/mobilenetv4_conv_aa_large.dbv4-full"
 
 
 class ATMobileNetV4ConvSmallPlugin(AnimeTimmBasePlugin):
-    model_id = "at-mobilenetv4-conv-small-dbv4-full"
-    display_name = "AnimeTimm MobileNetV4 Conv Small"
-    description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small architecture."
-    default_hf_repo = "animetimm/mobilenetv4_conv_small.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-mobilenetv4-conv-small-dbv4-full",
+        display_name="AnimeTimm MobileNetV4 Conv Small",
+        description="Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small architecture.",
+    )
+    default_repo_id = "animetimm/mobilenetv4_conv_small.dbv4-full"
 
 
 class ATMobileNetV4ConvSmall050Plugin(AnimeTimmBasePlugin):
-    model_id = "at-mobilenetv4-conv-small-050-dbv4-full"
-    display_name = "AnimeTimm MobileNetV4 Conv Small 050"
-    description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small 050 architecture."
-    default_hf_repo = "animetimm/mobilenetv4_conv_small_050.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-mobilenetv4-conv-small-050-dbv4-full",
+        display_name="AnimeTimm MobileNetV4 Conv Small 050",
+        description="Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small 050 architecture.",
+    )
+    default_repo_id = "animetimm/mobilenetv4_conv_small_050.dbv4-full"
 
 
 class ATResNet101Plugin(AnimeTimmBasePlugin):
-    model_id = "at-resnet101-dbv4-full"
-    display_name = "AnimeTimm ResNet101"
-    description = "Danbooru v4-full tagger using the AnimeTimm ResNet101 architecture."
-    default_hf_repo = "animetimm/resnet101.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-resnet101-dbv4-full",
+        display_name="AnimeTimm ResNet101",
+        description="Danbooru v4-full tagger using the AnimeTimm ResNet101 architecture.",
+    )
+    default_repo_id = "animetimm/resnet101.dbv4-full"
 
 
 class ATResNet152Plugin(AnimeTimmBasePlugin):
-    model_id = "at-resnet152-dbv4-full"
-    display_name = "AnimeTimm ResNet152"
-    description = "Danbooru v4-full tagger using the AnimeTimm ResNet152 architecture."
-    default_hf_repo = "animetimm/resnet152.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-resnet152-dbv4-full",
+        display_name="AnimeTimm ResNet152",
+        description="Danbooru v4-full tagger using the AnimeTimm ResNet152 architecture.",
+    )
+    default_repo_id = "animetimm/resnet152.dbv4-full"
 
 
 class ATResNet18Plugin(AnimeTimmBasePlugin):
-    model_id = "at-resnet18-dbv4-full"
-    display_name = "AnimeTimm ResNet18"
-    description = "Danbooru v4-full tagger using the AnimeTimm ResNet18 architecture."
-    default_hf_repo = "animetimm/resnet18.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-resnet18-dbv4-full",
+        display_name="AnimeTimm ResNet18",
+        description="Danbooru v4-full tagger using the AnimeTimm ResNet18 architecture.",
+    )
+    default_repo_id = "animetimm/resnet18.dbv4-full"
 
 
 class ATResNet34Plugin(AnimeTimmBasePlugin):
-    model_id = "at-resnet34-dbv4-full"
-    display_name = "AnimeTimm ResNet34"
-    description = "Danbooru v4-full tagger using the AnimeTimm ResNet34 architecture."
-    default_hf_repo = "animetimm/resnet34.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-resnet34-dbv4-full",
+        display_name="AnimeTimm ResNet34",
+        description="Danbooru v4-full tagger using the AnimeTimm ResNet34 architecture.",
+    )
+    default_repo_id = "animetimm/resnet34.dbv4-full"
 
 
 class ATResNet50Plugin(AnimeTimmBasePlugin):
-    model_id = "at-resnet50-dbv4-full"
-    display_name = "AnimeTimm ResNet50"
-    description = "Danbooru v4-full tagger using the AnimeTimm ResNet50 architecture."
-    default_hf_repo = "animetimm/resnet50.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-resnet50-dbv4-full",
+        display_name="AnimeTimm ResNet50",
+        description="Danbooru v4-full tagger using the AnimeTimm ResNet50 architecture.",
+    )
+    default_repo_id = "animetimm/resnet50.dbv4-full"
 
 
 class ATSwinV2BaseWindow8256Plugin(AnimeTimmBasePlugin):
-    model_id = "at-swinv2-base-window8-256-dbv4-full"
-    display_name = "AnimeTimm SwinV2 Base Window8 256"
-    description = "Danbooru v4-full tagger using the AnimeTimm SwinV2 Base Window8 256 architecture."
-    default_hf_repo = "animetimm/swinv2_base_window8_256.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-swinv2-base-window8-256-dbv4-full",
+        display_name="AnimeTimm SwinV2 Base Window8 256",
+        description="Danbooru v4-full tagger using the AnimeTimm SwinV2 Base Window8 256 architecture.",
+    )
+    default_repo_id = "animetimm/swinv2_base_window8_256.dbv4-full"
 
 
 class ATSwinV2BaseWindow8256Dbv4aPlugin(AnimeTimmBasePlugin):
-    model_id = "at-swinv2-base-window8-256-dbv4a-full"
-    display_name = "AnimeTimm SwinV2 Base Window8 256 (with artist tags)"
-    description = "Danbooru tagger using the AnimeTimm SwinV2 Base Window8 256 architecture. Trained with artist tags."
-    default_hf_repo = "animetimm/swinv2_base_window8_256.dbv4a-full"
+    identity = ModelIdentity(
+        model_id="at-swinv2-base-window8-256-dbv4a-full",
+        display_name="AnimeTimm SwinV2 Base Window8 256 (with artist tags)",
+        description="Danbooru tagger using the AnimeTimm SwinV2 Base Window8 256 architecture. Trained with artist tags.",
+    )
+    default_repo_id = "animetimm/swinv2_base_window8_256.dbv4a-full"
 
 
 class ATVitBasePatch16224Plugin(AnimeTimmBasePlugin):
-    model_id = "at-vit-base-patch16-224-dbv4-full"
-    display_name = "AnimeTimm ViT Base Patch16 224"
-    description = "Danbooru v4-full tagger using the AnimeTimm ViT Base Patch16 224 architecture."
-    default_hf_repo = "animetimm/vit_base_patch16_224.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-vit-base-patch16-224-dbv4-full",
+        display_name="AnimeTimm ViT Base Patch16 224",
+        description="Danbooru v4-full tagger using the AnimeTimm ViT Base Patch16 224 architecture.",
+    )
+    default_repo_id = "animetimm/vit_base_patch16_224.dbv4-full"
 
 
 # endregion Model Variants
