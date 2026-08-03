@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from vibe.backends.base import ExecutionRequest
-from vibe.precision import PrecisionPolicy, ResolvedPrecisionPlan
+from vibe.precision import PrecisionPolicy, PrecisionRequest, ResolvedPrecisionPlan
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +170,7 @@ class PyTorchBackend:
         """Return whether the current device type should use true batching."""
         return self._device != "cpu"
 
-    def _apply_precision_plan(self, torch_module: Any, request: Any) -> None:
+    def _apply_precision_plan(self, torch_module: Any, request: PrecisionRequest) -> None:
         has_cuda = bool(getattr(torch_module.cuda, "is_available", lambda: False)())
         bf16_supported = False
         if has_cuda and callable(getattr(torch_module.cuda, "is_bf16_supported", None)):
