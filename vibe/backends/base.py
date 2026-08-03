@@ -56,7 +56,7 @@ class ExecutionPreference:
         if val == "cpu":
             return cls(HardwareIntent.CPU)
 
-        # Parse legacy/framework strings (e.g. "cuda:0", "gpu:1", "mps", "rocm")
+        # Parse legacy/framework strings (e.g. "cuda:0", "xpu:0", "gpu:1", "mps", "rocm", "openvino")
         parts = val.split(":", 1)
         base = parts[0]
         ordinal = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
