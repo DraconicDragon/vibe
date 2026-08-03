@@ -51,25 +51,6 @@ class RuntimeExecutor(Protocol):
 
 
 @dataclass(frozen=True)
-class ModelDescriptor:
-    """Consolidated metadata description for consumption by external UIs and APIs."""
-
-    model_id: str
-    display_name: str
-    family_name: str
-    description: str
-    output_type: OutputType
-    output_categories: tuple[str, ...]
-    output_extras: dict[str, str]
-    entry_extras: dict[str, str]
-    supported_backends: tuple[Backend, ...]
-    supported_transforms: tuple[str, ...]
-    recommended_transforms: dict[str, dict[str, Any]]  # transform_id -> dict of recommended values
-    default_repo_id: str
-    variants: tuple[ModelVariant, ...]
-
-
-@dataclass(frozen=True)
 class ArtifactSpec:
     """A logical file required by the model. Identity is driven by 'id', not 'name'."""
 
@@ -136,6 +117,25 @@ class ModelCapabilities:
                 new_transforms.append(o)
 
         return dataclasses.replace(self, transforms=tuple(new_transforms))
+
+
+@dataclass(frozen=True)
+class ModelDescriptor:
+    """Consolidated metadata description for consumption by external UIs and APIs."""
+
+    model_id: str
+    display_name: str
+    family_name: str
+    description: str
+    output_type: OutputType
+    output_categories: tuple[str, ...]
+    output_extras: dict[str, str]
+    entry_extras: dict[str, str]
+    supported_backends: tuple[Backend, ...]
+    supported_transforms: tuple[str, ...]
+    recommended_transforms: dict[str, dict[str, Any]]  # transform_id -> dict of recommended values
+    default_repo_id: str
+    variants: tuple[ModelVariant, ...]
 
 
 class ArtifactMap:
