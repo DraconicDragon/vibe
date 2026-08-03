@@ -260,6 +260,78 @@ class ModelPlugin(ABC):
             f"Plugin '{self.identity.model_id}' has not migrated to the build_runtime() contract."
         )
 
+    def collate_batch(self, samples: list[Any]) -> Any:
+        """Collate a list of preprocessed samples into a batch tensor.
+
+        The default implementation handles standard NumPy arrays and PyTorch tensors
+        that already have a batch dimension (e.g. shape (1, C, H, W)).
+        """
+        if not samples:
+            raise ValueError("Cannot collate an empty batch.")
+
+        first = samples[0]
+
+        import numpy as np
+
+        if isinstance(first, np.ndarray):
+            return np.concatenate(samples, axis=0)
+
+        try:
+            import torch
+
+            if isinstance(first, torch.Tensor):
+                return torch.cat(samples, dim=0)
+        except ImportError:
+            pass
+
+        raise TypeError(
+            f"Default collate_batch unsupported for type {type(first).__name__}. "
+            f"Plugin {self.identity.model_id} must override this method."
+        )
+
+    def split_batch(self, batched_output: Any, expected_size: int) -> list[Any]:
+        """Split a batched raw output back into a list of per-sample outputs.
+
+        The default implementation safely slices numpy arrays, torch tensors,
+        and traverses nested dictionaries/tuples recursively.
+        """
+        if expected_size == 1:
+            return [batched_output]
+
+        # Handle nested dictionaries
+        if isinstance(batched_output, dict):
+            keys = list(batched_output.keys())
+            split_vals = {k: self.split_batch(v, expected_size) for k, v in batched_output.items()}
+            return [{k: split_vals[k][i] for k in keys} for i in range(expected_size)]
+
+        # Handle nested tuples/lists
+        if isinstance(batched_output, (tuple, list)):
+            split_vals = [self.split_batch(v, expected_size) for v in batched_output]
+            return [type(batched_output)(v[i] for v in split_vals) for i in range(expected_size)]
+
+        shape = getattr(batched_output, "shape", None)
+        ndim = getattr(batched_output, "ndim", None)
+
+        if ndim == 0:
+            return [batched_output for _ in range(expected_size)]
+
+        if shape is not None and len(shape) > 0 and shape[0] == expected_size:
+            return [batched_output[i : i + 1] for i in range(expected_size)]
+
+        import numpy as np
+
+        try:
+            arr = np.asarray(batched_output)
+        except Exception as exc:
+            raise TypeError(f"Default split_batch expected array-like, got {type(batched_output).__name__}") from exc
+
+        if arr.ndim == 0:
+            return [arr for _ in range(expected_size)]
+        if arr.shape[0] == expected_size:
+            return [arr[i : i + 1] for i in range(expected_size)]
+
+        raise ValueError(f"Batch dimension mismatch: expected {expected_size}, got shape {arr.shape}.")
+
     @abstractmethod
     def preprocess(self, image: Any) -> Any:
         pass

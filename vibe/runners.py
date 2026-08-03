@@ -3,7 +3,6 @@ import threading
 from typing import Any, Literal
 
 from vibe.backends.base import Backend, ModelPlugin
-from vibe.batch_utils import split_batch_output, stack_batch
 from vibe.exceptions import InferenceCancelled, SessionError
 from vibe.result_transforms import ResultTransform
 from vibe.results import ModelResult, is_multi_score_result, is_tag_result
@@ -190,9 +189,11 @@ class BatchRunner:
     ) -> Literal["true", "sequential"]:
         if batch_size <= 1:
             return "sequential"
-        supports_true_batching = self._supports_true_batching()
+
+        supports_true = self._supports_true_batching()
+
         if requested == "true":
-            if not supports_true_batching:
+            if not supports_true:
                 logger.warning(
                     "Model_id=%s backend=%s does not support true batching; the run may fail if the export is batch-incompatible",
                     self.engine.model_id,
@@ -201,7 +202,7 @@ class BatchRunner:
             return "true"
         if requested == "sequential":
             return "sequential"
-        return "true" if supports_true_batching else "sequential"
+        return "true" if supports_true else "sequential"
 
     def _supports_true_batching(self) -> bool:
         supports_fn = getattr(self.engine.backend_instance, "supports_true_batching", None)
@@ -231,12 +232,12 @@ class BatchRunner:
             raise SessionError(f"Preprocessing failed for model '{self.engine.model_id}': {exc}") from exc
 
         try:
-            batch_tensor = stack_batch(chunk_tensors, self.engine.model_id)
-        except SessionError:
+            batch_tensor = self.engine.plugin.collate_batch(chunk_tensors)
+        except Exception as exc:
             if fallback_to_sequential:
                 self.state.warn_once(
                     key="batch_fallback",
-                    message=f"Batch stacking failed for model '{self.engine.model_id}'; falling back to sequential execution.",
+                    message=f"Batch stacking failed for model '{self.engine.model_id}': {exc}. Falling back to sequential execution.",
                 )
 
                 results = []
@@ -244,7 +245,7 @@ class BatchRunner:
                     self.state.check_cancelled()
                     results.append(self.engine.execute_tensor(tensor, transforms))
                 return results
-            raise
+            raise SessionError(f"Could not collate batch for model '{self.engine.model_id}': {exc}") from exc
 
         try:
             raw_output = self.engine.backend_instance.run(batch_tensor)
@@ -252,7 +253,12 @@ class BatchRunner:
             raise SessionError(f"Inference failed for model '{self.engine.model_id}': {exc}") from exc
 
         results = []
-        for sample_output in split_batch_output(raw_output, len(chunk_images), self.engine.model_id):
+        try:
+            split_outputs = self.engine.plugin.split_batch(raw_output, len(chunk_images))
+        except Exception as exc:
+            raise SessionError(f"Could not split batch output for model '{self.engine.model_id}': {exc}") from exc
+
+        for sample_output in split_outputs:
             self.state.check_cancelled()
             results.append(self.engine.postprocess_and_audit(sample_output, transforms))
         return results

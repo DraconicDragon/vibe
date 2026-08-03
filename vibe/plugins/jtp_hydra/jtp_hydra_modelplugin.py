@@ -175,6 +175,16 @@ class JTPHydraBasePlugin(ModelPlugin):
         backend.load(model, request)
         return backend
 
+    def collate_batch(self, samples: list[Any]) -> Any:
+        """Custom collator for JTPHydraBatch named tuples."""
+        import torch
+        try:
+            patches = torch.stack([item.patches for item in samples], dim=0)
+            sizes = torch.stack([item.sizes for item in samples], dim=0)
+            return JTPHydraBatch(patches, sizes)
+        except Exception as exc:
+            raise ValueError(f"Failed to collate JTPHydraBatch: {exc}") from exc
+
     def preprocess(self, image: Any) -> JTPHydraBatch:
         return _preprocess_image_jtp3(image, self._seqlen)
 
