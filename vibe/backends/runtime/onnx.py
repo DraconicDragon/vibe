@@ -21,6 +21,7 @@ import numpy as np
 from vibe import Backend
 from vibe.backends.base import ExecutionRequest
 from vibe.devices import normalize_device_string
+from vibe.precision import PrecisionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +349,6 @@ class ONNXBackend:
         """Load a plugin-selected ONNX graph for execution."""
         started_at = time.perf_counter()
         logger.debug("Loading ONNX model from %s", model_path)
-        self._requested_precision = request.precision
         prepare_onnxruntime_environment()
 
         try:
@@ -393,7 +393,6 @@ class ONNXBackend:
                     "predictions",
                     "probs",
                     "probabilities",
-                    # "logits",
                 ):
                     if pref in out_names:
                         target_name = pref
@@ -422,15 +421,13 @@ class ONNXBackend:
 
             warnings.warn(fallback_message, RuntimeWarning, stacklevel=2)
 
-        if self._requested_precision in {"fp16", "bf16", "fp32"}:
+        # precision setting not particularly useful for ONNX
+        compute_prec = request.precision.compute
+        if compute_prec in (PrecisionPolicy.FP16, PrecisionPolicy.BF16, PrecisionPolicy.FP32):
             logger.warning(
                 "ONNX precision request '%s' is advisory only; most precision behavior is defined by model graph "
                 "and execution provider kernels.",
-                self._requested_precision,
-            )
-        elif self._requested_precision == "int8_ov":
-            logger.info(
-                "ONNX precision request 'int8_ov' accepted as future provider-specific option; no runtime cast applied yet."
+                compute_prec.value,
             )
 
         logger.info("ONNX model loaded in %.2fs | session EP=%s", load_seconds, primary_provider)
@@ -446,8 +443,6 @@ class ONNXBackend:
             getattr(input_meta, "type", None),
             getattr(output_meta, "type", None),
         )
-        if self._requested_precision == "int8_ov":
-            logger.info("ONNX cast status: int8_ov requested (provider-specific cast path not enabled yet).")
         logger.debug(
             "ONNX model io inputs=%s outputs=%s",
             [{"name": meta.name, "shape": meta.shape, "type": getattr(meta, "type", None)} for meta in inputs],

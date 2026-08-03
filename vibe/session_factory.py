@@ -13,7 +13,7 @@ from vibe.devices import normalize_device_string
 from vibe.exceptions import SessionError
 from vibe.hf_downloader import get_auto_download_default
 from vibe.loader import resolve_variant_artifacts
-from vibe.precision import parse_precision
+from vibe.precision import PrecisionRequest, parse_precision
 from vibe.session import ModelSession
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ def build_session(
     source: str,
     backend: Backend | str | None = None,
     device: str = "auto",
-    precision: str = "auto",
+    precision: str | PrecisionRequest = "auto",
     onnx_providers: list[str] | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
@@ -124,7 +124,7 @@ def _attempt_session_build(
     selected_backend: Backend,
     backend_was_explicit: bool,
     device: str,
-    precision: str,
+    precision: str | PrecisionRequest,
     onnx_providers: list[str] | None,
     hf_revision: str | None,
     hf_cache_dir: str | None,
@@ -148,15 +148,9 @@ def _attempt_session_build(
         logger.info("PyTorch device auto-selected: %s", normalized_device)
 
     try:
-        normalized_precision = parse_precision(precision).value
+        precision_request = parse_precision(precision)
     except ValueError as exc:
         raise SessionError(str(exc)) from exc
-
-    if candidate_backend == Backend.PYTORCH and normalized_precision == "int8_ov":
-        logger.warning(
-            "Precision 'int8_ov'/'ov' is ONNX/OpenVINO-oriented and is not supported by PyTorch backend; falling back to auto."
-        )
-        normalized_precision = "auto"
 
     if not backend_was_explicit and candidate_backend != selected_backend:
         logger.info(
@@ -171,7 +165,7 @@ def _attempt_session_build(
         model_id,
         candidate_backend.value,
         normalized_device,
-        normalized_precision,
+        precision_request,
     )
 
     variant = next((v for v in plugin_cls.variants if v.backend == candidate_backend), None)
@@ -206,7 +200,7 @@ def _attempt_session_build(
     request = ExecutionRequest(
         backend=candidate_backend,
         device=normalized_device,
-        precision=normalized_precision,
+        precision=precision_request,
         onnx_providers=tuple(onnx_providers) if onnx_providers is not None else None,
     )
 
@@ -233,10 +227,10 @@ def _attempt_session_build(
         raise SessionError(f"Plugin '{model_id}' failed to build its runtime: {exc}") from exc
 
     try:
-        if candidate_backend == Backend.ONNX and normalized_precision in {"fp16", "bf16"}:
+        if candidate_backend == Backend.ONNX and precision_request in {"fp16", "bf16"}:
             logger.warning(
                 "Precision '%s' requested while running ONNX backend; runtime casting is provider/model dependent.",
-                normalized_precision,
+                precision_request,
             )
 
         logger.debug("Session ready model_id=%s", model_id)
@@ -284,7 +278,9 @@ def _make_runtime_pool_key(
         artifact_key,
         request.backend.value,
         request.device,
-        request.precision,
+        # Serialize the structured dataclass cleanly for hashing
+        request.precision.weight.value,
+        request.precision.compute.value,
         request.onnx_providers,
     )
 

@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from vibe.backends.base import ExecutionRequest
+from vibe.precision import PrecisionPolicy, ResolvedPrecisionPlan
 
 logger = logging.getLogger(__name__)
 
@@ -23,16 +24,16 @@ class PyTorchBackend:
     Runs a fully constructed PyTorch `nn.Module`.
 
     Model construction and artifact interpretation are owned by the plugin via build_runtime().
-    This class only owns framework placement and execution.
+    This class only owns framework placement and execution. Post-load, it is strictly immutable.
     """
 
     def __init__(self) -> None:
         self._model: Any = None
         self._device: str = "cpu"
-        self._requested_precision: str = "auto"
-        self._resolved_precision: str = "fp32"
+        self._plan: ResolvedPrecisionPlan | None = None
         self._weight_dtype: Any = None
         self._compute_dtype: Any = None
+        self._autocast_device_type: str = "cpu"
         self._run_lock = threading.RLock()
 
     def load(self, model: Any, request: ExecutionRequest) -> None:
@@ -56,20 +57,25 @@ class PyTorchBackend:
 
         self._model = model
         self._device = request.device
-        self._requested_precision = request.precision
+
+        if self._device.startswith(("cuda", "gpu")):
+            self._autocast_device_type = "cuda"
+        elif self._device.startswith("mps"):
+            self._autocast_device_type = "mps"
+        else:
+            self._autocast_device_type = "cpu"
+
         if not isinstance(self._model, nn.Module):
             raise TypeError("PyTorchBackend requires a fully constructed torch.nn.Module.")
 
         self._model.eval()
-        self._model.to(self._device)
-        self._apply_precision_plan(torch)
+        self._apply_precision_plan(torch, request.precision)
 
         logger.debug(
-            "Attached pre-built model class=%s device=%s weight_dtype=%s compute_dtype=%s",
+            "Attached pre-built model class=%s device=%s plan=%s",
             self._model.__class__.__name__,
             self._device,
-            self._weight_dtype,
-            self._compute_dtype,
+            self._plan,
         )
 
     def run(self, inputs: Any) -> np.ndarray:
@@ -80,37 +86,24 @@ class PyTorchBackend:
         except ImportError as exc:
             raise RuntimeError("PyTorch is not installed.") from exc
 
-        if not isinstance(self._model, nn.Module):
+        if not isinstance(self._model, nn.Module) or self._plan is None:
             raise TypeError("PyTorchBackend has no loaded torch.nn.Module.")
 
-        args, kwargs = self._prepare_inputs(inputs, torch)
+        args, kwargs = self._prepare_inputs(inputs, torch, self._plan)
 
+        # Enforce strict thread safety for pooled backends.
         with self._run_lock, torch.no_grad():
-            try:
-                output = self._model(*args, **kwargs)
-            except Exception:
-                if self._compute_dtype != torch.float32:
-                    logger.warning(
-                        "PyTorch inference failed with compute_dtype=%s on device=%s; retrying with float32 fallback.",
-                        self._compute_dtype,
-                        self._device,
-                    )
-                    self._compute_dtype = torch.float32
-                    self._resolved_precision = "fp32"
-                    self._model.to(device=self._device, dtype=torch.float32)
-                    args, kwargs = self._prepare_inputs(inputs, torch)
+            if self._plan.autocast_enabled:
+                with torch.autocast(device_type=self._autocast_device_type, dtype=self._compute_dtype):
                     output = self._model(*args, **kwargs)
-                else:
-                    logger.error(
-                        "PyTorch inference failed args[0].shape=%s device=%s",
-                        getattr(args[0], "shape", None),
-                        self._device,
-                    )
-                    raise
+            else:
+                output = self._model(*args, **kwargs)
 
         return self._tensor_to_numpy(output, torch)
 
-    def _prepare_inputs(self, inputs: Any, torch_module: Any) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    def _prepare_inputs(
+        self, inputs: Any, torch_module: Any, plan: ResolvedPrecisionPlan
+    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
         """Generic input unpacker for Tensor, tuple, dict, or structured object."""
 
         def _to_dev(val: Any) -> Any:
@@ -118,7 +111,11 @@ class PyTorchBackend:
                 val = torch_module.from_numpy(val)
             if isinstance(val, torch_module.Tensor):
                 if val.dtype.is_floating_point:
-                    return val.to(device=self._device, dtype=self._compute_dtype)
+                    # If autocast is off, inputs must exactly match the model's weight dtype
+                    if not plan.autocast_enabled and self._weight_dtype is not None:
+                        return val.to(device=self._device, dtype=self._weight_dtype)
+                    # If autocast is on, leave it as fp32 on the correct device; autocast handles it internally
+                    return val.to(device=self._device)
                 return val.to(device=self._device)
             return val
 
@@ -138,7 +135,7 @@ class PyTorchBackend:
     def _tensor_to_numpy(self, output: Any, torch_module: Any) -> np.ndarray:
         if isinstance(output, torch_module.Tensor):
             out = output.detach().cpu()
-            if out.dtype == torch_module.bfloat16:
+            if out.dtype in (torch_module.bfloat16, torch_module.float16):
                 out = out.to(torch_module.float32)
             return out.numpy()
 
@@ -146,7 +143,7 @@ class PyTorchBackend:
             first = output[0]
             if isinstance(first, torch_module.Tensor):
                 first = first.detach().cpu()
-                if first.dtype == torch_module.bfloat16:
+                if first.dtype in (torch_module.bfloat16, torch_module.float16):
                     first = first.to(torch_module.float32)
                 return first.numpy()
             return np.array(first)
@@ -173,55 +170,75 @@ class PyTorchBackend:
         """Return whether the current device type should use true batching."""
         return self._device != "cpu"
 
-    def _apply_precision_plan(self, torch_module: Any) -> None:
-        requested = self._requested_precision
-        if requested == "int8_ov":
-            requested = "auto"
-
+    def _apply_precision_plan(self, torch_module: Any, request: Any) -> None:
         has_cuda = bool(getattr(torch_module.cuda, "is_available", lambda: False)())
         bf16_supported = False
         if has_cuda and callable(getattr(torch_module.cuda, "is_bf16_supported", None)):
             try:
                 bf16_supported = bool(torch_module.cuda.is_bf16_supported())
             except Exception:
-                bf16_supported = False
+                pass
 
-        resolved = "fp32" if requested == "auto" else requested
+        # 1. Resolve Compute Policy
+        compute_policy = request.compute
+        if compute_policy == PrecisionPolicy.AUTO:
+            if self._autocast_device_type == "cuda":
+                compute_policy = PrecisionPolicy.BF16 if bf16_supported else PrecisionPolicy.FP16
+            else:
+                compute_policy = PrecisionPolicy.FP32
 
-        # If bf16 is requested on a CUDA/GPU device but not supported, fall back to fp16
-        if resolved == "bf16" and self._device.startswith(("cuda", "gpu")) and not bf16_supported:
-            logger.warning(
-                "Requested bf16 on device=%s but CUDA bf16 is unavailable; falling back to fp16.",
-                self._device,
-            )
-            resolved = "fp16"
+        # 2. Hardware Fallbacks for Compute
+        if compute_policy == PrecisionPolicy.BF16 and not bf16_supported:
+            if request.fallback_allowed:
+                logger.warning(
+                    "Device '%s' does not support bfloat16 natively. Falling back compute to fp16.",
+                    self._device,
+                )
+                compute_policy = PrecisionPolicy.FP16
+            else:
+                raise RuntimeError(f"Strict precision request failed: Device {self._device} does not support bf16.")
+
+        # 3. Resolve Weight Policy
+        weight_policy = request.weight
+        if weight_policy == PrecisionPolicy.AUTO:
+            # Historically 'auto' meant 'cast weights to match compute' to save VRAM
+            weight_policy = compute_policy
 
         dtype_map = {
-            "fp32": torch_module.float32,
-            "fp16": torch_module.float16,
-            "bf16": torch_module.bfloat16,
+            PrecisionPolicy.FP32: torch_module.float32,
+            PrecisionPolicy.FP16: torch_module.float16,
+            PrecisionPolicy.BF16: torch_module.bfloat16,
         }
-        target_dtype = dtype_map.get(resolved, torch_module.float32)
 
-        if hasattr(self._model, "apply_precision"):
-            logger.debug("Delegating precision casting to model custom apply_precision hook")
-            self._model.apply_precision(
-                device=self._device,
-                dtype=target_dtype,
-                requested=self._requested_precision,
-                bf16_supported=bf16_supported,
-            )
+        self._compute_dtype = dtype_map.get(compute_policy, torch_module.float32)
+        self._weight_dtype = dtype_map.get(weight_policy)  # None if PRESERVE
+
+        # 4. Apply Weights
+        if self._weight_dtype is not None:
+            if hasattr(self._model, "apply_precision"):
+                logger.debug("Delegating precision casting to model custom apply_precision hook")
+                self._model.apply_precision(
+                    device=self._device,
+                    dtype=self._weight_dtype,
+                    requested=request,
+                    bf16_supported=bf16_supported,
+                )
+            else:
+                self._model.to(device=self._device, dtype=self._weight_dtype)
         else:
-            self._model.to(device=self._device, dtype=target_dtype)
+            self._model.to(device=self._device)
 
-        self._resolved_precision = resolved
-        self._weight_dtype = target_dtype
-        self._compute_dtype = torch_module.float32
+        # 5. Lock in the plan
+        self._plan = ResolvedPrecisionPlan(
+            weight_dtype=str(self._weight_dtype) if self._weight_dtype else "preserve",
+            compute_dtype=str(self._compute_dtype),
+            autocast_enabled=(self._compute_dtype != torch_module.float32),
+        )
         logger.info(
-            "PyTorch precision configured requested=%s resolved=%s device=%s weight_dtype=%s compute_dtype=%s",
-            self._requested_precision,
-            self._resolved_precision,
-            self._device,
-            self._weight_dtype,
-            self._compute_dtype,
+            "PyTorch precision initialized: request=(%s, %s) -> resolved=(weight=%s, compute=%s, autocast=%s)",
+            request.weight.value,
+            request.compute.value,
+            self._plan.weight_dtype,
+            self._plan.compute_dtype,
+            self._plan.autocast_enabled,
         )
