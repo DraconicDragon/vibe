@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from vibe.backends.base import ExecutionPreference, ExecutionRequest, HardwareIntent
+from vibe.backends.base import ExecutionPlan, ExecutionPreference, HardwareIntent
 from vibe.precision import PrecisionPolicy
 
 logger = logging.getLogger(__name__)
@@ -280,7 +280,7 @@ class ONNXBackend:
     def load(
         self,
         model_path: Path,
-        request: ExecutionRequest,
+        plan: ExecutionPlan,
     ) -> None:
         """Load a plugin-selected ONNX graph for execution."""
         started_at = time.perf_counter()
@@ -297,8 +297,8 @@ class ONNXBackend:
             ) from exc
 
         resolved_providers, resolved_provider_options = resolve_onnx_provider_chain(
-            preference=request.preference,
-            requested_providers=list(request.onnx_providers) if request.onnx_providers is not None else None,
+            preference=plan.preference,
+            requested_providers=list(plan.onnx_providers) if plan.onnx_providers is not None else None,
             ort_module=ort,
         )
 
@@ -325,15 +325,15 @@ class ONNXBackend:
         primary_provider = self._providers[0] if self._providers else "CPUExecutionProvider"
 
         # Fallback diagnostics
-        wants_accel = request.preference.intent in (HardwareIntent.ACCELERATOR, HardwareIntent.AUTO)
+        wants_accel = plan.preference.intent in (HardwareIntent.ACCELERATOR, HardwareIntent.AUTO)
         has_accel = any(p != "CPUExecutionProvider" for p in session_providers)
 
-        if request.preference.intent == HardwareIntent.ACCELERATOR and not has_accel:
+        if plan.preference.intent == HardwareIntent.ACCELERATOR and not has_accel:
             raise RuntimeError(
                 f"Accelerator requested, but ONNX runtime loaded with CPU fallback only: {session_providers}."
             )
 
-        if wants_accel and not has_accel and request.preference.intent == HardwareIntent.AUTO:
+        if wants_accel and not has_accel and plan.preference.intent == HardwareIntent.AUTO:
             fallback_message = (
                 f"ONNX backend fell back to {primary_provider} (no accelerator execution provider available)."
             )
@@ -343,7 +343,7 @@ class ONNXBackend:
             warnings.warn(fallback_message, RuntimeWarning, stacklevel=2)
 
         # Precision setting warning
-        compute_prec = request.precision.compute
+        compute_prec = plan.precision.compute
         if compute_prec in (PrecisionPolicy.FP16, PrecisionPolicy.BF16, PrecisionPolicy.FP32):
             logger.warning(
                 "ONNX precision request '%s' is advisory only; precision behavior is defined by model graph "
@@ -377,6 +377,13 @@ class ONNXBackend:
             getattr(output_meta, "shape", None),
             getattr(output_meta, "type", None),
         )
+
+    def execution_info(self) -> dict[str, Any]:
+        """Return runtime-reported diagnostics."""
+        return {
+            "providers": self._providers,
+            "provider_options": self._provider_options,
+        }
 
     def run(self, inputs: Any) -> Any:
         """Run a forward pass on array or dictionary inputs."""

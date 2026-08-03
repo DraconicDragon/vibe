@@ -15,7 +15,7 @@ from vibe.backends.base import (
     ArtifactMap,
     ArtifactSpec,
     Backend,
-    ExecutionRequest,
+    ExecutionPlan,
     FileRole,
     ModelCapabilities,
     ModelIdentity,
@@ -125,10 +125,10 @@ class TaggerinePlugin(ModelPlugin):
 
         logger.info("Taggerine vocab loaded: %d tags", len(self._raw_tag_names))
 
-    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
+    def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
         """Build the DINOv3Tagger model and load weights."""
-        if request.backend != Backend.PYTORCH:
-            raise ValueError(f"Taggerine only supports PyTorch, got '{request.backend}'.")
+        if plan.backend != Backend.PYTORCH:
+            raise ValueError(f"Taggerine only supports PyTorch, got '{plan.backend}'.")
 
         weights_path = artifacts.get("model_pt")
 
@@ -156,7 +156,7 @@ class TaggerinePlugin(ModelPlugin):
         model.eval()
 
         backend = PyTorchBackend()
-        backend.load(model, request)
+        backend.load(model, plan)
         return backend
 
     def preprocess(self, image: Any) -> Any:

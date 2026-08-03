@@ -13,7 +13,7 @@ from vibe.backends.base import (
     ArtifactMap,
     ArtifactSpec,
     Backend,
-    ExecutionRequest,
+    ExecutionPlan,
     FileRole,
     ModelCapabilities,
     ModelIdentity,
@@ -99,14 +99,14 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
         samples_path = artifacts.get("samples")
         self._mark_table = load_samples_file(samples_path)
 
-    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
-        if request.backend == Backend.ONNX:
+    def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
+        if plan.backend == Backend.ONNX:
             onnx_path = artifacts.get("model_onnx")
             backend = ONNXBackend()
-            backend.load(onnx_path, request)
+            backend.load(onnx_path, plan)
             return backend
 
-        if request.backend == Backend.PYTORCH:
+        if plan.backend == Backend.PYTORCH:
             ckpt_path = artifacts.get("model_pt")
             try:
                 import torch
@@ -120,10 +120,10 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
                 raise RuntimeError(f"Failed to load DeepGHS TorchScript checkpoint '{ckpt_path}': {exc}") from exc
 
             backend = PyTorchBackend()
-            backend.load(model, request)
+            backend.load(model, plan)
             return backend
 
-        raise ValueError(f"Unsupported backend '{request.backend}'.")
+        raise ValueError(f"Unsupported backend '{plan.backend}'.")
 
     def preprocess(self, image: Any) -> np.ndarray:
         from PIL import Image

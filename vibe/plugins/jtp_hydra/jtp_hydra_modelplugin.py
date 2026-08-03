@@ -12,7 +12,7 @@ from vibe.backends.base import (
     ArtifactMap,
     ArtifactSpec,
     Backend,
-    ExecutionRequest,
+    ExecutionPlan,
     FileRole,
     ModelCapabilities,
     ModelIdentity,
@@ -149,10 +149,10 @@ class JTPHydraBasePlugin(ModelPlugin):
         self._seqlen = _resolve_seqlen()
         self._preloaded_model = model
 
-    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
+    def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
         """Build the native JTP-3 / Hydra model graph."""
-        if request.backend != Backend.PYTORCH:
-            raise ValueError(f"JTP/Hydra models only support PyTorch, got '{request.backend}'.")
+        if plan.backend != Backend.PYTORCH:
+            raise ValueError(f"JTP/Hydra models only support PyTorch, got '{plan.backend}'.")
 
         if self._preloaded_model is not None:
             model = self._preloaded_model
@@ -172,12 +172,13 @@ class JTPHydraBasePlugin(ModelPlugin):
             inference_fn()
 
         backend = PyTorchBackend()
-        backend.load(model, request)
+        backend.load(model, plan)
         return backend
 
     def collate_batch(self, samples: list[Any]) -> Any:
         """Custom collator for JTPHydraBatch named tuples."""
         import torch
+
         try:
             patches = torch.stack([item.patches for item in samples], dim=0)
             sizes = torch.stack([item.sizes for item in samples], dim=0)

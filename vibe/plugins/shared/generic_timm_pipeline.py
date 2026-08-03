@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 import numpy as np
 from PIL import Image
 
-from vibe.backends.base import ArtifactMap, Backend, ExecutionRequest, RuntimeExecutor
+from vibe.backends.base import ArtifactMap, Backend, ExecutionPlan, RuntimeExecutor
 from vibe.backends.runtime.onnx import ONNXBackend
 from vibe.backends.runtime.pytorch import PyTorchBackend
 
@@ -34,17 +34,17 @@ class TimmPipelineMixin:
 
     # region Runtime Builder
 
-    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
+    def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
         """Build an ONNX or PyTorch runtime executor for a timm model."""
-        self._active_backend = request.backend
+        self._active_backend = plan.backend
 
-        if request.backend == Backend.ONNX:
+        if plan.backend == Backend.ONNX:
             onnx_path = artifacts.get("model_onnx")
             backend = ONNXBackend()
-            backend.load(onnx_path, request)
+            backend.load(onnx_path, plan)
             return backend
 
-        if request.backend == Backend.PYTORCH:
+        if plan.backend == Backend.PYTORCH:
             config_path = artifacts.get_optional("config")
             config = self.read_timm_config_json(config_path) if config_path else None
 
@@ -57,10 +57,10 @@ class TimmPipelineMixin:
                 num_classes=num_classes,
             )
             backend = PyTorchBackend()
-            backend.load(model, request)
+            backend.load(model, plan)
             return backend
 
-        raise ValueError(f"Unsupported backend '{request.backend}' for timm pipeline.")
+        raise ValueError(f"Unsupported backend '{plan.backend}' for timm pipeline.")
 
     def build_timm_pytorch_model(
         self,

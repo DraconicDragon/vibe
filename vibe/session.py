@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from vibe import ModelResult
-from vibe.backends.base import ArtifactMap, Backend, ModelPlugin
+from vibe.backends.base import ArtifactMap, Backend, ExecutionPlan, ModelPlugin
 from vibe.exceptions import InferenceCancelled, SessionError
 from vibe.image_loading import (
     iter_load_images,
@@ -45,7 +45,7 @@ class ModelSession:
         self,
         plugin: ModelPlugin,
         backend_instance: Any,
-        backend: Backend,
+        plan: ExecutionPlan,
         file_map: ArtifactMap,  # Changed from FileMap
         source: str,
         auto_download: bool = True,
@@ -53,8 +53,9 @@ class ModelSession:
         backend_release: Callable[[], None] | None = None,
     ) -> None:
         self._plugin = plugin
-        self._backend = backend
         self._backend_instance = backend_instance
+        self._plan = plan
+        self._backend = plan.backend
         self._file_map = file_map
         self._source = source
         self._closed = False
@@ -73,7 +74,7 @@ class ModelSession:
             plugin.identity.model_id, self._transform_context, plugin.capabilities.transforms
         )
         self._engine = InferenceEngine(plugin, backend_instance, self._pipeline, self._state)
-        self._runner = BatchRunner(self._engine, self._state, backend)
+        self._runner = BatchRunner(self._engine, self._state, self._backend)
 
         logger.debug("Session created model_id=%s backend=%s", self.model_id, self._backend.value)
         logger.debug("Session memory_tracking=%s", self._memory_tracker.enabled)
@@ -89,6 +90,24 @@ class ModelSession:
                 logger.debug("GPU process memory metric unavailable (likely missing NVML/pynvml).")
 
     # region Primary Interface
+
+    def execution_info(self) -> dict[str, Any]:
+        """Return a diagnostic summary of the requested plan vs actual runtime state."""
+        return {
+            "model_id": self.model_id,
+            "source": self.source,
+            "plan": {
+                "backend": self._plan.backend.value,
+                "preference": self._plan.preference.intent.value,
+                "precision": {
+                    "weight": self._plan.precision.weight.value,
+                    "compute": self._plan.precision.compute.value,
+                },
+            },
+            "runtime": self._backend_instance.execution_info()
+            if hasattr(self._backend_instance, "execution_info")
+            else {},
+        }
 
     def infer(
         self,

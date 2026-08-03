@@ -66,8 +66,8 @@ class ExecutionPreference:
 
 
 @dataclass(frozen=True)
-class ExecutionRequest:
-    """Resolved execution settings passed to a plugin's runtime builder."""
+class ExecutionPlan:
+    """The factory's resolved choices for execution (intent)."""
 
     backend: Backend
     preference: ExecutionPreference
@@ -79,10 +79,9 @@ class RuntimeExecutor(Protocol):
     """The small contract the inference layer needs from a loaded runtime."""
 
     def run(self, inputs: Any) -> Any: ...
-
     def close(self) -> None: ...
-
     def supports_true_batching(self) -> bool: ...
+    def execution_info(self) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -249,8 +248,8 @@ class ModelPlugin(ABC):
         state even when a completed runtime is shared from the pool.
         """
 
-    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
-        """Build a fully initialized runtime for this model and request.
+    def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
+        """Build a fully initialized runtime for this model and execution plan.
 
         This is intentionally not abstract during the metadata migration:
         making it abstract would make old concrete plugins unimportable before

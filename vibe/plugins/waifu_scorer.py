@@ -9,7 +9,7 @@ from vibe.backends.base import (
     ArtifactMap,
     ArtifactSpec,
     Backend,
-    ExecutionRequest,
+    ExecutionPlan,
     FileRole,
     ModelCapabilities,
     ModelIdentity,
@@ -115,10 +115,10 @@ class WaifuScorerBasePlugin(ModelPlugin):
 
         self._clip_preprocess = CLIPImageProcessor.from_pretrained(str(clip_dir), local_files_only=True)
 
-    def build_runtime(self, artifacts: ArtifactMap, request: ExecutionRequest) -> RuntimeExecutor:
+    def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
         """Construct the combined PyTorch model graph and return a PyTorchBackend executor."""
-        if request.backend != Backend.PYTORCH:
-            raise ValueError(f"WaifuScorer only supports PyTorch backend, got '{request.backend}'.")
+        if plan.backend != Backend.PYTORCH:
+            raise ValueError(f"WaifuScorer only supports PyTorch backend, got '{plan.backend}'.")
 
         try:
             from safetensors.torch import load_file
@@ -147,7 +147,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
         model = runtime_cls(clip_model=clip_model, mlp=mlp)
 
         backend = PyTorchBackend()
-        backend.load(model, request)
+        backend.load(model, plan)
         return backend
 
     def preprocess(self, image: Any) -> Any:

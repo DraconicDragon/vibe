@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 
 class PrecisionPolicy(str, Enum):
@@ -32,6 +33,13 @@ class ResolvedPrecisionPlan:
     weight_dtype: str
     compute_dtype: str
     autocast_enabled: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "weight_dtype": self.weight_dtype,
+            "compute_dtype": self.compute_dtype,
+            "autocast_enabled": self.autocast_enabled,
+        }
 
 
 def parse_precision(precision: str | PrecisionRequest | None) -> PrecisionRequest:

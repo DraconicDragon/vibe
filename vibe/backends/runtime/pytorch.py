@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from vibe.backends.base import ExecutionPreference, ExecutionRequest, HardwareIntent
+from vibe.backends.base import ExecutionPlan, ExecutionPreference, HardwareIntent
 from vibe.precision import PrecisionPolicy, PrecisionRequest, ResolvedPrecisionPlan
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ class PyTorchBackend:
         self._autocast_device_type: str = "cpu"
         self._run_lock = threading.RLock()
 
-    def load(self, model: Any, request: ExecutionRequest) -> None:
+    def load(self, model: Any, plan: ExecutionPlan) -> None:
         """Prepare a plugin-constructed module for execution."""
         logger.debug("Preparing PyTorch runtime")
         try:
@@ -98,7 +98,7 @@ class PyTorchBackend:
             logger.debug("cuDNN enabled (VIBE_DISABLE_CUDNN not set or false)")
 
         self._model = model
-        self._device = _resolve_pytorch_device(request.preference, torch)
+        self._device = _resolve_pytorch_device(plan.preference, torch)
 
         if self._device.startswith("cuda"):
             self._autocast_device_type = "cuda"
@@ -113,7 +113,7 @@ class PyTorchBackend:
             raise TypeError("PyTorchBackend requires a fully constructed torch.nn.Module.")
 
         self._model.eval()
-        self._apply_precision_plan(torch, request.precision)
+        self._apply_precision_plan(torch, plan.precision)
 
         logger.debug(
             "Attached pre-built model class=%s device=%s plan=%s",
@@ -121,6 +121,14 @@ class PyTorchBackend:
             self._device,
             self._plan,
         )
+
+    def execution_info(self) -> dict[str, Any]:
+        """Return runtime-reported diagnostics."""
+        return {
+            "device": self._device,
+            "autocast_device_type": self._autocast_device_type,
+            "precision": self._plan.to_dict() if self._plan else None,
+        }
 
     def run(self, inputs: Any) -> Any:
         """Run a forward pass on generic tensor, tuple, or dict inputs."""
