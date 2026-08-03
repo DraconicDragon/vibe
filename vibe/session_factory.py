@@ -110,13 +110,6 @@ def build_session(
     raise SessionError(f"Failed to build session for model '{model_id}'.")
 
 
-def _is_unprefixed_local_dir_source(source: str) -> bool:
-    normalized = str(source).strip()
-    if normalized.startswith(("local:", "hf:")):
-        return False
-    return Path(normalized).expanduser().is_dir()
-
-
 def _attempt_session_build(
     plugin_cls: type[ModelPlugin],
     source: str,
