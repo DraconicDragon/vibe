@@ -17,10 +17,10 @@ from vibe.backends.base import (
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
+    PluginOptionSpec,
     RuntimeExecutor,
 )
 from vibe.backends.runtime.pytorch import PyTorchBackend
-from vibe.config import config
 from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
     logits_to_probabilities,
@@ -90,6 +90,14 @@ class JTPHydraBasePlugin(ModelPlugin):
             TagCategory.META,
             TagCategory.LORE,
         ),
+        options=(
+            PluginOptionSpec(
+                key="jtp_hydra_seqlen",
+                type="int",
+                default=1024,
+                description="Sequence length for NaFlex patch slicing [64-2048].",
+            ),
+        ),
         transforms=(
             CleanTags,
             CharacterIPMapping,
@@ -122,7 +130,7 @@ class JTPHydraBasePlugin(ModelPlugin):
             self._category_indices.setdefault(cat_name, []).append(idx)
 
         # Snapshot the config at load time
-        self._seqlen = config.plugins.jtp_hydra.seqlen
+        self._seqlen = int(self.get_option("jtp_hydra_seqlen"))
         self._preloaded_model = model
 
     def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:

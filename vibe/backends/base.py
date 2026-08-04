@@ -85,6 +85,22 @@ class RuntimeExecutor(Protocol):
 
 
 @dataclass(frozen=True)
+class PluginOptionSpec:
+    key: str
+    type: str
+    default: Any
+    description: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "type": self.type,
+            "default": self.default,
+            "description": self.description,
+        }
+
+
+@dataclass(frozen=True)
 class ArtifactSpec:
     """A logical file required by the model. Identity is driven by 'id', not 'name'."""
 
@@ -131,6 +147,7 @@ class ModelCapabilities:
     # Per-entry extras
     entry_extras: dict[str, str] = field(default_factory=dict)
     transforms: tuple[type[ResultTransform] | ResultTransform, ...] = ()
+    options: tuple[PluginOptionSpec, ...] = ()
 
     def with_transforms(self, *overrides: type[ResultTransform] | ResultTransform) -> Self:
         """Return a copy with specified transforms added or replaced by their transform_id."""
@@ -168,6 +185,7 @@ class ModelDescriptor:
     supported_backends: tuple[Backend, ...]
     supported_transforms: tuple[str, ...]
     recommended_transforms: dict[str, dict[str, Any]]  # transform_id -> dict of recommended values
+    options: tuple[dict[str, Any], ...]
     default_repo_id: str
     variants: tuple[ModelVariant, ...]
 
@@ -239,6 +257,22 @@ class ModelPlugin(ABC):
             import warnings
 
             warnings.warn(str(exc), stacklevel=2)
+
+    def get_option(self, key: str) -> Any:
+        """Fetch an option value from global vibe.config.plugins, falling back to declared default."""
+        from vibe.config import config
+
+        declared_specs = {spec.key: spec for spec in self.capabilities.options}
+
+        if key not in declared_specs:
+            available = list(declared_specs.keys())
+            raise KeyError(
+                f"Plugin '{self.identity.model_id}' attempted to access undeclared option '{key}'. "
+                f"Available options for this model: {available if available else 'None'}"
+            )
+
+        spec = declared_specs[key]
+        return config.plugins.get(key, spec.default)
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         """Initialize plugin-local metadata from resolved artifacts.
@@ -370,6 +404,7 @@ class ModelPlugin(ABC):
             supported_backends=tuple(v.backend for v in cls.variants),
             supported_transforms=tuple(supported_ids),
             recommended_transforms=recommended_configs,
+            options=tuple(opt.to_dict() for opt in cls.capabilities.options),
             default_repo_id=cls.default_repo_id,
             variants=resolved_variants,
         )

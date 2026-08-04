@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -16,13 +17,16 @@ class PyTorchConfig:
 
 
 @dataclass
-class JTPHydraConfig:
-    seqlen: int = 1024
-
-
-@dataclass
 class PluginConfig:
-    jtp_hydra: JTPHydraConfig = field(default_factory=JTPHydraConfig)
+    """Generic key-value store for plugin-specific settings."""
+
+    extras: dict[str, Any] = field(default_factory=dict)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.extras.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        self.extras[key] = value
 
 
 class VibeConfig:

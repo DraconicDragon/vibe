@@ -51,6 +51,7 @@ from vibe.backends.base import (
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
+    PluginOptionSpec,
 )
 from vibe.config import config
 from vibe.exceptions import InferenceCancelled, RegistryError, SessionError, TransformError
@@ -398,6 +399,7 @@ __all__ = [
     "ModelPlugin",
     "ModelIdentity",
     "ModelCapabilities",
+    "PluginOptionSpec",
     "ModelVariant",
     "ArtifactSpec",
     "ArtifactMap",
