@@ -1,4 +1,8 @@
-"""JTP-3 & Hydra 3.5 ModelPlugin implementation."""
+"""
+JTP-3 & Hydra 3.5 ModelPlugin implementation.
+Models are based on SigLip2 So400M NaFlex. Recommended seq_len: 1024
+Patch size is 16, so 1024 tokens = ~0.25 MP which is for reference a 512x512 image.
+"""
 
 from __future__ import annotations
 
