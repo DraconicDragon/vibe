@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 from vibe.backends.base import ExecutionPlan, ExecutionPreference, HardwareIntent
+from vibe.config import config
 from vibe.precision import PrecisionPolicy
 
 logger = logging.getLogger(__name__)
@@ -42,9 +43,6 @@ _GPU_CLASS_PROVIDERS: frozenset[str] = frozenset(
         "OpenVINOExecutionProvider",
     }
 )
-
-_ENV_PROVIDER_SINGLE = "VIBE_ONNX_PROVIDER"
-_ENV_PROVIDER_LIST = "VIBE_ONNX_PROVIDERS"
 
 
 # region Provider Setup
@@ -77,22 +75,6 @@ def _normalize_provider_list(values: list[str]) -> list[str]:
     return out
 
 
-def _providers_from_env() -> list[str] | None:
-    raw_list = os.getenv(_ENV_PROVIDER_LIST, "")
-    if raw_list.strip():
-        parsed = _normalize_provider_list(raw_list.split(","))
-        if parsed:
-            return parsed
-
-    raw_single = os.getenv(_ENV_PROVIDER_SINGLE, "")
-    if raw_single.strip():
-        parsed = _normalize_provider_list([raw_single])
-        if parsed:
-            return parsed
-
-    return None
-
-
 def _available_onnx_providers(ort_module: Any) -> list[str]:
     get_available = getattr(ort_module, "get_available_providers", None)
     if callable(get_available):
@@ -106,10 +88,11 @@ def resolve_onnx_provider_chain(
     requested_providers: list[str] | None,
     ort_module: Any,
 ) -> tuple[list[str], list[dict[str, Any]] | None]:
-    """Resolve providers and provider options from request/env/device state."""
+    """Resolve providers and provider options from request/device state."""
     available_set = set(_available_onnx_providers(ort_module))
 
-    explicit = requested_providers if requested_providers is not None else _providers_from_env()
+    # Precedence: Explicit argument -> Programmatic VibeConfig -> None (Auto)
+    explicit = requested_providers if requested_providers is not None else config.onnx.providers
 
     wants_accelerator = preference.intent in (HardwareIntent.ACCELERATOR, HardwareIntent.AUTO)
     must_accelerator = preference.intent == HardwareIntent.ACCELERATOR

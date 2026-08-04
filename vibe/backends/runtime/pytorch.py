@@ -7,13 +7,13 @@ Wraps a loaded torch model and provides a uniform .run(inputs) -> ndarray interf
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from typing import Any
 
 import numpy as np
 
 from vibe.backends.base import ExecutionPlan, ExecutionPreference, HardwareIntent
+from vibe.config import config
 from vibe.precision import PrecisionPolicy, PrecisionRequest, ResolvedPrecisionPlan
 
 logger = logging.getLogger(__name__)
@@ -89,13 +89,13 @@ class PyTorchBackend:
                 "PyTorch is required to use the pytorch backend. Install it with: pip install torch"
             ) from exc
 
-        # Configure cuDNN based on environment variable
-        if os.getenv("VIBE_DISABLE_CUDNN", "false").lower() in ("true", "1", "yes"):
+        # Configure cuDNN based on global config
+        if not config.pytorch.cudnn_enabled:
             torch.backends.cudnn.enabled = False
-            logger.info("cuDNN disabled via VIBE_DISABLE_CUDNN environment variable")
+            logger.info("cuDNN disabled via config")
         else:
             torch.backends.cudnn.enabled = True
-            logger.debug("cuDNN enabled (VIBE_DISABLE_CUDNN not set or false)")
+            logger.debug("cuDNN enabled")
 
         self._model = model
         self._device = _resolve_pytorch_device(plan.preference, torch)

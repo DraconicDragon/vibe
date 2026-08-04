@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
@@ -21,6 +20,7 @@ from vibe.backends.base import (
     RuntimeExecutor,
 )
 from vibe.backends.runtime.pytorch import PyTorchBackend
+from vibe.config import config
 from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
     logits_to_probabilities,
@@ -35,31 +35,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # region Constants & Helpers
-
-_DEFAULT_SEQLEN: int = 1024
-_SEQLEN_MIN: int = 64
-_SEQLEN_MAX: int = 2048
-
-
-def _resolve_seqlen() -> int:
-    raw = os.environ.get("JTP_HYDRA_SEQLEN")
-    if raw is None:
-        return _DEFAULT_SEQLEN
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning("JTP_HYDRA_SEQLEN=%r is not a valid integer; using default %d.", raw, _DEFAULT_SEQLEN)
-        return _DEFAULT_SEQLEN
-    if not (_SEQLEN_MIN <= value <= _SEQLEN_MAX):
-        logger.warning(
-            "JTP_HYDRA_SEQLEN=%d is outside valid range [%d, %d]; using default %d.",
-            value,
-            _SEQLEN_MIN,
-            _SEQLEN_MAX,
-            _DEFAULT_SEQLEN,
-        )
-        return _DEFAULT_SEQLEN
-    return value
 
 
 class JTPHydraBatch(NamedTuple):
@@ -124,7 +99,7 @@ class JTPHydraBasePlugin(ModelPlugin):
 
     _raw_tag_names: list[str]
     _category_indices: dict[str, list[int]]
-    _seqlen: int = _DEFAULT_SEQLEN
+    _seqlen: int = 1024
     _preloaded_model: Any | None = None
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
@@ -146,7 +121,8 @@ class JTPHydraBasePlugin(ModelPlugin):
             cat_name = cat_to_name.get(label.category, str(label.category))
             self._category_indices.setdefault(cat_name, []).append(idx)
 
-        self._seqlen = _resolve_seqlen()
+        # Snapshot the config at load time
+        self._seqlen = config.plugins.jtp_hydra.seqlen
         self._preloaded_model = model
 
     def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:

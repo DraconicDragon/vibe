@@ -52,6 +52,7 @@ from vibe.backends.base import (
     ModelPlugin,
     ModelVariant,
 )
+from vibe.config import config
 from vibe.exceptions import InferenceCancelled, RegistryError, SessionError, TransformError
 from vibe.hardware import list_available_devices
 from vibe.hf_downloader import (
@@ -392,6 +393,7 @@ def get_transform(transform_id: str) -> type[ResultTransform]:
 
 __all__ = [
     # Core objects
+    "config",
     "ModelSession",
     "ModelPlugin",
     "ModelIdentity",
