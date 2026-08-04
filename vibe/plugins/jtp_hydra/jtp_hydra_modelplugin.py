@@ -100,7 +100,7 @@ class JTPHydraBasePlugin(ModelPlugin):
                 display_name="Sequence Length",
                 type="int",
                 default=1024,
-                description="Sequence length for NaFlex patch slicing [64-2048].",
+                description="Maximum visual tokens used to represent an image. Higher values preserve fine detail but use more VRAM. Range: 64–2048.",
             ),
         ),
         transforms=(
