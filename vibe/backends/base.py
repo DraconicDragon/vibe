@@ -87,6 +87,7 @@ class RuntimeExecutor(Protocol):
 @dataclass(frozen=True)
 class PluginOptionSpec:
     key: str
+    display_name: str
     type: str
     default: Any
     description: str = ""
@@ -94,6 +95,7 @@ class PluginOptionSpec:
     def to_dict(self) -> dict[str, Any]:
         return {
             "key": self.key,
+            "display_name": self.display_name,
             "type": self.type,
             "default": self.default,
             "description": self.description,

@@ -97,6 +97,7 @@ class JTPHydraBasePlugin(ModelPlugin):
         options=(
             PluginOptionSpec(
                 key="jtp_hydra_seqlen",
+                display_name="Sequence Length",
                 type="int",
                 default=1024,
                 description="Sequence length for NaFlex patch slicing [64-2048].",
