@@ -238,26 +238,23 @@ class ModelPlugin(ABC):
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
-        # Check if this specific subclass declared an identity, signaling intent to be concrete
-        is_concrete_intent = "identity" in cls.__dict__
-
+        # Skip abstract classes (e.g. ModelPlugin itself)
         if inspect.isabstract(cls):
-            if is_concrete_intent:
-                missing = sorted(cls.__abstractmethods__)
-                raise TypeError(
-                    f"Plugin class '{cls.__name__}' declared an identity but is missing concrete "
-                    f"implementations for abstract methods: {missing}"
-                )
-            return  # Quietly skip intermediate abstract base classes (e.g. WDTaggerBasePlugin)
+            return
 
-        if not cls.family_name:
-            raise ValueError(f"Concrete plugin {cls.__name__} must inherit or define a 'family_name' string.")
-        if not cls.identity or not cls.identity.model_id:
-            raise ValueError(f"Concrete plugin {cls.__name__} must define 'identity' with a valid model_id.")
-        if not cls.default_repo_id:
-            raise ValueError(f"Concrete plugin {cls.__name__} must define a valid 'default_repo_id' string.")
-        if not cls.variants:
-            raise ValueError(f"Concrete plugin {cls.__name__} must define at least one ModelVariant.")
+        # Intermediate base classes (e.g. WDTaggerBasePlugin) do not define an identity.
+        # Only register classes that possess a fully declared ModelIdentity.
+        identity = getattr(cls, "identity", None)
+        if identity is None or not getattr(identity, "model_id", None):
+            return
+
+        # Validate required metadata on concrete models
+        if not getattr(cls, "family_name", None):
+            raise ValueError(f"Concrete plugin '{cls.__name__}' must inherit or define a 'family_name' string.")
+        if not getattr(cls, "default_repo_id", None):
+            raise ValueError(f"Concrete plugin '{cls.__name__}' must define a valid 'default_repo_id' string.")
+        if not getattr(cls, "variants", None):
+            raise ValueError(f"Concrete plugin '{cls.__name__}' must define at least one ModelVariant.")
 
         from vibe.registry import model_registry
 
