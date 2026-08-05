@@ -209,19 +209,12 @@ class BatchRunner:
         return "true" if supports_true else "sequential"
 
     def _supports_true_batching(self) -> bool:
-        supports_fn = getattr(self.engine.backend_instance, "supports_true_batching", None)
-        if callable(supports_fn):
-            try:
-                return bool(supports_fn())
-            except Exception:
-                logger.exception("Backend supports_true_batching() failed; using conservative fallback.")
-
-        if self.backend == Backend.PYTORCH:
-            device = str(getattr(self.engine.backend_instance, "device", "cpu")).lower()
-            return device != "cpu"
-
-        providers = [str(p) for p in getattr(self.engine.backend_instance, "providers", [])]
-        return any(p.strip() and p.strip() != "CPUExecutionProvider" for p in providers)
+        """Query the backend strictly through the RuntimeExecutor protocol."""
+        try:
+            return bool(self.engine.backend_instance.supports_true_batching())
+        except Exception:
+            logger.exception("Backend supports_true_batching() failed; using conservative sequential fallback.")
+            return False
 
     def execute_chunk(
         self, chunk_images: list[Any], transforms: list[ResultTransform] | None, fallback_to_sequential: bool

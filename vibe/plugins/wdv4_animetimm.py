@@ -106,7 +106,7 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
         logger.info(
             "Loaded AnimeTimm tags for %s: total=%d general=%d artist=%d character=%d rating=%d",
-            self.identity.model_id if hasattr(self, "identity") else "base",
+            self.identity.model_id,
             self._num_classes,
             len(self._category_indices.get(str(TagCategory.GENERAL), [])),
             len(self._category_indices.get(str(TagCategory.ARTIST), [])),

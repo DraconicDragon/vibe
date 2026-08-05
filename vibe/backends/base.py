@@ -166,7 +166,7 @@ class ModelCapabilities:
         new_transforms = []
 
         for t in self.transforms:
-            tid = getattr(t, "transform_id", None)
+            tid = t.transform_id
             if tid in override_map:
                 new_transforms.append(override_map[tid])
                 seen_overrides.add(tid)
@@ -250,13 +250,13 @@ class ModelPlugin(ABC):
                 )
             return  # Quietly skip intermediate abstract base classes (e.g. WDTaggerBasePlugin)
 
-        if not getattr(cls, "family_name", None):
+        if not cls.family_name:
             raise ValueError(f"Concrete plugin {cls.__name__} must inherit or define a 'family_name' string.")
-        if not hasattr(cls, "identity") or not cls.identity.model_id:
+        if not cls.identity or not cls.identity.model_id:
             raise ValueError(f"Concrete plugin {cls.__name__} must define 'identity' with a valid model_id.")
-        if not getattr(cls, "default_repo_id", None):
+        if not cls.default_repo_id:
             raise ValueError(f"Concrete plugin {cls.__name__} must define a valid 'default_repo_id' string.")
-        if not hasattr(cls, "variants") or not cls.variants:
+        if not cls.variants:
             raise ValueError(f"Concrete plugin {cls.__name__} must define at least one ModelVariant.")
 
         from vibe.registry import model_registry

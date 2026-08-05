@@ -28,6 +28,7 @@ class TimmPipelineMixin:
     FALLBACK_MEAN: tuple[float, float, float] | None = None
     FALLBACK_STD: tuple[float, float, float] | None = None
 
+    _num_classes: int | None = None
     _runtime_preprocess_steps: list[dict[str, Any]]
     _runtime_timm_transform: Any | None = None
     _active_backend: Backend | None = None
@@ -49,12 +50,10 @@ class TimmPipelineMixin:
             config = self.read_timm_config_json(config_path) if config_path else None
 
             weights_path = artifacts.get("model_pt")
-            num_classes = getattr(self, "_num_classes", None)
-
             model = self.build_timm_pytorch_model(
                 weights_path=weights_path,
                 config=config,
-                num_classes=num_classes,
+                num_classes=self._num_classes,
             )
             backend = PyTorchBackend()
             backend.load(model, plan)
@@ -267,7 +266,7 @@ class TimmPipelineMixin:
                 if isinstance(value, str) and value.strip():
                     return value.strip()
 
-        repo = getattr(self, "default_repo_id", None) or ""
+        repo = self.default_repo_id or ""
         suffix = repo.split("/", 1)[-1]
         if ".dbv" in suffix:
             fallback_arch = suffix.split(".dbv", 1)[0]
@@ -292,9 +291,9 @@ class TimmPipelineMixin:
     # region Preprocess
 
     def preprocess(self, image: Any) -> np.ndarray:
-        if getattr(self, "_runtime_timm_transform", None) is not None:
+        if self._runtime_timm_transform is not None:
             return self.preprocess_with_native_timm(image, self._runtime_timm_transform)
-        return self.preprocess_with_timm_steps(image, getattr(self, "_runtime_preprocess_steps", []))
+        return self.preprocess_with_timm_steps(image, self._runtime_preprocess_steps)
 
     def preprocess_with_native_timm(self, image: Any, transform: Any) -> np.ndarray:
         if not isinstance(image, Image.Image):

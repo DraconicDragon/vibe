@@ -14,6 +14,7 @@ from vibe.backends.base import (
     ExecutionPreference,
     HardwareIntent,
     ModelPlugin,
+    RuntimeExecutor,
 )
 from vibe.exceptions import SessionError
 from vibe.hf_downloader import get_auto_download_default
@@ -24,7 +25,7 @@ from vibe.session import ModelSession
 logger = logging.getLogger(__name__)
 
 _RUNTIME_POOL_LOCK = threading.RLock()
-_RUNTIME_POOL: dict[tuple[Any, ...], tuple[Any, int]] = {}
+_RUNTIME_POOL: dict[tuple[Any, ...], tuple[RuntimeExecutor, int]] = {}
 _LOADING_LOCKS: dict[tuple[Any, ...], threading.Lock] = {}
 
 
@@ -242,16 +243,14 @@ def _acquire_runtime(
 
 
 def _release_runtime(key: tuple[Any, ...]) -> None:
-    instance: Any | None = None
     with _RUNTIME_POOL_LOCK:
         cached = _RUNTIME_POOL.get(key)
         if cached is None:
             return
 
-        instance, refcount = cached
-        if refcount > 1:
-            _RUNTIME_POOL[key] = (instance, refcount - 1)
-            logger.debug("Released pooled runtime key=%s refcount=%s", key, refcount - 1)
+        if cached[1] > 1:
+            _RUNTIME_POOL[key] = (cached[0], cached[1] - 1)
+            logger.debug("Released pooled runtime key=%s refcount=%s", key, cached[1] - 1)
             return
 
         popped = _RUNTIME_POOL.pop(key, None)
@@ -260,9 +259,11 @@ def _release_runtime(key: tuple[Any, ...]) -> None:
     if instance is None:
         return
 
-    close_fn = getattr(instance, "close", None)
-    if callable(close_fn):
-        close_fn()
+    try:
+        instance.close()
+    except Exception:
+        logger.exception("Failed to close pooled runtime during release.")
+
     logger.debug("Closed pooled runtime key=%s", key)
 
 

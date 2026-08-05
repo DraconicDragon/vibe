@@ -104,9 +104,7 @@ class ModelSession:
                     "compute": self._plan.precision.compute.value,
                 },
             },
-            "runtime": self._backend_instance.execution_info()
-            if hasattr(self._backend_instance, "execution_info")
-            else {},
+            "runtime": self._backend_instance.execution_info(),
         }
 
     def infer(
@@ -418,12 +416,10 @@ class ModelSession:
                 except Exception:
                     logger.exception("Failed to release pooled backend for model '%s'.", self.model_id)
             else:
-                close_fn = getattr(self._backend_instance, "close", None)
-                if callable(close_fn):
-                    try:
-                        close_fn()
-                    except Exception:
-                        logger.exception("Failed to close backend for model '%s'.", self.model_id)
+                try:
+                    self._backend_instance.close()
+                except Exception:
+                    logger.exception("Failed to close backend for model '%s'.", self.model_id)
 
             self._closed = True
             logger.debug("Session closed model_id=%s backend=%s", self.model_id, self._backend.value)

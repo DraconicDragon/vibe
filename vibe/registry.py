@@ -50,7 +50,7 @@ class ModelRegistry:
         if inspect.isabstract(plugin_cls):
             return
 
-        identity = getattr(plugin_cls, "identity", None)
+        identity = plugin_cls.identity
         if not identity or not identity.model_id:
             raise ValueError(f"Cannot register plugin {plugin_cls.__name__}: identity is missing or model_id is empty.")
 
@@ -164,7 +164,7 @@ class TransformRegistry:
         self._transforms: dict[str, type[ResultTransform]] = {}
 
     def register(self, transform_cls: type[ResultTransform]) -> None:
-        transform_id = getattr(transform_cls, "transform_id", None)
+        transform_id = transform_cls.transform_id
         if transform_id:
             self._transforms[transform_id] = transform_cls
 
