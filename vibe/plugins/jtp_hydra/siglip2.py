@@ -281,6 +281,9 @@ class NaFlexVit(Module):
         intermediates_only: bool = False,
         norm_intermediates: bool = False,
     ) -> NaFlexFeatures:
+        if not x.dtype.is_floating_point:
+            x = self.from_srgb(x, inplace=False)
+
         if sizes is None:
             x = self.embeds.forward_uniform(x)
             if valid is not None:
@@ -313,6 +316,9 @@ class NaFlexVit(Module):
         intermediates_only: bool = False,
         norm_intermediates: bool = False,
     ) -> NaFlexFeaturesVarlen:
+        if not x.dtype.is_floating_point:
+            x = self.from_srgb(x, inplace=False)
+
         x = self.embeds.forward_varlen(x, sizes)
 
         out: NaFlexFeaturesVarlen = {"cu_seq": cu_seq, "max_seq": max_seq}
