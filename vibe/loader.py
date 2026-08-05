@@ -14,15 +14,18 @@ logger = logging.getLogger(__name__)
 
 
 def _is_local_source(source: str) -> bool:
-    source = source.strip()
-
-    if source.startswith("local:"):
+    s = source.strip()
+    if s.startswith("local:"):
         return True
-
-    if source.startswith("hf:"):
+    if s.startswith("hf:"):
         return False
 
-    return Path(source).expanduser().is_dir()
+    # Check for explicit local path syntax (Unix absolute/relative, home dir, Windows drive letter)
+    if s.startswith(("/", "./", "../", "~")) or (len(s) >= 2 and s[1] == ":" and s[0].isalpha()):
+        return True
+
+    path = Path(s).expanduser()
+    return path.is_dir() or path.is_absolute()
 
 
 def _local_source_to_path(source: str) -> Path:
@@ -220,18 +223,14 @@ def resolve_variant_artifacts(
     source_map: Mapping[str, str] | None = None,
 ) -> ArtifactMap:
     """Main entrypoint for session factory to resolve files for a specific variant."""
-    source = source.strip()
+    s = source.strip()
 
-    if source.startswith("local:"):
-        resolver = LocalResolver(Path(source[6:]).expanduser(), file_name_map, source_map)
-    elif source.startswith("hf:"):
-        resolver = HFResolver(source[3:], file_name_map, source_map)
+    if _is_local_source(s):
+        folder = _local_source_to_path(s)
+        resolver = LocalResolver(folder, file_name_map, source_map)
     else:
-        path_candidate = Path(source).expanduser()
-        if path_candidate.is_dir():
-            resolver = LocalResolver(path_candidate, file_name_map, source_map)
-        else:
-            resolver = HFResolver(source, file_name_map, source_map)
+        repo = _hf_source_to_repo(s)
+        resolver = HFResolver(repo, file_name_map, source_map)
 
     return resolver.resolve(
         variant,
