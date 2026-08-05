@@ -89,16 +89,12 @@ class PluginOptionSpec:
     key: str
     type: type[int | float | str | bool]
     default: int | float | str | bool
-    display_name: str = ""
-    description: str = ""
+    display_name: str
+    description: str
     choices: tuple[Any, ...] | None = None
     min_val: float | None = None
     max_val: float | None = None
     step: float | None = None
-
-    def __post_init__(self):
-        if not getattr(self, "display_name", None):
-            object.__setattr__(self, "display_name", self.key.replace("_", " ").title())
 
     def to_dict(self) -> dict[str, Any]:
         return {
