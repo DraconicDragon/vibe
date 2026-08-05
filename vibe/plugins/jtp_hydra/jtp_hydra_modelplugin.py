@@ -98,8 +98,10 @@ class JTPHydraBasePlugin(ModelPlugin):
             PluginOptionSpec(
                 key="jtp_hydra_seqlen",
                 display_name="Sequence Length",
-                type="int",
+                type=int,
                 default=1024,
+                min_val=64,
+                max_val=2048,
                 description="Maximum visual tokens used to represent an image. Higher values preserve fine detail but use more VRAM. Range: 64–2048.",
             ),
         ),
