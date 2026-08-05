@@ -50,6 +50,8 @@ def _snap(x: int, m: int) -> int:
 
 
 class TaggerinePlugin(ModelPlugin):
+    family_name = "Lodestone's Taggerine"
+
     identity = ModelIdentity(
         model_id="taggerine",
         display_name="Taggerine",
