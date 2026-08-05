@@ -17,7 +17,7 @@ from vibe.backends.base import (
 )
 from vibe.exceptions import SessionError
 from vibe.hf_downloader import get_auto_download_default
-from vibe.loader import resolve_variant_artifacts
+from vibe.loader import LoaderError, resolve_variant_artifacts
 from vibe.precision import PrecisionPolicy, PrecisionRequest, parse_precision
 from vibe.session import ModelSession
 
@@ -126,9 +126,14 @@ def build_session(
                 file_name_map=file_name_map,
                 source_map=source_map,
             )
+        except LoaderError as exc:
+            # Artifact resolution specifically failed (e.g., file missing)
+            failures.append((candidate_backend, f"Artifact missing: {exc}"))
+            logger.info("Artifacts unavailable for %s (backend %s): %s", model_id, candidate_backend.value, exc)
+            continue
         except Exception as exc:
-            failures.append((candidate_backend, str(exc)))
-            logger.info("Backend %s unavailable for %s: %s", candidate_backend.value, model_id, exc)
+            failures.append((candidate_backend, f"Resolution error: {exc}"))
+            logger.warning("Unexpected error resolving artifacts for %s: %s", model_id, exc)
             continue
 
         plan = ExecutionPlan(
