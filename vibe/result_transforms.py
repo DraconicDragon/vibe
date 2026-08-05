@@ -203,8 +203,6 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
         default_factory=dict, repr=False, compare=False, metadata={"internal": True}
     )
 
-    # todo: this transform needs a complete rework
-
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
         character_entries = result.category(TagCategory.CHARACTER)
         if not character_entries:
@@ -220,17 +218,12 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
         return result
 
     def _get_mapping(self, context: TransformContext) -> dict[str, list[str]]:
-        tag_list_path = context.artifacts.get_optional("tag_list")
-        model_dir = tag_list_path.parent if tag_list_path else Path.cwd()
-
-        # Unique cache key based on the manual file (if any) and the model's directory
-        cache_key = f"{self.mapping_file}::{model_dir}"
+        cache_key = self.mapping_file or ""
 
         if cache_key in self._mapping_cache:
             return self._mapping_cache[cache_key]
 
         cache = resolve_character_ip_mapping(
-            model_dir=model_dir,
             manual_path=self.mapping_file,
             allow_download=context.auto_download,
         )

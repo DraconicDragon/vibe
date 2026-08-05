@@ -12,10 +12,6 @@ from vibe.hf_downloader import HFDownloadError, download_or_cached
 
 logger = logging.getLogger(__name__)
 
-_MAPPING_PATTERNS = (
-    "*char_ip_map*",
-    "*character_ip_map*",
-)
 
 DEFAULT_MAP_REPO = "deepghs/pixai-tagger-v0.9-onnx"
 DEFAULT_MAP_FILE = "selected_tags.csv"
@@ -25,24 +21,16 @@ DEFAULT_MAP_FILE = "selected_tags.csv"
 
 
 def resolve_character_ip_mapping(
-    model_dir: Path,
     manual_path: str | None = None,
     allow_download: bool | None = None,
 ) -> dict[str, list[str]]:
     """
     Resolve mapping in priority order:
       1) explicit manual path
-      2) local model directory files
-      3) optional HF fallback file
+      2) community fallback file from HF
     """
     if manual_path:
-        mapping = _load_mapping_file(Path(manual_path))
-        if mapping:
-            return mapping
-
-    mapping = load_character_ip_mapping(model_dir)
-    if mapping:
-        return mapping
+        return _load_mapping_file(Path(manual_path))
 
     try:
         fallback = download_or_cached(
@@ -58,18 +46,6 @@ def resolve_character_ip_mapping(
     if fallback is None:
         return {}
     return _load_mapping_file(fallback)
-
-
-def load_character_ip_mapping(model_dir: Path) -> dict[str, list[str]]:
-    """Best-effort load of a character mapping file from a model directory."""
-    for pattern in _MAPPING_PATTERNS:
-        matches = sorted(model_dir.glob(pattern))
-        for match in matches:
-            mapping = _load_mapping_file(match)
-            if mapping:
-                logger.info("Loaded character mapping file: %s", match)
-                return mapping
-    return {}
 
 
 def _load_mapping_file(path: Path) -> dict[str, list[str]]:
