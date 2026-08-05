@@ -1,6 +1,7 @@
 import logging
 import math
 from functools import lru_cache
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -207,24 +208,47 @@ class DINOv3Tagger(nn.Module):
         self,
         device: str,
         dtype: torch.dtype,
-        requested: str = "auto",
+        requested: Any = "auto",
         bf16_supported: bool = False,
     ) -> None:
-        if requested == "auto":
-            if device == "cpu":
-                backbone_dtype = torch.float32
-            elif bf16_supported:
+        from vibe.precision import PrecisionPolicy, PrecisionRequest
+
+        # Extract policies whether passed as PrecisionRequest dataclass or string
+        if isinstance(requested, PrecisionRequest):
+            compute_policy = requested.compute
+            weight_policy = requested.weight
+        else:
+            str_val = str(requested).lower()
+            compute_policy = PrecisionPolicy.AUTO if str_val == "auto" else PrecisionPolicy(str_val)
+            weight_policy = PrecisionPolicy.AUTO if str_val == "auto" else PrecisionPolicy(str_val)
+
+        is_cpu = device == "cpu" or device.startswith("cpu")
+
+        # Auto behavior: Backbone defaults to bfloat16 (or fp16 on older GPUs), Head in fp32
+        if compute_policy == PrecisionPolicy.AUTO and weight_policy in (
+            PrecisionPolicy.AUTO,
+            PrecisionPolicy.PRESERVE,
+        ):
+            if is_cpu or bf16_supported:
                 backbone_dtype = torch.bfloat16
             else:
                 backbone_dtype = torch.float16
             head_dtype = torch.float32
         else:
+            # Explicit precision requested (fp32, fp16, bf16) applies to both
             backbone_dtype = dtype
             head_dtype = dtype
 
         self.backbone.to(device=device, dtype=backbone_dtype)
         if self.head is not None:
             self.head.to(device=device, dtype=head_dtype)
+
+        logger.info(
+            "Taggerine precision applied device=%s: backbone=%s, head=%s",
+            device,
+            backbone_dtype,
+            head_dtype,
+        )
 
     def forward(self, pixel_values):
         hidden = self.backbone(pixel_values)
