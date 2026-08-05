@@ -121,7 +121,7 @@ class TaggerinePlugin(ModelPlugin):
                 cat_name = cat_to_name.get(int(cat_id), str(cat_id))
                 self._category_indices.setdefault(cat_name, []).append(idx)
         else:
-            self._category_indices[str(TagCategory.GENERAL)] = list(range(len(self._raw_tag_names)))
+            self._category_indices[TagCategory.GENERAL.value] = list(range(len(self._raw_tag_names)))
 
         logger.info("Taggerine vocab loaded: %d tags", len(self._raw_tag_names))
 

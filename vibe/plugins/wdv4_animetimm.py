@@ -92,10 +92,10 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
         self._num_classes = len(self._raw_tag_names)
 
         self._category_indices = {
-            str(TagCategory.RATING): metadata.indices_for(int(DanbooruTagCategory.RATING)),
-            str(TagCategory.GENERAL): metadata.indices_for(int(DanbooruTagCategory.GENERAL)),
-            str(TagCategory.CHARACTER): metadata.indices_for(int(DanbooruTagCategory.CHARACTER)),
-            str(TagCategory.ARTIST): metadata.indices_for(int(DanbooruTagCategory.ARTIST)),
+            TagCategory.RATING.value: metadata.indices_for(int(DanbooruTagCategory.RATING)),
+            TagCategory.GENERAL.value: metadata.indices_for(int(DanbooruTagCategory.GENERAL)),
+            TagCategory.CHARACTER.value: metadata.indices_for(int(DanbooruTagCategory.CHARACTER)),
+            TagCategory.ARTIST.value: metadata.indices_for(int(DanbooruTagCategory.ARTIST)),
         }
 
         config_path = artifacts.get_optional("config")
@@ -108,10 +108,10 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             "Loaded AnimeTimm tags for %s: total=%d general=%d artist=%d character=%d rating=%d",
             self.identity.model_id,
             self._num_classes,
-            len(self._category_indices.get(str(TagCategory.GENERAL), [])),
-            len(self._category_indices.get(str(TagCategory.ARTIST), [])),
-            len(self._category_indices.get(str(TagCategory.CHARACTER), [])),
-            len(self._category_indices.get(str(TagCategory.RATING), [])),
+            len(self._category_indices.get(TagCategory.GENERAL.value, [])),
+            len(self._category_indices.get(TagCategory.ARTIST.value, [])),
+            len(self._category_indices.get(TagCategory.CHARACTER.value, [])),
+            len(self._category_indices.get(TagCategory.RATING.value, [])),
         )
 
     # endregion Session Lifecycle

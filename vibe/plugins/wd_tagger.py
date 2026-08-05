@@ -84,9 +84,9 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
 
         self._raw_tag_names = metadata.raw_tag_names
         self._category_indices = {
-            str(TagCategory.RATING): metadata.indices_for(int(DanbooruTagCategory.RATING)),
-            str(TagCategory.GENERAL): metadata.indices_for(int(DanbooruTagCategory.GENERAL)),
-            str(TagCategory.CHARACTER): metadata.indices_for(int(DanbooruTagCategory.CHARACTER)),
+            TagCategory.RATING.value: metadata.indices_for(int(DanbooruTagCategory.RATING)),
+            TagCategory.GENERAL.value: metadata.indices_for(int(DanbooruTagCategory.GENERAL)),
+            TagCategory.CHARACTER.value: metadata.indices_for(int(DanbooruTagCategory.CHARACTER)),
         }
 
         config_path = artifacts.get_optional("config")

@@ -20,6 +20,9 @@ class TagCategory(str, Enum):
     RATING = "rating"
     LORE = "lore"
 
+    def __str__(self) -> str:
+        return self.value
+
 
 # endregion
 
