@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from vibe import ModelResult
-from vibe.backends.base import ArtifactMap, Backend, ExecutionPlan, ModelPlugin
+from vibe.backends.base import ArtifactMap, Backend, ExecutionPlan, ModelPlugin, RuntimeExecutor
 from vibe.exceptions import InferenceCancelled, SessionError
 from vibe.image_loading import (
     iter_load_images,
@@ -44,9 +44,9 @@ class ModelSession:
     def __init__(
         self,
         plugin: ModelPlugin,
-        backend_instance: Any,
+        backend_instance: RuntimeExecutor,
         plan: ExecutionPlan,
-        file_map: ArtifactMap,  # Changed from FileMap
+        file_map: ArtifactMap,
         source: str,
         auto_download: bool = True,
         memory_tracking: bool = False,

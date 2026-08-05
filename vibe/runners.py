@@ -2,7 +2,7 @@ import logging
 import threading
 from typing import Any, Literal
 
-from vibe.backends.base import Backend, ModelPlugin
+from vibe.backends.base import Backend, ModelPlugin, RuntimeExecutor
 from vibe.exceptions import InferenceCancelled, SessionError
 from vibe.result_transforms import ResultTransform
 from vibe.results import ModelResult, is_multi_score_result, is_tag_result
@@ -74,7 +74,11 @@ class SessionRunnerState:
 
 class InferenceEngine:
     def __init__(
-        self, plugin: ModelPlugin, backend_instance: Any, pipeline: TransformPipeline, state: SessionRunnerState
+        self,
+        plugin: ModelPlugin,
+        backend_instance: RuntimeExecutor,
+        pipeline: TransformPipeline,
+        state: SessionRunnerState,
     ):
         self.plugin = plugin
         self.backend_instance = backend_instance
