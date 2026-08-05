@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +11,8 @@ import numpy as np
 
 from vibe.results import TagEntry, TagResult
 from vibe.tag_categories import DanbooruTagCategory
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -108,12 +111,43 @@ def preprocess_tagger_image(
     return np.expand_dims(arr, axis=0).astype(np.float32, copy=False)
 
 
-def normalize_output_scores(raw_output: Any) -> np.ndarray:
+def normalize_output_scores(raw_output: Any, expected_count: int | None = None) -> np.ndarray:
     """Flatten model output into probabilities in [0, 1]."""
-
-    # Plugin explicitly selects the primary output if the model returned a tuple/list
     if isinstance(raw_output, (tuple, list)):
-        raw_output = raw_output[0]
+        if len(raw_output) == 1:
+            raw_output = raw_output[0]
+        elif expected_count is not None:
+            # 1. Try exact match on size or last dimension
+            matching = None
+            for item in raw_output:
+                arr = np.asarray(item)
+                if arr.size == expected_count or (arr.ndim > 0 and arr.shape[-1] == expected_count):
+                    matching = item
+                    break
+
+            if matching is not None:
+                raw_output = matching
+            else:
+                # 2. Fallback to closest size match + log warning
+                candidates = [(abs(np.asarray(item).size - expected_count), item) for item in raw_output]
+                candidates.sort(key=lambda x: x[0])
+                closest_item = candidates[0][1]
+                closest_shape = np.asarray(closest_item).shape
+
+                logger.warning(
+                    "No output tensor exactly matched expected_count=%d. "
+                    "Selecting closest tensor with shape %s. Available shapes: %s",
+                    expected_count,
+                    closest_shape,
+                    [np.asarray(x).shape for x in raw_output],
+                )
+                raw_output = closest_item
+        else:
+            logger.debug(
+                "Model returned multiple outputs %s but no expected_count was provided. Defaulting to first output.",
+                [np.asarray(x).shape for x in raw_output],
+            )
+            raw_output = raw_output[0]
 
     scores = np.asarray(raw_output, dtype=np.float32)
 
@@ -124,6 +158,7 @@ def normalize_output_scores(raw_output: Any) -> np.ndarray:
             scores = np.squeeze(scores, axis=0)
         scores = np.ravel(scores)
 
+    # Smart Sigmoid: Only apply sigmoid if values are raw logits outside [0, 1]
     if np.min(scores) < 0.0 or np.max(scores) > 1.0:
         clipped = np.clip(scores, -80.0, 80.0)
         scores = 1.0 / (1.0 + np.exp(-clipped))
@@ -155,27 +190,6 @@ def build_entries_for_indices(
 
     entries.sort(key=lambda item: item.score, reverse=True)
     return entries
-
-
-def logits_to_probabilities(raw_output: Any) -> np.ndarray:
-    """Convert raw logits (from numpy or torch) to float32 sigmoid probabilities."""
-    if isinstance(raw_output, (tuple, list)):
-        raw_output = raw_output[0]
-
-    if isinstance(raw_output, np.ndarray):
-        scores = raw_output.ravel().astype(np.float32)
-    else:
-        try:
-            import torch
-
-            if isinstance(raw_output, torch.Tensor):
-                scores = raw_output.float().cpu().numpy().ravel()
-            else:
-                raise TypeError(f"Unexpected output type {type(raw_output).__name__}")
-        except ImportError:
-            raise TypeError(f"Unexpected output type {type(raw_output).__name__} and torch is not installed.")
-
-    return 1.0 / (1.0 + np.exp(-scores))
 
 
 def build_categorized_tag_result(

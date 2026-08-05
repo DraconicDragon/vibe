@@ -26,7 +26,7 @@ from vibe.backends.base import (
 from vibe.backends.runtime.pytorch import PyTorchBackend
 from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
-    logits_to_probabilities,
+    normalize_output_scores,
 )
 from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds
 from vibe.results import OutputType, TagResult
@@ -193,5 +193,5 @@ class TaggerinePlugin(ModelPlugin):
         return torch.from_numpy(arr).unsqueeze(0)
 
     def postprocess(self, raw_output: Any) -> TagResult:
-        probs = logits_to_probabilities(raw_output)
+        probs = normalize_output_scores(raw_output, expected_count=len(self._raw_tag_names))
         return build_categorized_tag_result(self._raw_tag_names, probs, self._category_indices)
