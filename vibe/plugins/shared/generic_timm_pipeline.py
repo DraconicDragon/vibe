@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 from PIL import Image
@@ -14,13 +14,16 @@ from vibe.backends.base import ArtifactMap, Backend, ExecutionPlan, RuntimeExecu
 from vibe.backends.runtime.onnx import ONNXBackend
 from vibe.backends.runtime.pytorch import PyTorchBackend
 
+if TYPE_CHECKING:
+    from vibe.backends.base import ModelIdentity
+
 logger = logging.getLogger(__name__)
 
 
 class TimmPipelineMixin:
     """Reusable timm config, preprocess, and runtime builder helpers."""
 
-    model_id: str
+    identity: ModelIdentity
     default_repo_id: str
     FALLBACK_TIMM_MODEL_ARGS: ClassVar[dict[str, Any]] = {}
 
@@ -72,7 +75,7 @@ class TimmPipelineMixin:
         architecture = self.resolve_timm_architecture(config)
         if not architecture:
             raise RuntimeError(
-                f"Could not resolve timm architecture for model '{self.model_id}'. "
+                f"Could not resolve timm architecture for model '{self.identity.model_id}'. "
                 "Provide config.json with an architecture/model_type field."
             )
 
@@ -98,9 +101,9 @@ class TimmPipelineMixin:
         model = self.create_timm_model(timm, architecture, model_args)
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         if missing:
-            logger.warning("timm load_state_dict missing keys for model_id=%s: %s", self.model_id, missing[:8])
+            logger.warning("timm load_state_dict missing keys for model_id=%s: %s", self.identity.model_id, missing[:8])
         if unexpected:
-            logger.warning("timm load_state_dict unexpected keys for model_id=%s: %s", self.model_id, unexpected[:8])
+            logger.warning("timm load_state_dict unexpected keys for model_id=%s: %s", self.identity.model_id, unexpected[:8])
 
         return model
 
@@ -123,17 +126,17 @@ class TimmPipelineMixin:
             with preprocess_path.open("r", encoding="utf-8") as handle:
                 parsed = json.load(handle)
             if not isinstance(parsed, dict):
-                raise RuntimeError(f"preprocess.json at '{preprocess_path}' is not a JSON object")  # noqa: TRY004
+                raise TypeError(f"preprocess.json at '{preprocess_path}' is not a JSON object")
 
             raw_steps = parsed.get("test")
             if not isinstance(raw_steps, list):
-                raise RuntimeError(f"preprocess.json at '{preprocess_path}' missing required 'test' list")  # noqa: TRY004
+                raise TypeError(f"preprocess.json at '{preprocess_path}' missing required 'test' list")
 
             steps = [dict(item) for item in raw_steps if isinstance(item, dict)]
             if not steps:
                 raise RuntimeError(f"preprocess.json at '{preprocess_path}' has no usable test steps")
 
-            logger.info("Using preprocess.json inference pipeline (test) for model_id=%s", self.model_id)
+            logger.info("Using preprocess.json inference pipeline (test) for model_id=%s", self.identity.model_id)
             return steps
         except Exception as exc:
             raise RuntimeError(f"Failed to parse preprocess.json at '{preprocess_path}': {exc}") from exc
@@ -165,7 +168,7 @@ class TimmPipelineMixin:
             logger.warning(
                 "Model '%s' config.json lacks mean/std and no class FALLBACK_MEAN/STD defined. "
                 "Defaulting to standard ImageNet normalization.",
-                self.model_id,
+                self.identity.model_id,
             )
             mean = mean or (0.485, 0.456, 0.406)
             std = std or (0.229, 0.224, 0.225)
@@ -174,7 +177,7 @@ class TimmPipelineMixin:
 
         image_size = _image_size_from_input_size(input_size)
         if image_size is None:
-            raise RuntimeError(f"Could not resolve timm preprocess size from config.json for model '{self.model_id}'.")
+            raise RuntimeError(f"Could not resolve timm preprocess size from config.json for model '{self.identity.model_id}'.")
 
         resize_size = image_size
         if crop_pct and 0 < crop_pct < 1:
@@ -191,7 +194,7 @@ class TimmPipelineMixin:
                 {"type": "normalize", "mean": list(mean), "std": list(std)},
             ]
         )
-        logger.info("Using config.json timm preprocess pipeline for model_id=%s", self.model_id)
+        logger.info("Using config.json timm preprocess pipeline for model_id=%s", self.identity.model_id)
         return steps
 
     # endregion Config Parsing
@@ -216,7 +219,7 @@ class TimmPipelineMixin:
         except ImportError:
             logger.info(
                 "timm is not available for model_id=%s; using manual timm config parser for preprocessing.",
-                self.model_id,
+                self.identity.model_id,
             )
             return False
 
@@ -228,12 +231,12 @@ class TimmPipelineMixin:
                 cfg = config
             data_config = resolve_data_config(cfg)
             self._runtime_timm_transform = create_transform(**data_config)
-            logger.info("Using native timm preprocessing for model_id=%s", self.model_id)
+            logger.info("Using native timm preprocessing for model_id=%s", self.identity.model_id)
             return True
         except Exception as exc:
             logger.warning(
                 "Native timm preprocessing setup failed for model_id=%s; using manual config parser instead: %s",
-                self.model_id,
+                self.identity.model_id,
                 exc,
             )
             return False
@@ -250,7 +253,7 @@ class TimmPipelineMixin:
             logger.warning(
                 "timm.create_model rejected model_args for model_id=%s architecture=%s (%s). "
                 "Retrying with conservative fallback args.",
-                self.model_id,
+                self.identity.model_id,
                 architecture,
                 exc,
             )
@@ -270,7 +273,7 @@ class TimmPipelineMixin:
         suffix = repo.split("/", 1)[-1]
         if ".dbv" in suffix:
             fallback_arch = suffix.split(".dbv", 1)[0]
-            logger.info("Using fallback timm architecture '%s' for model_id=%s", fallback_arch, self.model_id)
+            logger.info("Using fallback timm architecture '%s' for model_id=%s", fallback_arch, self.identity.model_id)
             return fallback_arch
         return None
 
