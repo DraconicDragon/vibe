@@ -1,3 +1,17 @@
+# EE
+
+- log device and precision that actually ended up being used
+  - variant id etc too i guess
+
+- give result transforms properties similar to PluginOptionSpec, so UI can auto generate components based on that?
+
+- think about making ModelIdentity.description required
+
+- look into jtp/hydra validation data and see if its usable with tag level thresholds
+  - Hydra has the validation data embedded into weights as "validation" tensor, jtp 3 uses separate file
+
+- move auto_download to config instead of load()?
+
 # new new todo huehuehuehue
 
 - add some kind of pre-inference check to transforms to ensure everything is fine (eg files are available and/or download-able) so they dont error only when they are run which is after inference of a batch has already finished, wasted time
