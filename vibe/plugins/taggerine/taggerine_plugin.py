@@ -79,8 +79,30 @@ class TaggerinePlugin(ModelPlugin):
     )
 
     variants = (
+        # Index 0: Default PyTorch variant
         ModelVariant(
+            variant_id="bf16-mixed",
             backend=Backend.PYTORCH,
+            description="Mixed precision checkpoint (BF16 backbone + FP32 head). More efficient compared to original since the backbone was never trained in FP32.",
+            repo_id="DraconicDragon/taggerine-mixed-bf16",
+            artifacts=(
+                ArtifactSpec(
+                    id="model_pt",
+                    name="model.safetensors",
+                    role=FileRole.WEIGHTS,
+                ),
+                ArtifactSpec(
+                    id="tag_list",
+                    name="selected_tags.csv",
+                    role=FileRole.TAG_LIST,
+                ),
+            ),
+        ),
+        # Index 1: Opt-in official
+        ModelVariant(
+            variant_id="original",
+            backend=Backend.PYTORCH,
+            description="Original checkpoint in full FP32.",
             artifacts=(
                 ArtifactSpec(
                     id="model_pt",
