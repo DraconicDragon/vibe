@@ -261,6 +261,27 @@ class ModelPlugin(ABC):
         if not variants:
             raise ValueError(f"Concrete plugin '{cls.__name__}' must define at least one ModelVariant.")
 
+        # region Variant Validation
+        seen_variant_ids: set[str] = set()
+        backend_counts: dict[Backend, int] = {}
+
+        for v in variants:
+            backend_counts[v.backend] = backend_counts.get(v.backend, 0) + 1
+
+        for v in variants:
+            if v.variant_id:
+                if v.variant_id in seen_variant_ids:
+                    raise ValueError(f"Concrete plugin '{cls.__name__}' defines duplicate variant_id '{v.variant_id}'.")
+                seen_variant_ids.add(v.variant_id)
+
+            # If a backend has >1 variant, ALL variants for that backend MUST declare a unique variant_id
+            if backend_counts[v.backend] > 1 and not v.variant_id:
+                raise ValueError(
+                    f"Concrete plugin '{cls.__name__}' defines multiple variants for backend '{v.backend.value}'. "
+                    f"Every variant for backend '{v.backend.value}' MUST declare a unique 'variant_id'."
+                )
+        # endregion Variant Validation
+
         from vibe.registry import model_registry
 
         try:
