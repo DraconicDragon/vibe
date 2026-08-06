@@ -124,6 +124,15 @@ def build_session(
         if not target_variant:
             available = [v.variant_id for v in plugin_cls.variants if v.variant_id]
             raise SessionError(f"Model '{model_id}' has no variant '{variant}'. Available variants: {available}")
+
+        # Check for explicit backend conflict
+        if backend is not None:
+            req_b = Backend(backend.lower()) if isinstance(backend, str) else backend
+            if req_b != target_variant.backend:
+                raise SessionError(
+                    f"Variant '{variant}' requires backend '{target_variant.backend.value}', "
+                    f"but backend '{req_b.value}' was requested."
+                )
         candidates = [target_variant.backend]
     else:
         candidates = _resolve_backend_candidates(plugin_cls, backend, preference)
