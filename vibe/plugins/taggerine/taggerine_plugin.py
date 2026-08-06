@@ -88,12 +88,12 @@ class TaggerinePlugin(ModelPlugin):
             artifacts=(
                 ArtifactSpec(
                     id="model_pt",
-                    name="model.safetensors",
+                    name="tagger_proto.safetensors",
                     role=FileRole.WEIGHTS,
                 ),
                 ArtifactSpec(
                     id="tag_list",
-                    name="selected_tags.csv",
+                    name="tagger_vocab_with_categories_and_alias_updated.json",
                     role=FileRole.TAG_LIST,
                 ),
             ),
