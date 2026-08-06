@@ -210,7 +210,7 @@ class DINOv3Tagger(nn.Module):
         dtype: torch.dtype,
         requested: Any = "auto",
         bf16_supported: bool = False,
-    ) -> None:
+    ) -> bool | None:
         from vibe.precision import PrecisionPolicy, PrecisionRequest
 
         # Extract policies whether passed as PrecisionRequest dataclass or string
@@ -223,21 +223,33 @@ class DINOv3Tagger(nn.Module):
             weight_policy = PrecisionPolicy.AUTO if str_val == "auto" else PrecisionPolicy(str_val)
 
         is_cpu = device == "cpu" or device.startswith("cpu")
-
-        # Auto behavior: Backbone defaults to bfloat16 (or fp16 on older GPUs), Head in fp32
-        if compute_policy == PrecisionPolicy.AUTO and weight_policy in (
+        is_auto = compute_policy == PrecisionPolicy.AUTO and weight_policy in (
             PrecisionPolicy.AUTO,
             PrecisionPolicy.PRESERVE,
-        ):
-            if is_cpu or bf16_supported:
+        )
+
+        if is_auto:
+            if is_cpu:
+                backbone_dtype = torch.bfloat16
+                logger.info(
+                    "Running Taggerine on CPU with precision='auto': backbone set to bfloat16 to save some memory. "
+                    "For slightly faster, maximum CPU execution speed, pass precision='fp32'."
+                )
+            elif bf16_supported:
                 backbone_dtype = torch.bfloat16
             else:
                 backbone_dtype = torch.float16
             head_dtype = torch.float32
+
+            # Explicitly force disable autocast, we are managing precision manually
+            autocast_override = False
         else:
             # Explicit precision requested (fp32, fp16, bf16) applies to both
             backbone_dtype = dtype
             head_dtype = dtype
+
+            # Defer to PyTorchBackend's default safe logic
+            autocast_override = None
 
         self.backbone.to(device=device, dtype=backbone_dtype)
         if self.head is not None:
@@ -249,6 +261,8 @@ class DINOv3Tagger(nn.Module):
             backbone_dtype,
             head_dtype,
         )
+
+        return autocast_override
 
     def forward(self, pixel_values):
         hidden = self.backbone(pixel_values)
