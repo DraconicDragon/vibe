@@ -277,17 +277,21 @@ class PyTorchBackend:
         self._weight_dtype = dtype_map.get(weight_policy)  # None if PRESERVE
 
         # 4. Apply Weights
-        if self._weight_dtype is not None:
-            if hasattr(self._model, "apply_precision"):
-                logger.debug("Delegating precision casting to model custom apply_precision hook")
-                self._model.apply_precision(
-                    device=self._device,
-                    dtype=self._weight_dtype,
-                    requested=request,
-                    bf16_supported=bf16_supported,
-                )
-            else:
-                self._model.to(device=self._device, dtype=self._weight_dtype)
+        autocast_needed = self._compute_dtype != torch_module.float32
+
+        if hasattr(self._model, "apply_precision"):
+            logger.debug("Delegating precision casting to model custom apply_precision hook")
+            custom_autocast = self._model.apply_precision(
+                device=self._device,
+                dtype=self._weight_dtype or torch_module.float32,
+                requested=request,
+                bf16_supported=bf16_supported,
+            )
+            # If the model explicitly returns a boolean, respect its absolute authority over execution
+            if isinstance(custom_autocast, bool):
+                autocast_needed = custom_autocast
+        elif self._weight_dtype is not None:
+            self._model.to(device=self._device, dtype=self._weight_dtype)
         else:
             self._model.to(device=self._device)
 
@@ -295,7 +299,7 @@ class PyTorchBackend:
         self._plan = ResolvedPrecisionPlan(
             weight_dtype=str(self._weight_dtype) if self._weight_dtype else "preserve",
             compute_dtype=str(self._compute_dtype),
-            autocast_enabled=(self._compute_dtype != torch_module.float32),
+            autocast_enabled=autocast_needed,
         )
         logger.info(
             "PyTorch precision initialized: request=(%s, %s) -> resolved=(weight=%s, compute=%s, autocast=%s)",
