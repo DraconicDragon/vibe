@@ -112,6 +112,7 @@ def _load_internal(
     source: str | None,
     source_map: Mapping[str, str] | None,
     backend: str | Backend | None,
+    variant: str | None,
     device: str,
     precision: str | PrecisionRequest,
     hf_revision: str | None,
@@ -129,9 +130,10 @@ def _load_internal(
     if is_custom:
         logger.info("Loading custom plugin '%s' from '%s'", plugin_cls.__name__, resolved_source)
         logger.debug(
-            "Load custom options source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
+            "Load custom options source=%s backend=%s variant=%s device=%s auto_download=%s memory_tracking=%s",
             resolved_source,
             backend.value if isinstance(backend, Backend) else backend or "auto",
+            variant or "(default)",
             device,
             effective_auto_download,
             memory_tracking,
@@ -139,10 +141,11 @@ def _load_internal(
     else:
         logger.info("Loading model '%s' from '%s'", plugin_cls.identity.model_id, resolved_source)
         logger.debug(
-            "Load options plugin=%s source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
+            "Load options plugin=%s source=%s backend=%s variant=%s device=%s auto_download=%s memory_tracking=%s",
             plugin_cls.__name__,
             resolved_source,
             backend.value if isinstance(backend, Backend) else backend or "auto",
+            variant or "(default)",
             device,
             effective_auto_download,
             memory_tracking,
@@ -155,6 +158,7 @@ def _load_internal(
         source=resolved_source,
         source_map=source_map,
         backend=backend,
+        variant=variant,
         device=device,
         precision=precision_request,
         onnx_providers=onnx_providers,
@@ -172,6 +176,7 @@ def load(
     source: str | None = None,
     source_map: Mapping[str, str] | None = None,
     backend: str | Backend | None = None,
+    variant: str | None = None,
     device: str = "auto",
     precision: str | PrecisionRequest = "auto",
     hf_revision: str | None = None,
@@ -238,6 +243,7 @@ def load(
         source=source,
         source_map=source_map,
         backend=backend,
+        variant=variant,
         device=device,
         precision=precision,
         hf_revision=hf_revision,
@@ -256,6 +262,7 @@ def load_custom(
     source_map: Mapping[str, str] | None = None,
     plugin: str,
     backend: str | Backend | None = None,
+    variant: str | None = None,
     device: str = "auto",
     precision: str | PrecisionRequest = "auto",
     hf_revision: str | None = None,
@@ -308,6 +315,7 @@ def load_custom(
         source=source,
         source_map=source_map,
         backend=backend,
+        variant=variant,
         device=device,
         precision=precision,
         hf_revision=hf_revision,

@@ -96,6 +96,7 @@ def build_session(
     plugin_cls: type[ModelPlugin],
     source: str,
     backend: Backend | str | None = None,
+    variant: str | None = None,
     device: str = "auto",
     precision: str | PrecisionRequest = "auto",
     onnx_providers: list[str] | None = None,
@@ -116,18 +117,32 @@ def build_session(
         raise SessionError(str(exc)) from exc
 
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
-    candidates = _resolve_backend_candidates(plugin_cls, backend, preference)
+
+    # 1. If explicit variant requested, lock candidate backend to that variant's backend
+    if variant is not None:
+        target_variant = next((v for v in plugin_cls.variants if v.variant_id == variant), None)
+        if not target_variant:
+            available = [v.variant_id for v in plugin_cls.variants if v.variant_id]
+            raise SessionError(f"Model '{model_id}' has no variant '{variant}'. Available variants: {available}")
+        candidates = [target_variant.backend]
+    else:
+        candidates = _resolve_backend_candidates(plugin_cls, backend, preference)
 
     failures = []
     for candidate_backend in candidates:
-        variant = next((v for v in plugin_cls.variants if v.backend == candidate_backend), None)
-        if not variant:
+        # 2. Pick explicit variant if requested, otherwise first matching backend variant (the default)
+        if variant is not None:
+            selected_variant = next((v for v in plugin_cls.variants if v.variant_id == variant), None)
+        else:
+            selected_variant = next((v for v in plugin_cls.variants if v.backend == candidate_backend), None)
+
+        if not selected_variant:
             continue
 
         try:
             file_map = resolve_variant_artifacts(
                 source=source,
-                variant=variant,
+                variant=selected_variant,
                 revision=hf_revision,
                 cache_dir=hf_cache_dir,
                 allow_download=effective_auto_download,
@@ -148,6 +163,7 @@ def build_session(
             backend=candidate_backend,
             preference=preference,
             precision=precision_req,
+            variant_id=selected_variant.variant_id,
             onnx_providers=tuple(onnx_providers) if onnx_providers is not None else None,
         )
 
@@ -203,6 +219,7 @@ def _make_runtime_pool_key(
         plugin_cls.__qualname__,
         artifact_key,
         plan.backend.value,
+        plan.variant_id,
         plan.preference.intent.value,
         plan.preference.ordinal,
         plan.precision.weight.value,

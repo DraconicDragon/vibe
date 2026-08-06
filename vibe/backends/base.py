@@ -72,6 +72,7 @@ class ExecutionPlan:
     backend: Backend
     preference: ExecutionPreference
     precision: PrecisionRequest
+    variant_id: str | None = None
     onnx_providers: tuple[str, ...] | None = None
 
 
@@ -132,6 +133,8 @@ class ModelVariant:
 
     backend: Backend
     artifacts: tuple[ArtifactSpec, ...]
+    variant_id: str | None = None
+    description: str = ""
     repo_id: str | None = None
     hf_subdir: str | None = None
 
@@ -253,7 +256,9 @@ class ModelPlugin(ABC):
             raise ValueError(f"Concrete plugin '{cls.__name__}' must inherit or define a 'family_name' string.")
         if not getattr(cls, "default_repo_id", None):
             raise ValueError(f"Concrete plugin '{cls.__name__}' must define a valid 'default_repo_id' string.")
-        if not getattr(cls, "variants", None):
+
+        variants = getattr(cls, "variants", None)
+        if not variants:
             raise ValueError(f"Concrete plugin '{cls.__name__}' must define at least one ModelVariant.")
 
         from vibe.registry import model_registry
