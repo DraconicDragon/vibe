@@ -14,6 +14,7 @@ from vibe.backends.base import (
     ExecutionPreference,
     HardwareIntent,
     ModelPlugin,
+    ModelVariant,
     RuntimeExecutor,
 )
 from vibe.exceptions import SessionError
@@ -118,7 +119,8 @@ def build_session(
 
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
 
-    # 1. If explicit variant requested, lock candidate backend to that variant's backend
+    # 1. Resolve which variants to try
+    variants_to_try: list[ModelVariant] = []
     if variant is not None:
         target_variant = next((v for v in plugin_cls.variants if v.variant_id == variant), None)
         if not target_variant:
@@ -133,21 +135,18 @@ def build_session(
                     f"Variant '{variant}' requires backend '{target_variant.backend.value}', "
                     f"but backend '{req_b.value}' was requested."
                 )
-        candidates = [target_variant.backend]
+        variants_to_try = [target_variant]
     else:
         candidates = _resolve_backend_candidates(plugin_cls, backend, preference)
+        # Add all variants matching the candidate backends, preserving order of declaration
+        for cand in candidates:
+            variants_to_try.extend(v for v in plugin_cls.variants if v.backend == cand)
 
     failures = []
-    for candidate_backend in candidates:
-        # 2. Pick explicit variant if requested, otherwise first matching backend variant (the default)
-        if variant is not None:
-            selected_variant = next((v for v in plugin_cls.variants if v.variant_id == variant), None)
-        else:
-            selected_variant = next((v for v in plugin_cls.variants if v.backend == candidate_backend), None)
 
-        if not selected_variant:
-            continue
-
+    # 2. Try loading variants until one succeeds
+    for selected_variant in variants_to_try:
+        candidate_backend = selected_variant.backend
         try:
             file_map = resolve_variant_artifacts(
                 source=source,
@@ -159,9 +158,12 @@ def build_session(
                 source_map=source_map,
             )
         except LoaderError as exc:
-            # Artifact resolution specifically failed (e.g., file missing)
-            failures.append((candidate_backend, f"Artifact missing: {exc}"))
-            logger.info("Artifacts unavailable for %s (backend %s): %s", model_id, candidate_backend.value, exc)
+            # Artifact resolution failed. If we have more variants to try, continue seamlessly.
+            vid_str = f" (variant: {selected_variant.variant_id})" if selected_variant.variant_id else ""
+            failures.append((candidate_backend, f"Artifact missing{vid_str}: {exc}"))
+            logger.info(
+                "Artifacts unavailable for %s backend %s%s: %s", model_id, candidate_backend.value, vid_str, exc
+            )
             continue
         except Exception as exc:
             failures.append((candidate_backend, f"Resolution error: {exc}"))
@@ -187,7 +189,7 @@ def build_session(
                 build=lambda p=plugin, fm=file_map, ep=plan: p.build_runtime(fm, ep),
             )
         except Exception as exc:
-            if len(candidates) == 1 or backend is not None:
+            if len(variants_to_try) == 1 or backend is not None:
                 raise SessionError(f"Failed to build runtime for '{model_id}': {exc}") from exc
             failures.append((candidate_backend, str(exc)))
             continue
@@ -198,7 +200,12 @@ def build_session(
                 precision_req.compute.value,
             )
 
-        logger.debug("Session ready model_id=%s backend=%s", model_id, candidate_backend.value)
+        logger.debug(
+            "Session ready model_id=%s backend=%s variant=%s",
+            model_id,
+            candidate_backend.value,
+            selected_variant.variant_id,
+        )
         return ModelSession(
             plugin=plugin,
             backend_instance=runtime,
