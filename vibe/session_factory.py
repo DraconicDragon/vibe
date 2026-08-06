@@ -57,32 +57,39 @@ def _resolve_backend_candidates(
     onnx_ok, onnx_accel = _onnx_runtime_capabilities()
     torch_ok, torch_accel = _pytorch_runtime_capabilities()
 
-    candidates = []
-    if Backend.ONNX in supported and onnx_ok:
-        candidates.append((Backend.ONNX, onnx_accel))
+    # Map available backends to whether they have GPU/accelerator support
+    available: dict[Backend, bool] = {}
     if Backend.PYTORCH in supported and torch_ok:
-        candidates.append((Backend.PYTORCH, torch_accel))
+        available[Backend.PYTORCH] = torch_accel
+    if Backend.ONNX in supported and onnx_ok:
+        available[Backend.ONNX] = onnx_accel
 
-    if not candidates:
+    if not available:
         raise SessionError(
-            f"No supported backend available for model '{plugin_cls.identity.model_id}'. Install onnxruntime or torch."
+            f"No supported backend available for model '{plugin_cls.identity.model_id}'. Install torch or onnxruntime."
         )
 
-    if len(candidates) == 1:
-        return [candidates[0][0]]
+    if len(available) == 1:
+        return list(available.keys())
 
+    # Framework-specific hints force a preferred ordering
     if preference.hint in {"mps", "xpu"}:
         return [Backend.PYTORCH, Backend.ONNX]
     if preference.hint in {"rocm", "dml", "openvino"}:
         return [Backend.ONNX, Backend.PYTORCH]
 
+    # If accelerator requested, prefer the backend that actually has GPU acceleration available
     if preference.intent == HardwareIntent.ACCELERATOR:
-        if candidates[0][1] and not candidates[1][1]:
-            return [Backend.ONNX, Backend.PYTORCH]
-        if candidates[1][1] and not candidates[0][1]:
-            return [Backend.PYTORCH, Backend.ONNX]
+        pytorch_accel = available[Backend.PYTORCH]
+        onnx_accel = available[Backend.ONNX]
 
-    return [Backend.ONNX, Backend.PYTORCH]
+        if pytorch_accel and not onnx_accel:
+            return [Backend.PYTORCH, Backend.ONNX]
+        if onnx_accel and not pytorch_accel:
+            return [Backend.ONNX, Backend.PYTORCH]
+
+    # Default preference when capabilities are equivalent (PyTorch preferred)
+    return [Backend.PYTORCH, Backend.ONNX]
 
 
 def build_session(
