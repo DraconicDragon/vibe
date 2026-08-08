@@ -309,7 +309,7 @@ def _release_runtime(key: tuple[Any, ...]) -> None:
 
 def _onnx_runtime_capabilities() -> tuple[bool, bool]:
     try:
-        import onnxruntime as ort  # ty:ignore[unresolved-import]
+        import onnxruntime as ort  # ty:ignore[unresolved-import, unused-ignore-comment]
     except ImportError:
         return False, False
     try:
