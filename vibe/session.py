@@ -98,6 +98,7 @@ class ModelSession:
             "source": self.source,
             "plan": {
                 "backend": self._plan.backend.value,
+                "variant_id": self._plan.variant_id,
                 "preference": self._plan.preference.intent.value,
                 "precision": {
                     "weight": self._plan.precision.weight.value,

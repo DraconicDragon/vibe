@@ -259,6 +259,7 @@ class ONNXBackend:
         self._provider_options: list[dict[str, Any]] = []
         self._requested_precision: str = "auto"
         self._run_lock = threading.RLock()
+        self._model_precision: str = "unknown"
 
     def load(
         self,
@@ -341,6 +342,8 @@ class ONNXBackend:
         if input_precision and output_precision and input_precision != output_precision:
             model_precision = f"mixed(input={input_precision}, output={output_precision})"
 
+        self._model_precision = model_precision
+
         logger.info(
             "ONNX model precision=%s (graph io: input_type=%s output_type=%s)",
             model_precision,
@@ -366,6 +369,7 @@ class ONNXBackend:
         return {
             "providers": self._providers,
             "provider_options": self._provider_options,
+            "graph_precision": self._model_precision,
         }
 
     def run(self, inputs: Any) -> Any:

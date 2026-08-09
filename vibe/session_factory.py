@@ -200,12 +200,31 @@ def build_session(
                 precision_req.compute.value,
             )
 
-        logger.debug(
-            "Session ready model_id=%s backend=%s variant=%s",
-            model_id,
-            candidate_backend.value,
-            selected_variant.variant_id,
-        )
+        runtime_info = runtime.execution_info()
+        variant_str = selected_variant.variant_id or "default"
+
+        if candidate_backend == Backend.PYTORCH:
+            prec = runtime_info.get("precision") or {}
+            logger.info(
+                "Session ready model_id=%s | variant=%s | backend=pytorch | device=%s | weights=%s | compute=%s | autocast=%s",
+                model_id,
+                variant_str,
+                runtime_info.get("device"),
+                prec.get("weight_dtype"),
+                prec.get("compute_dtype"),
+                prec.get("autocast_enabled"),
+            )
+        else: # ONNX
+            providers = runtime_info.get("providers") or []
+            primary_ep = providers[0] if providers else "unknown"
+            logger.info(
+                "Session ready model_id=%s | variant=%s | backend=onnx | provider=%s | graph_precision=%s",
+                model_id,
+                variant_str,
+                primary_ep,
+                runtime_info.get("graph_precision", "unknown"),
+            )
+
         return ModelSession(
             plugin=plugin,
             backend_instance=runtime,
