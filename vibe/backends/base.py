@@ -148,7 +148,7 @@ class ModelVariant:
 class ModelIdentity:
     model_id: str
     display_name: str
-    description: str = ""
+    description: str
 
 
 @dataclass(frozen=True)
