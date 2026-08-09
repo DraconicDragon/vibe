@@ -16,19 +16,14 @@ logger = logging.getLogger(__name__)
 
 CancelCheck = Callable[[], None]
 
-# warn if not installed/failed to load since it is a normal dependency
 try:
     import pillow_jxl  # noqa: F401
 
     _HAS_PILLOW_JXL = True
     logger.debug("pillow_jxl plugin loaded successfully.")
 except ImportError as e:
-    if getattr(e, "name", None) == "pillow_jxl":
-        logger.warning("pillow_jxl not installed; JXL support disabled.")
-    else:
-        logger.warning("pillow_jxl is installed but failed to load: %s", e, exc_info=True)
+    logger.debug("pillow_jxl not available: %s", e)
     _HAS_PILLOW_JXL = False
-
 
 try:
     from pillow_heif import register_heif_opener
@@ -37,10 +32,7 @@ try:
     _HAS_PILLOW_HEIF = True
     logger.debug("pillow_heif plugin loaded successfully.")
 except ImportError as e:
-    if getattr(e, "name", None) == "pillow_heif":
-        logger.warning("pillow_heif not installed; HEIF support disabled.")
-    else:
-        logger.warning("pillow_heif is installed but failed to load: %s", e, exc_info=True)
+    logger.debug("pillow_heif not available: %s", e)
     _HAS_PILLOW_HEIF = False
 
 logger.debug("Registered Pillow open formats: %s", sorted(Image.OPEN.keys()))
