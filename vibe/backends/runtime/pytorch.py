@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -80,6 +81,7 @@ class PyTorchBackend:
 
     def load(self, model: Any, plan: ExecutionPlan) -> None:
         """Prepare a plugin-constructed module for execution."""
+        started_at = time.perf_counter()
         logger.debug("Preparing PyTorch runtime")
         try:
             import torch
@@ -114,9 +116,11 @@ class PyTorchBackend:
 
         self._model.eval()
         self._apply_precision_plan(torch, plan.precision)
+        load_seconds = time.perf_counter() - started_at
 
         logger.debug(
-            "Attached pre-built model class=%s device=%s plan=%s",
+            "PyTorch runtime ready in %.2fs class=%s device=%s plan=%s",
+            load_seconds,
             self._model.__class__.__name__,
             self._device,
             self._plan,
