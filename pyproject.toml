@@ -67,11 +67,11 @@ torch-cpu = [
     "timm>=1.0.22",
     "transformers>=5.0.0",
     "safetensors>=0.6.2",
-    "einops"
+    "einops>=0.8.0",
 ]
 
-# Development
-dev = ["pytest>=9.0.3"]
+[dependency-groups]
+dev = ["pytest>=9.1.1", "ruff>=0.16.2", "ty>=0.0.69"]
 
 
 [tool.hatch.build.targets.wheel]
