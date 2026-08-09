@@ -272,7 +272,7 @@ class ONNXBackend:
         prepare_onnxruntime_environment()
 
         try:
-            import onnxruntime as ort  # ty:ignore[unresolved-import]
+            import onnxruntime as ort  # ty:ignore[unresolved-import, unused-ignore-comment]
         except ImportError as exc:
             raise RuntimeError(
                 "onnxruntime is required to use the onnx backend. "
