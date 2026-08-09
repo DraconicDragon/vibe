@@ -293,7 +293,7 @@ def _acquire_runtime(
             with _RUNTIME_POOL_LOCK:
                 _RUNTIME_POOL[key] = (instance, 1)
 
-            logger.info("Runtime ready model_id=%s", model_id)
+            logger.debug("Runtime ready model_id=%s", model_id)
             return instance, lambda: _release_runtime(key)
 
         finally:

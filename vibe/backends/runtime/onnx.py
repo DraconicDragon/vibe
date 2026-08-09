@@ -335,7 +335,7 @@ class ONNXBackend:
                 compute_prec.value,
             )
 
-        logger.info("ONNX model loaded in %.2fs | session EP=%s", load_seconds, primary_provider)
+        logger.debug("ONNX model loaded in %.2fs | session EP=%s", load_seconds, primary_provider)
         input_precision = _onnx_type_to_precision(getattr(input_meta, "type", None))
         output_precision = _onnx_type_to_precision(getattr(output_meta, "type", None))
         model_precision = input_precision or output_precision or "unknown"
@@ -344,7 +344,7 @@ class ONNXBackend:
 
         self._model_precision = model_precision
 
-        logger.info(
+        logger.debug(
             "ONNX model precision=%s (graph io: input_type=%s output_type=%s)",
             model_precision,
             getattr(input_meta, "type", None),

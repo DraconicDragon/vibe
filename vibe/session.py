@@ -79,13 +79,13 @@ class ModelSession:
         logger.debug("Session created model_id=%s backend=%s", self.model_id, self._backend.value)
         logger.debug("Session memory_tracking=%s", self._memory_tracker.enabled)
         if not self._memory_tracker.enabled:
-            logger.info("Memory tracking disabled for model_id=%s", self.model_id)
+            logger.debug("Memory tracking disabled for model_id=%s", self.model_id)
         else:
             snap = self._memory_tracker.snapshot()
             if snap.process_rss_bytes is None:
                 logger.debug("Memory tracking available with partial metrics for model_id=%s", self.model_id)
             else:
-                logger.info("Memory tracking enabled")
+                logger.debug("Memory tracking enabled")
             if snap.gpu_process_used_bytes is None:
                 logger.debug("GPU process memory metric unavailable (likely missing NVML/pynvml).")
 
@@ -147,13 +147,24 @@ class ModelSession:
             operation="infer_batches",
             min_call_index=tracker_before_calls,
         )
-        logger.info(
-            "Inference completed model_id=%s outputs=%s batch_size=%s cancelled=%s",
-            self.model_id,
-            len(items),
-            batch_size,
-            bool(total_inputs is not None and len(items) < total_inputs),
-        )
+        num_items = len(items)
+        if total_inputs is not None and total_inputs > 1:
+            logger.info(
+                "Inference completed model_id=%s outputs=%s/%s batch_size=%s cancelled=%s",
+                self.model_id,
+                num_items,
+                total_inputs,
+                batch_size,
+                bool(num_items < total_inputs),
+            )
+        else:
+            logger.debug(
+                "Inference completed model_id=%s outputs=%s batch_size=%s",
+                self.model_id,
+                num_items,
+                batch_size,
+            )
+
         return InferenceResult(
             total_inputs=total_inputs if total_inputs is not None else len(items),
             items=items,
