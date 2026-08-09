@@ -75,6 +75,8 @@ from vibe.result_transforms import (
     ScoreThresholds,
     TagLevelThresholds,
     TransformInfo,
+    TransformOptionSpec,
+    transform_meta,
 )
 from vibe.results import (
     InferenceResult,
@@ -440,6 +442,7 @@ __all__ = [
     "TagResult",
     "TransformError",
     "TransformInfo",
+    "TransformOptionSpec",
     "__author__",
     "__license__",
     "__version__",
@@ -461,6 +464,7 @@ __all__ = [
     "model_registry",
     "parse_precision",
     "set_auto_download_default",
+    "transform_meta",
     "transform_registry",
 ]
 

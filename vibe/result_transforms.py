@@ -72,12 +72,18 @@ class TransformContext:
 
 
 @dataclass(frozen=True)
-class ParamInfo:
+class TransformOptionSpec:
+    """UI-facing schema for an individual transform parameter."""
+
     name: str
     type: str | None
     default: Any
     required: bool
     description: str
+    choices: tuple[Any, ...] | None = None
+    min_val: float | None = None
+    max_val: float | None = None
+    step: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,23 +92,50 @@ class ParamInfo:
             "default": self.default,
             "required": self.required,
             "description": self.description,
+            "choices": self.choices,
+            "min_val": self.min_val,
+            "max_val": self.max_val,
+            "step": self.step,
         }
 
 
 @dataclass(frozen=True)
 class TransformInfo:
+    """Metadata wrapper for the entire transform class."""
+
     transform_id: str
     display_name: str
     description: str
-    params: list[ParamInfo]
+    options: list[TransformOptionSpec]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "transform_id": self.transform_id,
             "display_name": self.display_name,
             "description": self.description,
-            "params": [p.to_dict() for p in self.params],
+            "options": [o.to_dict() for o in self.options],
         }
+
+
+def transform_meta(
+    description: str = "",
+    choices: tuple[Any, ...] | None = None,
+    min_val: float | None = None,
+    max_val: float | None = None,
+    step: float | None = None,
+    internal: bool = False,
+) -> dict[str, Any]:
+    """
+    Strongly-typed helper to generate standard metadata dicts for Transform options.
+    """
+    return {
+        "description": description,
+        "choices": choices,
+        "min_val": min_val,
+        "max_val": max_val,
+        "step": step,
+        "internal": internal,
+    }
 
 
 # endregion
@@ -115,16 +148,22 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
     """Base class for result transforms."""
 
     transform_id: ClassVar[str]
-    display_name: ClassVar[str] = ""
-    description: ClassVar[str] = ""
+    display_name: ClassVar[str]
+    description: ClassVar[str]
     priority: ClassVar[int] = 0
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         if inspect.isabstract(cls):
             return
-        if not getattr(cls, "transform_id", None):
-            raise ValueError(f"{cls.__name__} must define a 'transform_id' ClassVar.")
+
+        for attr in ("transform_id", "display_name", "description"):
+            val = getattr(cls, attr, None)
+            if not val or not isinstance(val, str) or not val.strip():
+                raise ValueError(
+                    f"Concrete transform subclass '{cls.__name__}' must define a non-empty '{attr}' string."
+                )
+
         transform_registry.register(cls)
 
     def __call__(self, result: TIn, *, context: TransformContext) -> TOut:
@@ -137,7 +176,7 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
         if not dataclasses.is_dataclass(cls):
             raise TypeError(f"ResultTransform subclass '{cls.__name__}' must be decorated with @dataclass.")
 
-        params: list[ParamInfo] = []
+        options: list[TransformOptionSpec] = []
 
         for f in dataclasses.fields(cls):
             if f.metadata.get("internal", False):
@@ -146,13 +185,17 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
             is_required = f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
             default_val = None if is_required else (f.default if f.default is not dataclasses.MISSING else None)
 
-            params.append(
-                ParamInfo(
+            options.append(
+                TransformOptionSpec(
                     name=f.name,
                     type=getattr(f.type, "__name__", str(f.type)) if f.type else None,
                     default=default_val,
                     required=is_required,
                     description=f.metadata.get("description", ""),
+                    choices=f.metadata.get("choices"),
+                    min_val=f.metadata.get("min_val"),
+                    max_val=f.metadata.get("max_val"),
+                    step=f.metadata.get("step"),
                 )
             )
 
@@ -160,7 +203,7 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
             transform_id=cls.transform_id,
             display_name=cls.display_name,
             description=cls.description,
-            params=params,
+            options=options,
         )
 
     def on_infer_start(self, *, context: TransformContext) -> None:
@@ -197,10 +240,12 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
 
     mapping_file: str | None = field(
         default=None,
-        metadata={"description": "Path to custom mapping JSON. If omitted, uses model bundle or HF fallback."},
+        metadata=transform_meta(
+            description="Path to custom mapping JSON. If omitted, uses model bundle or HF fallback."
+        ),
     )
     _mapping_cache: dict[str, dict[str, list[str]]] = field(
-        default_factory=dict, repr=False, compare=False, metadata={"internal": True}
+        default_factory=dict, repr=False, compare=False, metadata=transform_meta(internal=True)
     )
 
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
@@ -245,8 +290,6 @@ class CleanTags(ResultTransform[TagResult, TagResult]):
         for entries in result.tags.values():
             entries[:] = [TagEntry(tag=_clean_tag_text(entry.tag), score=entry.score) for entry in entries]
 
-        # todo: have transforms see this as another tag category and process it with options to ignore extras or specific one(s)
-
         mapping = result.extras.get("character_copyright_mapping")
         if mapping is not None:
             result.extras["character_copyright_mapping"] = {
@@ -263,9 +306,18 @@ class ScoreThresholds(ResultTransform[TagResult, TagResult]):
     description: ClassVar[str] = "Filters tags using global and/or per-category score thresholds."
     priority: ClassVar[int] = 0
 
-    threshold: float = field(default=0.0, metadata={"description": "Global minimum score required."})
+    threshold: float = field(
+        default=0.0,
+        metadata=transform_meta(
+            description="Global minimum score required.",
+            min_val=0.0,
+            max_val=1.0,
+            step=0.01,
+        ),
+    )
     category_thresholds: dict[str | TagCategory, float] | None = field(
-        default=None, metadata={"description": "Per-category threshold overrides."}
+        default=None,
+        metadata=transform_meta(description="Per-category threshold overrides."),
     )
 
     def __post_init__(self) -> None:
@@ -302,22 +354,43 @@ class TagLevelThresholds(ResultTransform[TagResult, TagResult]):
     description: ClassVar[str] = "Filters tags using per-tag thresholds from selected_tags.csv."
     priority: ClassVar[int] = 0
 
-    threshold_column: str = field(default="best_threshold", metadata={"description": "Name of the CSV column."})
+    threshold_column: str = field(
+        default="best_threshold",
+        metadata=transform_meta(description="Name of the CSV column."),
+    )
     threshold_offset: float = field(
-        default=0.0, metadata={"description": "Fixed value added to every tag's threshold."}
+        default=0.0,
+        metadata=transform_meta(
+            description="Fixed value added to every tag's threshold.",
+            min_val=-1.0,
+            max_val=1.0,
+            step=0.01,
+        ),
     )
     threshold_relative_offset: float = field(
-        default=0.0, metadata={"description": "Relative adjustment applied to each threshold."}
+        default=0.0,
+        metadata=transform_meta(
+            description="Relative adjustment applied to each threshold.",
+            min_val=-1.0,
+            max_val=1.0,
+            step=0.01,
+        ),
     )
     threshold_fallback: float | None = field(
-        default=None, metadata={"description": "Fallback threshold when a tag has no per-tag value."}
+        default=None,
+        metadata=transform_meta(
+            description="Fallback threshold when a tag has no per-tag value.",
+            min_val=0.0,
+            max_val=1.0,
+            step=0.01,
+        ),
     )
 
     _threshold_cache: dict[str, dict[str, float]] = field(
-        default_factory=dict, repr=False, compare=False, metadata={"internal": True}
+        default_factory=dict, repr=False, compare=False, metadata=transform_meta(internal=True)
     )
     _threshold_stats_cache: dict[str, tuple[int, int, bool]] = field(
-        default_factory=dict, repr=False, compare=False, metadata={"internal": True}
+        default_factory=dict, repr=False, compare=False, metadata=transform_meta(internal=True)
     )
 
     def __post_init__(self) -> None:
