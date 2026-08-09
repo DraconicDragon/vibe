@@ -301,7 +301,7 @@ class PyTorchBackend:
             compute_dtype=str(self._compute_dtype),
             autocast_enabled=autocast_needed,
         )
-        logger.info(
+        logger.debug(
             "PyTorch precision initialized: request=(%s, %s) -> resolved=(weight=%s, compute=%s, autocast=%s)",
             request.weight.value,
             request.compute.value,
