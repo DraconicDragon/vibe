@@ -27,7 +27,8 @@ class TransformPipeline:
         if not transforms:
             return result
 
-        ordered_transforms = sorted(transforms, key=lambda t: t.priority)
+        # Higher priority runs first (e.g., 100 -> 0 -> -100)
+        ordered_transforms = sorted(transforms, key=lambda t: t.priority, reverse=True)
 
         clean_tags_idx = next((i for i, t in enumerate(ordered_transforms) if isinstance(t, CleanTags)), -1)
         if clean_tags_idx != -1 and clean_tags_idx != len(ordered_transforms) - 1:

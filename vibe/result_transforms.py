@@ -281,7 +281,7 @@ class CleanTags(ResultTransform[TagResult, TagResult]):
     transform_id: ClassVar[str] = "clean_tags"
     display_name: ClassVar[str] = "Clean Tags"
     description: ClassVar[str] = "Replaces underscores with spaces while preserving kaomoji tags."
-    priority: ClassVar[int] = 100  # Should always execute last to not cause issues for other transforms
+    priority: ClassVar[int] = -100  # Low priority default, should execute last to not cause issues for other transforms
 
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
         if not isinstance(result, TagResult):
