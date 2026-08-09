@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -109,6 +110,7 @@ def build_session(
     memory_tracking: bool = False,
 ) -> ModelSession:
     """Build a ModelSession from a plugin class and a file source."""
+    started_at = time.perf_counter()
     model_id = plugin_cls.identity.model_id
 
     try:
@@ -202,27 +204,30 @@ def build_session(
 
         runtime_info = runtime.execution_info()
         variant_str = selected_variant.variant_id or "default"
+        load_seconds = time.perf_counter() - started_at
 
         if candidate_backend == Backend.PYTORCH:
             prec = runtime_info.get("precision") or {}
             logger.info(
-                "Session ready model_id=%s | variant=%s | backend=pytorch | device=%s | weights=%s | compute=%s | autocast=%s",
+                "Session ready model_id=%s | variant=%s | backend=pytorch | device=%s | weights=%s | compute=%s | autocast=%s | time=%.2fs",
                 model_id,
                 variant_str,
                 runtime_info.get("device"),
                 prec.get("weight_dtype"),
                 prec.get("compute_dtype"),
                 prec.get("autocast_enabled"),
+                load_seconds,
             )
-        else: # ONNX
+        else:  # ONNX
             providers = runtime_info.get("providers") or []
             primary_ep = providers[0] if providers else "unknown"
             logger.info(
-                "Session ready model_id=%s | variant=%s | backend=onnx | provider=%s | graph_precision=%s",
+                "Session ready model_id=%s | variant=%s | backend=onnx | provider=%s | graph_precision=%s | time=%.2fs",
                 model_id,
                 variant_str,
                 primary_ep,
                 runtime_info.get("graph_precision", "unknown"),
+                load_seconds,
             )
 
         return ModelSession(
