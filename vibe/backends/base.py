@@ -248,10 +248,10 @@ class ModelPlugin(ABC):
         # Intermediate base classes (e.g. WDTaggerBasePlugin) do not define an identity.
         # Only register classes that possess a fully declared ModelIdentity.
         identity = getattr(cls, "identity", None)
-        if identity is None or not getattr(identity, "model_id", None):
+        if identity is None:
             return
 
-        # Validate required metadata on concrete models
+        # Validate required class-level metadata on concrete models
         if not getattr(cls, "family_name", None):
             raise ValueError(f"Concrete plugin '{cls.__name__}' must inherit or define a 'family_name' string.")
         if not getattr(cls, "default_repo_id", None):
