@@ -52,10 +52,8 @@ class GLU(Module):
 
 
 class SwiGLU(GLU):
-    def _activation(self, x: Tensor) -> Tensor:
-        return silu(x)
+    _activation = staticmethod(silu)
 
 
 class SpGLU(GLU):
-    def _activation(self, x: Tensor) -> Tensor:
-        return softplus(x)
+    _activation = staticmethod(softplus)
