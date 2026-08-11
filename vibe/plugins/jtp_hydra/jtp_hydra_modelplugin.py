@@ -150,34 +150,47 @@ class JTPHydraBasePlugin(ModelPlugin):
     _category_indices: dict[str, list[int]]
     _tag_thresholds: dict[str, float]
     _seqlen: int = 1024
-    _preloaded_model: Any | None = None
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
-        """Parse tag labels, category indices, and optimal thresholds directly from weights or optional validation CSV."""
+        """Parse tag labels, category indices, and optimal thresholds directly from safetensors metadata or validation CSV."""
         weights_path = artifacts.get("model_pt")
         val_csv_path = artifacts.get_optional("val_csv")
 
-        from .model import load_model
-
-        # Load PyTorch model to extract embedded labels
-        model = load_model(str(weights_path), logit=True)
-        self._raw_tag_names = [label.label for label in model.labels]
-
-        cat_to_name = {cat_id: str(name) for cat_id, name in E621_CATEGORY_LABELS.items()}
+        self._raw_tag_names = []
         self._category_indices = {}
-        for idx, label in enumerate(model.labels):
-            cat_name = cat_to_name.get(label.category, str(label.category))
-            self._category_indices.setdefault(cat_name, []).append(idx)
-
-        # Parse optimal tag thresholds
         self._tag_thresholds = {}
 
-        # 1. Check for embedded 'validation' tensor in weights (Hydra 3.5 format)
-        # NOTE: This should be the correct math for F1 but the model still outputs more false positives than I thought
+        cat_to_name = {cat_id: str(name) for cat_id, name in E621_CATEGORY_LABELS.items()}
+
+        # 1. Parse tag labels and embedded validation tensor directly via safe_open (0 MB RAM load)
         try:
             from safetensors import safe_open
 
             with safe_open(str(weights_path), framework="numpy") as f:
+                meta = f.metadata() or {}
+
+                if "classifier.labels" in meta:
+                    for idx, line in enumerate(meta["classifier.labels"].splitlines()):
+                        line = line.strip()
+                        if not line:
+                            continue
+
+                        # Split into at most 3 parts: [tag, category, implications]
+                        parts = line.split(maxsplit=2)
+                        tag = parts[0]
+                        cat_raw = parts[1] if len(parts) > 1 else "general"
+                        # implications = parts[2] if len(parts) > 2 else ""  # Ready for future use
+
+                        # Resolve category name if cat_to_name mapping is used, otherwise use as-is
+                        if cat_raw.isdigit():
+                            cat_name = cat_to_name.get(int(cat_raw), cat_raw)
+                        else:
+                            cat_name = cat_to_name.get(cat_raw, cat_raw)
+
+                        self._raw_tag_names.append(tag)
+                        self._category_indices.setdefault(cat_name, []).append(idx)
+
+                # Extract embedded 'validation' tensor (Hydra 3.5 format)
                 keys = f.keys()
                 if "validation" in keys:
                     val_data = f.get_tensor("validation")  # Shape: (8886, 99, 4)
@@ -190,22 +203,23 @@ class JTPHydraBasePlugin(ModelPlugin):
                     steps = np.linspace(0.01, 0.99, 99)
                     best_thresholds = steps[best_bins]
 
-                    self._tag_thresholds = {
-                        tag: float(thresh) for tag, thresh in zip(self._raw_tag_names, best_thresholds, strict=False)
-                    }
+                    if self._raw_tag_names:
+                        self._tag_thresholds = {
+                            tag: float(thresh)
+                            for tag, thresh in zip(self._raw_tag_names, best_thresholds, strict=False)
+                        }
                     logger.info(
                         "Extracted optimal thresholds from embedded validation tensor for %s", self.identity.model_id
                     )
         except Exception as exc:
-            logger.debug("Failed to extract validation tensor from safetensors: %s", exc)
+            logger.debug("Failed to extract metadata/tensors directly via safe_open: %s", exc)
 
-        # 2. Fall back to parsing optional val_csv if no embedded tensor was present
+        # 3. Fall back to parsing optional val_csv if no embedded threshold tensor was present
         if not self._tag_thresholds and val_csv_path is not None:
             self._tag_thresholds = _parse_jtp_val_csv(val_csv_path)
             logger.info("Parsed optimal thresholds from val_csv for %s", self.identity.model_id)
 
         self._seqlen = int(self.get_option("jtp_hydra_seqlen"))
-        self._preloaded_model = model
 
     def provide_transform_data(self) -> tuple[PluginData, ...]:
         if self._tag_thresholds:
@@ -217,15 +231,11 @@ class JTPHydraBasePlugin(ModelPlugin):
         if plan.backend != Backend.PYTORCH:
             raise ValueError(f"JTP/Hydra models only support PyTorch, got '{plan.backend}'.")
 
-        if self._preloaded_model is not None:
-            model = self._preloaded_model
-            self._preloaded_model = None
-        else:
-            weights_path = artifacts.get("model_pt")
+        weights_path = artifacts.get("model_pt")
 
-            from .model import load_model
+        from .model import load_model
 
-            model = load_model(str(weights_path), logit=True)
+        model = load_model(str(weights_path), logit=True)
 
         attn_pool = getattr(model, "attn_pool", None)
         inference_fn = getattr(attn_pool, "inference", None)
