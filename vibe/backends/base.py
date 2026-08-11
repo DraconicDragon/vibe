@@ -13,11 +13,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, Self
 
 from vibe.precision import PrecisionRequest
-from vibe.result_transforms import PluginData
 from vibe.results import ModelResult, OutputType
 
 if TYPE_CHECKING:
-    from vibe.result_transforms import ResultTransform
+    from vibe.result_transforms import PluginData, ResultTransform
 
 
 class FileRole(str, Enum):
