@@ -151,11 +151,12 @@ def build_session(
 
     # 2. Try loading variants until one succeeds
     for selected_variant in variants_to_try:
-        candidate_backend = selected_variant.backend
+        resolved_variant = selected_variant.resolve(plugin_cls.default_repo_id)
+        candidate_backend = resolved_variant.backend
         try:
             file_map = resolve_variant_artifacts(
                 source=source,
-                variant=selected_variant,
+                variant=resolved_variant,
                 revision=hf_revision,
                 cache_dir=hf_cache_dir,
                 allow_download=effective_auto_download,

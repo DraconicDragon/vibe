@@ -125,9 +125,13 @@ class ArtifactSpec:
     repo_id: str | None = None
     hf_subdir: str | None = None
 
-    def resolve(self, fallback_repo_id: str) -> ArtifactSpec:
-        """Return a resolved copy of this artifact with fallback repo_ids populated."""
-        return dataclasses.replace(self, repo_id=self.repo_id or fallback_repo_id)
+    def resolve(self, fallback_repo_id: str, fallback_hf_subdir: str | None = None) -> ArtifactSpec:
+        """Return a resolved copy of this artifact with fallback repo_ids and hf_subdirs populated."""
+        return dataclasses.replace(
+            self,
+            repo_id=self.repo_id or fallback_repo_id,
+            hf_subdir=self.hf_subdir or fallback_hf_subdir,
+        )
 
 
 @dataclass(frozen=True)
@@ -144,7 +148,12 @@ class ModelVariant:
     def resolve(self, fallback_repo_id: str) -> ModelVariant:
         """Return a resolved copy of this variant and its children with cascading fallbacks."""
         v_repo = self.repo_id or fallback_repo_id
-        return dataclasses.replace(self, repo_id=v_repo, artifacts=tuple(art.resolve(v_repo) for art in self.artifacts))
+        v_subdir = self.hf_subdir
+        return dataclasses.replace(
+            self,
+            repo_id=v_repo,
+            artifacts=tuple(art.resolve(v_repo, v_subdir) for art in self.artifacts),
+        )
 
 
 @dataclass(frozen=True)

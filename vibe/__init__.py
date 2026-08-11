@@ -420,9 +420,10 @@ def check_availability(
     variant_statuses: list[VariantAvailability] = []
 
     for v in variants_to_check:
+        resolved_v = v.resolve(plugin_cls.default_repo_id)
         artifact_statuses = inspect_variant_artifacts(
             source=resolved_source,
-            variant=v,
+            variant=resolved_v,
             revision=hf_revision,
             cache_dir=hf_cache_dir,
             file_name_map=file_name_map,
