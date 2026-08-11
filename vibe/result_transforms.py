@@ -274,6 +274,10 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
         default_factory=dict, repr=False, compare=False, metadata=transform_meta(internal=True)
     )
 
+    def on_infer_start(self, *, context: TransformContext) -> None:
+        """Pre-flight check: validate and pre-cache mapping before running inference."""
+        self._get_mapping(context)
+
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
         character_entries = result.category(TagCategory.CHARACTER)
         if not character_entries:
