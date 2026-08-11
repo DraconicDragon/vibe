@@ -71,6 +71,14 @@ def _resolve_backend_candidates(
             f"No supported backend available for model '{plugin_cls.identity.model_id}'. Install torch or onnxruntime."
         )
 
+    # Fail hard if an accelerator was explicitly requested but no GPU acceleration is active in any runtime
+    if preference.intent == HardwareIntent.ACCELERATOR and not any(available.values()):
+        device_str = preference.hint or "accelerator"
+        raise SessionError(
+            f"Accelerator device '{device_str}' explicitly requested, but no active GPU/accelerator support was found "
+            "in PyTorch or ONNX Runtime. Install PyTorch with CUDA/ROCm/MPS support or 'onnxruntime-gpu'."
+        )
+
     if len(available) == 1:
         return list(available.keys())
 

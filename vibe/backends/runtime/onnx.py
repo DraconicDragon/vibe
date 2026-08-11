@@ -102,6 +102,11 @@ def resolve_onnx_provider_chain(
     if explicit is not None:
         providers = [p for p in _normalize_provider_list([str(p) for p in explicit]) if p in available_set]
         if not providers and "CPUExecutionProvider" in available_set:
+            logger.warning(
+                "Requested ONNX providers %s are unavailable. Available providers: %s. Falling back to CPUExecutionProvider.",
+                explicit,
+                sorted(available_set),
+            )
             providers = ["CPUExecutionProvider"]
     else:
         if wants_accelerator:
@@ -110,8 +115,11 @@ def resolve_onnx_provider_chain(
 
             if not providers:
                 if must_accelerator:
+                    device_str = preference.hint or "accelerator"
                     raise RuntimeError(
-                        f"Accelerator requested, but no ONNX accelerator providers are available. (Available: {available_set})"
+                        f"Device '{device_str}' requested, but no ONNX accelerator providers are available. "
+                        f"(Available providers: {sorted(available_set)}). "
+                        "If using NVIDIA GPU, verify 'onnxruntime-gpu' is installed instead of 'onnxruntime'."
                     )
                 if "CPUExecutionProvider" in available_set:
                     providers.append("CPUExecutionProvider")

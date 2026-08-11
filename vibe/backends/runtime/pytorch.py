@@ -36,7 +36,10 @@ def _resolve_pytorch_device(preference: ExecutionPreference, torch_module: Any) 
     # User explicitly hinted a device class
     if preference.hint == "xpu":
         if not has_xpu:
-            raise RuntimeError("Intel GPU (xpu) requested, but torch.xpu is not available.")
+            raise RuntimeError(
+                "Intel GPU (xpu) requested, but torch.xpu is not available. "
+                "Ensure Intel Extension for PyTorch (IPEX) is installed."
+            )
         return f"xpu:{preference.ordinal}" if preference.ordinal is not None else "xpu"
 
     if preference.intent == HardwareIntent.AUTO:
@@ -48,7 +51,7 @@ def _resolve_pytorch_device(preference: ExecutionPreference, torch_module: Any) 
             return "mps"
         return "cpu"
 
-    # Explicit ACCELERATOR requested (general)
+    # Explicit ACCELERATOR requested (general or "cuda"/"gpu")
     if has_cuda:
         return f"cuda:{preference.ordinal}" if preference.ordinal is not None else "cuda"
     if has_xpu:
@@ -56,8 +59,10 @@ def _resolve_pytorch_device(preference: ExecutionPreference, torch_module: Any) 
     if has_mps:
         return "mps"
 
+    device_str = preference.hint or "accelerator"
     raise RuntimeError(
-        f"Accelerator requested ({preference.hint or 'gpu'}), but no CUDA, XPU, or MPS device is available in PyTorch."
+        f"Device '{device_str}' requested, but no CUDA, XPU, or MPS acceleration is available in PyTorch. "
+        "If using NVIDIA GPU, verify PyTorch was installed with CUDA support "
     )
 
 
