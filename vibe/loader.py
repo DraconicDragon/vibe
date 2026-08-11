@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from vibe.backends.base import ArtifactMap, ArtifactSpec, ModelVariant
+from vibe.backends.base import ArtifactMap, ArtifactSpec, Backend, FileRole, ModelVariant
 from vibe.exceptions import LoaderError
 from vibe.hf_downloader import HFDownloadError, download_or_cached_with_reason
 
@@ -44,6 +46,70 @@ def _hf_source_to_repo(source: str) -> str:
         return source[3:]
 
     return source
+
+
+# region Data Classes
+
+
+@dataclass(frozen=True)
+class ArtifactAvailability:
+    """Status of a single required or optional model artifact on disk/cache."""
+
+    id: str
+    name: str
+    role: FileRole
+    required: bool
+    is_available: bool
+    path: Path | None = None
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "role": self.role.value,
+            "required": self.required,
+            "is_available": self.is_available,
+            "path": str(self.path) if self.path else None,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class VariantAvailability:
+    """Status of a model variant's complete set of required artifacts."""
+
+    variant_id: str | None
+    backend: Backend
+    is_available: bool
+    artifacts: list[ArtifactAvailability]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "variant_id": self.variant_id,
+            "backend": self.backend.value,
+            "is_available": self.is_available,
+            "artifacts": [a.to_dict() for a in self.artifacts],
+        }
+
+
+@dataclass(frozen=True)
+class ModelAvailability:
+    """Overall availability summary for a model across its variants."""
+
+    model_id: str
+    is_available: bool
+    variants: list[VariantAvailability]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "is_available": self.is_available,
+            "variants": [v.to_dict() for v in self.variants],
+        }
+
+
+# endregion Data Classes
 
 
 class SourceResolver(ABC):
@@ -237,6 +303,67 @@ def resolve_variant_artifacts(
         allow_download=allow_download,
         token=token,
     )
+
+
+def inspect_variant_artifacts(
+    source: str,
+    variant: ModelVariant,
+    *,
+    revision: str | None = None,
+    cache_dir: str | None = None,
+    file_name_map: Mapping[str, str] | None = None,
+    source_map: Mapping[str, str] | None = None,
+    token: str | None = None,
+) -> list[ArtifactAvailability]:
+    """Inspect local/cache availability for every artifact in a variant without downloading."""
+    s = source.strip()
+
+    if _is_local_source(s):
+        folder = _local_source_to_path(s)
+        resolver = LocalResolver(folder, file_name_map, source_map)
+    else:
+        repo = _hf_source_to_repo(s)
+        resolver = HFResolver(repo, file_name_map, source_map)
+
+    results: list[ArtifactAvailability] = []
+    for spec in variant.artifacts:
+        mapped_name = resolver.file_name_map.get(spec.id, spec.name)
+        override_source = resolver.source_map.get(spec.id)
+
+        if override_source:
+            path, reason = resolver._resolve_override(
+                spec,
+                override_source,
+                mapped_name,
+                revision=revision,
+                cache_dir=cache_dir,
+                allow_download=False,
+                token=token,
+            )
+        else:
+            path, reason = resolver._resolve_standard(
+                spec,
+                mapped_name,
+                revision=revision,
+                cache_dir=cache_dir,
+                allow_download=False,
+                token=token,
+            )
+
+        is_avail = path is not None and path.is_file()
+        results.append(
+            ArtifactAvailability(
+                id=spec.id,
+                name=mapped_name,
+                role=spec.role,
+                required=spec.required,
+                is_available=is_avail,
+                path=path if is_avail else None,
+                reason=None if is_avail else reason,
+            )
+        )
+
+    return results
 
 
 def parse_hf_source(source: str) -> tuple[str, str | None]:

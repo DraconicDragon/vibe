@@ -61,6 +61,7 @@ from vibe.hf_downloader import (
     set_auto_download_default,
 )
 from vibe.image_loading import ImageChunk, iter_load_images
+from vibe.loader import ModelAvailability, VariantAvailability, inspect_variant_artifacts
 from vibe.memory_stats import (
     InferenceMemoryRecord,
     MemorySnapshot,
@@ -376,6 +377,77 @@ def describe_all() -> list[ModelDescriptor]:
     return model_registry.list_all()
 
 
+def check_availability(
+    model: str,
+    *,
+    source: str | None = None,
+    variant: str | None = None,
+    source_map: Mapping[str, str] | None = None,
+    file_name_map: Mapping[str, str] | None = None,
+    hf_revision: str | None = None,
+    hf_cache_dir: str | None = None,
+    hf_token: str | None = None,
+) -> ModelAvailability:
+    """
+    Check if a model's required files are already present on disk or in HF cache without downloading.
+
+    Args:
+        model:         Model ID (e.g. "wd-eva02-large-v3").
+        source:        Source string (e.g. "local:/path", "hf:owner/repo", or None for default repo).
+        variant:       Optional variant ID filter.
+        source_map:    Optional per-artifact source overrides.
+        file_name_map: Optional filename remappings.
+        hf_revision:   HF repo revision.
+        hf_cache_dir:  Override HF cache directory.
+        hf_token:      HF access token.
+
+    Returns:
+        ModelAvailability summary detailing presence/absence of all artifacts per variant.
+    """
+    model_registry.ensure_discovered()
+
+    plugin_cls = model_registry.get(model)
+    resolved_source = _resolve_source(source, plugin_cls)
+
+    variants_to_check = plugin_cls.variants
+    if variant is not None:
+        matched = [v for v in plugin_cls.variants if v.variant_id == variant]
+        if not matched:
+            available = [v.variant_id for v in plugin_cls.variants if v.variant_id]
+            raise RegistryError(f"Model '{model}' has no variant '{variant}'. Available variants: {available}")
+        variants_to_check = tuple(matched)
+
+    variant_statuses: list[VariantAvailability] = []
+
+    for v in variants_to_check:
+        artifact_statuses = inspect_variant_artifacts(
+            source=resolved_source,
+            variant=v,
+            revision=hf_revision,
+            cache_dir=hf_cache_dir,
+            file_name_map=file_name_map,
+            source_map=source_map,
+            token=hf_token,
+        )
+        variant_ok = all(art.is_available for art in artifact_statuses if art.required)
+        variant_statuses.append(
+            VariantAvailability(
+                variant_id=v.variant_id,
+                backend=v.backend,
+                is_available=variant_ok,
+                artifacts=artifact_statuses,
+            )
+        )
+
+    model_ok = any(v.is_available for v in variant_statuses)
+
+    return ModelAvailability(
+        model_id=plugin_cls.identity.model_id,
+        is_available=model_ok,
+        variants=variant_statuses,
+    )
+
+
 # endregion API
 
 
@@ -421,6 +493,7 @@ def get_transform(transform_id: str) -> type[ResultTransform]:
 # for users doing from vibe import ...
 
 __all__ = [
+    "ArtifactAvailability",
     "ArtifactMap",
     "ArtifactSpec",
     "Backend",
@@ -437,6 +510,7 @@ __all__ = [
     "InferenceResultItem",
     "MemorySnapshot",
     "MemoryTrackerStats",
+    "ModelAvailability",
     "ModelCapabilities",
     "ModelDescriptor",
     "ModelIdentity",
@@ -461,9 +535,11 @@ __all__ = [
     "TransformError",
     "TransformInfo",
     "TransformOptionSpec",
+    "VariantAvailability",
     "__author__",
     "__license__",
     "__version__",
+    "check_availability",
     "describe",
     "describe_all",
     "get_auto_download_default",
