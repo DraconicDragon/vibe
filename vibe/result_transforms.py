@@ -12,6 +12,7 @@ from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from vibe.backends.base import ArtifactMap
 from vibe.backends.char_ip_mapping import apply_character_ip_mapping, resolve_character_ip_mapping
+from vibe.exceptions import TransformError
 from vibe.registry import transform_registry
 from vibe.results import ModelResult, TagEntry, TagResult
 from vibe.tag_categories import TagCategory
@@ -276,7 +277,16 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
 
     def on_infer_start(self, *, context: TransformContext) -> None:
         """Pre-flight check: validate and pre-cache mapping before running inference."""
-        self._get_mapping(context)
+        try:
+            mapping = self._get_mapping(context)
+        except Exception as exc:
+            raise TransformError(f"Failed to load character IP mapping data: {exc}") from exc
+
+        if not mapping:
+            raise TransformError(
+                f"CharacterIPMapping on model '{context.model_id}' failed to load any valid mapping data "
+                f"(manual_path={self.mapping_file!r}, auto_download={context.auto_download})."
+            )
 
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
         character_entries = result.category(TagCategory.CHARACTER)

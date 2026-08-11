@@ -24,6 +24,7 @@ def resolve_character_ip_mapping(
     manual_path: str | None = None,
     allow_download: bool | None = None,
     token: str | None = None,
+    required: bool = True,
 ) -> dict[str, list[str]]:
     """
     Resolve mapping in priority order:
@@ -31,19 +32,18 @@ def resolve_character_ip_mapping(
       2) community fallback file from HF
     """
     if manual_path:
-        return _load_mapping_file(Path(manual_path))
+        path = Path(manual_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Specified character IP mapping file does not exist: '{manual_path}'")
+        return _load_mapping_file(path)
 
-    try:
-        fallback = download_or_cached(
-            repo_id=DEFAULT_MAP_REPO,
-            filename=DEFAULT_MAP_FILE,
-            allow_download=allow_download,
-            required=False,
-            token=token,
-        )
-    except HFDownloadError as exc:
-        logger.debug("Character mapping fallback not available: %s", exc)
-        return {}
+    fallback = download_or_cached(
+        repo_id=DEFAULT_MAP_REPO,
+        filename=DEFAULT_MAP_FILE,
+        allow_download=allow_download,
+        required=required,
+        token=token,
+    )
 
     if fallback is None:
         return {}
