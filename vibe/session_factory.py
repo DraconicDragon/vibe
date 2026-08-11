@@ -18,9 +18,9 @@ from vibe.backends.base import (
     ModelVariant,
     RuntimeExecutor,
 )
-from vibe.exceptions import SessionError
+from vibe.exceptions import LoaderError, SessionError
 from vibe.hf_downloader import get_auto_download_default
-from vibe.loader import LoaderError, resolve_variant_artifacts
+from vibe.loader import resolve_variant_artifacts
 from vibe.precision import PrecisionPolicy, PrecisionRequest, parse_precision
 from vibe.session import ModelSession
 

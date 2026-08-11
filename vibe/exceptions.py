@@ -12,3 +12,7 @@ class InferenceCancelled(SessionError):
 
 class RegistryError(Exception):
     """Raised when a plugin lookup fails."""
+
+
+class LoaderError(Exception):
+    """Raised when file resolution or validation fails."""

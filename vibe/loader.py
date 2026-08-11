@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from vibe.backends.base import ArtifactMap, ArtifactSpec, ModelVariant
+from vibe.exceptions import LoaderError
 from vibe.hf_downloader import HFDownloadError, download_or_cached_with_reason
 
 logger = logging.getLogger(__name__)
@@ -43,10 +44,6 @@ def _hf_source_to_repo(source: str) -> str:
         return source[3:]
 
     return source
-
-
-class LoaderError(Exception):
-    """Raised when file resolution or validation fails."""
 
 
 class SourceResolver(ABC):
