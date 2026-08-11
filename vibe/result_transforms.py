@@ -8,12 +8,10 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from vibe.backends.base import ArtifactMap
 from vibe.backends.char_ip_mapping import apply_character_ip_mapping, resolve_character_ip_mapping
-from vibe.plugins.shared.tagger_shared import load_tag_metadata
 from vibe.registry import transform_registry
 from vibe.results import ModelResult, TagEntry, TagResult
 from vibe.tag_categories import TagCategory
@@ -42,9 +40,31 @@ KAOMOJIS = {
     "||_||",
 }
 
+
+# region Plugin-Provided Runtime Data
+
+
+@dataclass(frozen=True)
+class PluginData:
+    """
+    Base marker for typed, plugin-computed data handed to transforms at runtime.
+    Transforms fetch them by type from TransformContext. 
+    """
+
+
+@dataclass(frozen=True)
+class TagThresholds(PluginData):
+    """Per-tag decision thresholds, precomputed by a plugin (F1-optimal, CSV-sourced, etc)."""
+
+    values: dict[str, float]
+
+
+# endregion
+
+# NOTE: pre py3.12 syntax
 TIn = TypeVar("TIn", bound=ModelResult)
 TOut = TypeVar("TOut", bound=ModelResult)
-
+TData = TypeVar("TData", bound="PluginData")
 
 # region Context & Metadata
 
@@ -55,8 +75,13 @@ class TransformContext:
     artifacts: ArtifactMap
     source: str
     auto_download: bool
+    _plugin_data: dict[type[PluginData], PluginData] = field(default_factory=dict, repr=False)
     cache: dict[str, Any] = field(default_factory=dict, repr=False)
     _warned_keys: set[str] = field(default_factory=set, repr=False, compare=False)
+
+    def get_plugin_data(self, kind: type[TData]) -> TData | None:
+        found = self._plugin_data.get(kind)
+        return found if isinstance(found, kind) else None
 
     def get_cached_or_load(self, key: str, loader_fn: Callable[[], Any]) -> Any:
         if key not in self.cache:
@@ -351,13 +376,9 @@ class ScoreThresholds(ResultTransform[TagResult, TagResult]):
 class TagLevelThresholds(ResultTransform[TagResult, TagResult]):
     transform_id: ClassVar[str] = "tag_level_thresholds"
     display_name: ClassVar[str] = "Tag Level Thresholds"
-    description: ClassVar[str] = "Filters tags using per-tag thresholds from selected_tags.csv."
+    description: ClassVar[str] = "Filters tags using per-tag thresholds provided by the model plugin."
     priority: ClassVar[int] = 0
 
-    threshold_column: str = field(
-        default="best_threshold",
-        metadata=transform_meta(description="Name of the CSV column."),
-    )
     threshold_offset: float = field(
         default=0.0,
         metadata=transform_meta(
@@ -386,13 +407,6 @@ class TagLevelThresholds(ResultTransform[TagResult, TagResult]):
         ),
     )
 
-    _threshold_cache: dict[str, dict[str, float]] = field(
-        default_factory=dict, repr=False, compare=False, metadata=transform_meta(internal=True)
-    )
-    _threshold_stats_cache: dict[str, tuple[int, int, bool]] = field(
-        default_factory=dict, repr=False, compare=False, metadata=transform_meta(internal=True)
-    )
-
     def __post_init__(self) -> None:
         if self.threshold_offset != 0.0 and self.threshold_relative_offset != 0.0:
             raise ValueError("Use only one of threshold_offset or threshold_relative_offset.")
@@ -401,33 +415,20 @@ class TagLevelThresholds(ResultTransform[TagResult, TagResult]):
         if self.threshold_fallback is not None and not (0.0 <= self.threshold_fallback <= 1.0):
             raise ValueError("threshold_fallback must be in [0.0, 1.0].")
 
+    def on_infer_start(self, *, context: TransformContext) -> None:
+        # VALIDATION: Fail immediately if the plugin didn't provide the required data.
+        if context.get_plugin_data(TagThresholds) is None:
+            raise RuntimeError(
+                f"Model '{context.model_id}' declared TagLevelThresholds in its transforms, "
+                "but failed to provide TagThresholds in provide_transform_data()."
+            )
+
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
-        if not isinstance(result, TagResult):
+        data = context.get_plugin_data(TagThresholds)
+        if data is None:
             return result
 
-        csv_path = context.artifacts.get_optional("tag_list")
-        if csv_path is None:
-            context.warn_once(
-                key=f"tag-level-thresholds:missing-csv:{context.source}",
-                message="TagLevelThresholds requires artifact 'tag_list' (CSV), but it was not found.",
-            )
-            return result
-
-        threshold_map = self._threshold_map_for_csv(csv_path)
-        total_tags, with_thresh, col_present = self._threshold_stats_for_csv(csv_path)
-
-        if not col_present:
-            raise RuntimeError(f"CSV at '{csv_path}' missing '{self.threshold_column}' column.")
-
-        missing_count = max(total_tags - with_thresh, 0)
-        if missing_count > 0:
-            context.warn_once(
-                key=f"tag-level-thresholds:partial:{csv_path}",
-                message=(
-                    f"CSV '{csv_path}' has partial '{self.threshold_column}' data. "
-                    f"{missing_count}/{total_tags} tags are missing it."
-                ),
-            )
+        threshold_map = data.values
 
         for entries in result.tags.values():
             filtered = []
@@ -437,37 +438,12 @@ class TagLevelThresholds(ResultTransform[TagResult, TagResult]):
                     threshold += self.threshold_offset
                     if self.threshold_relative_offset != 0.0:
                         threshold *= 1.0 + self.threshold_relative_offset
+
                 if threshold is None or entry.score >= threshold:
                     filtered.append(entry)
             entries[:] = filtered
 
         return result
-
-    def _threshold_map_for_csv(self, csv_path: Path) -> dict[str, float]:
-        cache_key = str(csv_path)
-        if cache_key in self._threshold_cache:
-            return self._threshold_cache[cache_key]
-
-        metadata = load_tag_metadata(csv_path, threshold_column=self.threshold_column)
-        threshold_map = {
-            tag: thr
-            for tag, thr in zip(metadata.raw_tag_names, metadata.per_tag_thresholds, strict=False)
-            if thr is not None
-        }
-
-        self._threshold_stats_cache[cache_key] = (
-            len(metadata.raw_tag_names),
-            len(threshold_map),
-            metadata.threshold_column_present,
-        )
-        self._threshold_cache[cache_key] = threshold_map
-        return threshold_map
-
-    def _threshold_stats_for_csv(self, csv_path: Path) -> tuple[int, int, bool]:
-        cache_key = str(csv_path)
-        if cache_key not in self._threshold_stats_cache:
-            self._threshold_map_for_csv(csv_path)
-        return self._threshold_stats_cache.get(cache_key, (0, 0, False))
 
 
 # endregion

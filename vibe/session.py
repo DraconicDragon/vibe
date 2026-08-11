@@ -69,6 +69,7 @@ class ModelSession:
             artifacts=file_map,
             source=source,
             auto_download=auto_download,
+            _plugin_data={type(d): d for d in plugin.provide_transform_data()},
         )
         self._pipeline = TransformPipeline(
             plugin.identity.model_id, self._transform_context, plugin.capabilities.transforms

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, Self
 
 from vibe.precision import PrecisionRequest
+from vibe.result_transforms import PluginData
 from vibe.results import ModelResult, OutputType
 
 if TYPE_CHECKING:
@@ -325,6 +326,10 @@ class ModelPlugin(ABC):
         raise NotImplementedError(
             f"Plugin '{self.identity.model_id}' has not migrated to the build_runtime() contract."
         )
+
+    def provide_transform_data(self) -> tuple[PluginData, ...]:
+        """Optional hook: return typed data this plugin has precomputed for transforms to consume."""
+        return ()
 
     def collate_batch(self, samples: list[Any]) -> Any:
         """Collate a list of preprocessed samples into a batch tensor.

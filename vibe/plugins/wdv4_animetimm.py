@@ -24,7 +24,14 @@ from vibe.plugins.shared.tagger_shared import (
     load_tag_metadata,
     normalize_output_scores,
 )
-from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds, TagLevelThresholds
+from vibe.result_transforms import (
+    CharacterIPMapping,
+    CleanTags,
+    PluginData,
+    ScoreThresholds,
+    TagLevelThresholds,
+    TagThresholds,
+)
 from vibe.results import OutputType, TagResult
 from vibe.tag_categories import DanbooruTagCategory, TagCategory
 
@@ -79,6 +86,7 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
     _raw_tag_names: list[str]
     _num_classes: int
     _category_indices: dict[str, list[int]]
+    _tag_thresholds: dict[str, float]
 
     # region Session Lifecycle
 
@@ -98,6 +106,13 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             TagCategory.ARTIST.value: metadata.indices_for(int(DanbooruTagCategory.ARTIST)),
         }
 
+        # Parse per-tag thresholds from selected_tags.csv
+        self._tag_thresholds = {
+            tag: thr
+            for tag, thr in zip(metadata.raw_tag_names, metadata.per_tag_thresholds, strict=False)
+            if thr is not None
+        }
+
         config_path = artifacts.get_optional("config")
         preprocess_path = artifacts.get_optional("preprocess")
         if config_path:
@@ -105,14 +120,20 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             self.prepare_timm_runtime_preprocess(config, preprocess_path)
 
         logger.info(
-            "Loaded AnimeTimm tags for %s: total=%d general=%d artist=%d character=%d rating=%d",
+            "Loaded AnimeTimm tags for %s: total=%d general=%d artist=%d character=%d rating=%d thresholds=%d",
             self.identity.model_id,
             self._num_classes,
             len(self._category_indices.get(TagCategory.GENERAL.value, [])),
             len(self._category_indices.get(TagCategory.ARTIST.value, [])),
             len(self._category_indices.get(TagCategory.CHARACTER.value, [])),
             len(self._category_indices.get(TagCategory.RATING.value, [])),
+            len(self._tag_thresholds),
         )
+
+    def provide_transform_data(self) -> tuple[PluginData, ...]:
+        if self._tag_thresholds:
+            return (TagThresholds(values=self._tag_thresholds),)
+        return ()
 
     # endregion Session Lifecycle
 
@@ -123,8 +144,7 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
         scores = normalize_output_scores(raw_output, expected_count=self._num_classes)
         return build_categorized_tag_result(self._raw_tag_names, scores, self._category_indices)
 
-
-# endregion Postprocess
+    # endregion Postprocess
 
 
 # endregion Base Plugin

@@ -6,7 +6,9 @@ Patch size is 16, so 1024 tokens = ~0.25 MP which is for reference a 512x512 ima
 
 from __future__ import annotations
 
+import csv
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
@@ -29,7 +31,14 @@ from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
     normalize_output_scores,
 )
-from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds
+from vibe.result_transforms import (
+    CharacterIPMapping,
+    CleanTags,
+    PluginData,
+    ScoreThresholds,
+    TagLevelThresholds,
+    TagThresholds,
+)
 from vibe.results import OutputType, TagResult
 from vibe.tag_categories import E621_CATEGORY_LABELS, TagCategory
 
@@ -71,7 +80,31 @@ def _preprocess_image_jtp3(image: Any, seqlen: int) -> JTPHydraBatch:
     return JTPHydraBatch(patches.squeeze(0), sizes.squeeze(0))
 
 
-# endregion
+def _parse_jtp_val_csv(csv_path: Path) -> dict[str, float]:
+    """Parse JTP3 validation CSV and compute the optimal F1 threshold per tag."""
+    tag_best_f1: dict[str, float] = {}
+    tag_best_thresh: dict[str, float] = {}
+
+    with csv_path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            tag = row.get("tag", "").strip()
+            if not tag:
+                continue
+            thresh = float(row.get("threshold", 0.0))
+            tp = float(row.get("tp", 0.0))
+            fp = float(row.get("fp", 0.0))
+            fn = float(row.get("fn", 0.0))
+
+            f1 = (2 * tp) / (2 * tp + fp + fn + 1e-9)
+            if tag not in tag_best_f1 or f1 > tag_best_f1[tag]:
+                tag_best_f1[tag] = f1
+                tag_best_thresh[tag] = thresh
+
+    return tag_best_thresh
+
+
+# endregion Constants & Helpers
 
 
 # region Abstract Base Plugin
@@ -102,32 +135,32 @@ class JTPHydraBasePlugin(ModelPlugin):
                 default=1024,
                 min_val=64,
                 max_val=2048,
-                description="Maximum visual tokens used to represent an image. Higher values preserve fine detail but use more VRAM. Range: 64–2048.",
+                description="Maximum visual tokens used to represent an image. Higher values preserve fine detail but use more VRAM.",
             ),
         ),
         transforms=(
             CleanTags,
             CharacterIPMapping,
             ScoreThresholds(threshold=0.35),
+            TagLevelThresholds,
         ),
     )
 
     _raw_tag_names: list[str]
     _category_indices: dict[str, list[int]]
+    _tag_thresholds: dict[str, float]
     _seqlen: int = 1024
     _preloaded_model: Any | None = None
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
-        """Parse tag labels and category indices from weights or CSV metadata."""
+        """Parse tag labels, category indices, and optimal thresholds directly from weights or optional validation CSV."""
         weights_path = artifacts.get("model_pt")
-        csv_path = artifacts.get_optional("tag_list")
-
-        legacy_dir = str(csv_path.parent) if csv_path is not None else None
+        val_csv_path = artifacts.get_optional("val_csv")
 
         from .model import load_model
 
-        # Load PyTorch model once to extract metadata and store for build_runtime()
-        model = load_model(str(weights_path), logit=True, legacy_metadata_dir=legacy_dir)
+        # Load PyTorch model to extract embedded labels
+        model = load_model(str(weights_path), logit=True)
         self._raw_tag_names = [label.label for label in model.labels]
 
         cat_to_name = {cat_id: str(name) for cat_id, name in E621_CATEGORY_LABELS.items()}
@@ -136,9 +169,47 @@ class JTPHydraBasePlugin(ModelPlugin):
             cat_name = cat_to_name.get(label.category, str(label.category))
             self._category_indices.setdefault(cat_name, []).append(idx)
 
-        # Snapshot the config at load time
+        # Parse optimal tag thresholds
+        self._tag_thresholds = {}
+
+        # 1. Check for embedded 'validation' tensor in weights (Hydra 3.5 format)
+        try:
+            from safetensors import safe_open
+
+            with safe_open(str(weights_path), framework="numpy") as f:
+                keys = f.keys()
+                if "validation" in keys:
+                    val_data = f.get_tensor("validation")  # Shape: (8886, 99, 4)
+                    tp = val_data[:, :, 0]
+                    fp = val_data[:, :, 1]
+                    fn = val_data[:, :, 3]
+
+                    f1 = (2 * tp) / (2 * tp + fp + fn + 1e-9)
+                    best_bins = np.argmax(f1, axis=1)
+                    steps = np.linspace(0.01, 0.99, 99)
+                    best_thresholds = steps[best_bins]
+
+                    self._tag_thresholds = {
+                        tag: float(thresh) for tag, thresh in zip(self._raw_tag_names, best_thresholds, strict=False)
+                    }
+                    logger.info(
+                        "Extracted optimal thresholds from embedded validation tensor for %s", self.identity.model_id
+                    )
+        except Exception as exc:
+            logger.debug("Failed to extract validation tensor from safetensors: %s", exc)
+
+        # 2. Fall back to parsing optional val_csv if no embedded tensor was present
+        if not self._tag_thresholds and val_csv_path is not None:
+            self._tag_thresholds = _parse_jtp_val_csv(val_csv_path)
+            logger.info("Parsed optimal thresholds from val_csv for %s", self.identity.model_id)
+
         self._seqlen = int(self.get_option("jtp_hydra_seqlen"))
         self._preloaded_model = model
+
+    def provide_transform_data(self) -> tuple[PluginData, ...]:
+        if self._tag_thresholds:
+            return (TagThresholds(values=self._tag_thresholds),)
+        return ()
 
     def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
         """Build the native JTP-3 / Hydra model graph."""
@@ -150,12 +221,10 @@ class JTPHydraBasePlugin(ModelPlugin):
             self._preloaded_model = None
         else:
             weights_path = artifacts.get("model_pt")
-            csv_path = artifacts.get_optional("tag_list")
-            legacy_dir = str(csv_path.parent) if csv_path is not None else None
 
             from .model import load_model
 
-            model = load_model(str(weights_path), logit=True, legacy_metadata_dir=legacy_dir)
+            model = load_model(str(weights_path), logit=True)
 
         attn_pool = getattr(model, "attn_pool", None)
         inference_fn = getattr(attn_pool, "inference", None)
@@ -214,7 +283,7 @@ class JTP3Plugin(JTPHydraBasePlugin):
                 ArtifactSpec(
                     id="val_csv",
                     name="jtp-3-hydra-val.csv",
-                    role=FileRole.TAG_LIST,
+                    role=FileRole.MAPPING,
                     hf_subdir="data",
                     required=False,
                 ),
