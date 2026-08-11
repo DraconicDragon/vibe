@@ -315,7 +315,14 @@ class CleanTags(ResultTransform[TagResult, TagResult]):
             return result
 
         for entries in result.tags.values():
-            entries[:] = [TagEntry(tag=_clean_tag_text(entry.tag), score=entry.score) for entry in entries]
+            entries[:] = [
+                TagEntry(
+                    tag=_clean_tag_text(entry.tag),
+                    score=entry.score,
+                    extras=entry.extras,  # Preserve entry metadata
+                )
+                for entry in entries
+            ]
 
         mapping = result.extras.get("character_copyright_mapping")
         if mapping is not None:
