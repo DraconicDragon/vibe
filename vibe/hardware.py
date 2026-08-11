@@ -32,7 +32,7 @@ def list_available_devices() -> list[str]:
 
     # ONNX Runtime Execution Provider Discovery
     try:
-        import onnxruntime as ort  # ty:ignore[unresolved-import]
+        import onnxruntime as ort  # ty:ignore[unresolved-import, unused-ignore-comment]
 
         if hasattr(ort, "get_available_providers"):
             available = {str(p) for p in ort.get_available_providers()}

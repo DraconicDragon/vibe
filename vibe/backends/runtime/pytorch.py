@@ -218,8 +218,8 @@ class PyTorchBackend:
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        except Exception:
-            pass
+        except Exception as err:
+            logger.debug("Failed to clear PyTorch CUDA cache on close: %s", err)
 
     @property
     def device(self) -> str:
@@ -238,13 +238,13 @@ class PyTorchBackend:
         if has_cuda and callable(getattr(torch_module.cuda, "is_bf16_supported", None)):
             try:
                 bf16_supported = bool(torch_module.cuda.is_bf16_supported())
-            except Exception:
-                pass
+            except (RuntimeError, AttributeError, TypeError) as exc:
+                logger.debug("Failed to query CUDA bfloat16 support: %s", exc)
         elif has_xpu and callable(getattr(xpu_mod, "is_bf16_supported", None)):
             try:
                 bf16_supported = bool(xpu_mod.is_bf16_supported())
-            except Exception:
-                pass
+            except (RuntimeError, AttributeError, TypeError) as exc:
+                logger.debug("Failed to query XPU bfloat16 support: %s", exc)
 
         # 1. Resolve Compute Policy
         compute_policy = request.compute

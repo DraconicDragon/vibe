@@ -76,3 +76,7 @@ dev = ["pytest>=9.1.1", "ruff>=0.16.2", "ty>=0.0.69"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["vibe"]
+
+
+[tool.ruff.lint]
+ignore = ["BLE001"]

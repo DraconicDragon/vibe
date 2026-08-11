@@ -183,11 +183,11 @@ def _robust_eq(a: Any, b: Any) -> bool:
     try:
         eq = a == b
     except Exception:
-        # ref's __eq__ raised something arbitrary/unexpected - treat as "no match", never crash.
+        # Ref's __eq__ raised arbitrary/unexpected exception - treat as "no match", never crash.
         return False
     try:
         return bool(eq)
-    except Exception:
+    except (ValueError, TypeError):
         # e.g. a multi-element numpy/torch array: bool() on it raises ValueError.
         return False
 

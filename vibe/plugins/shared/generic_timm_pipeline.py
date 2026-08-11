@@ -103,7 +103,9 @@ class TimmPipelineMixin:
         if missing:
             logger.warning("timm load_state_dict missing keys for model_id=%s: %s", self.identity.model_id, missing[:8])
         if unexpected:
-            logger.warning("timm load_state_dict unexpected keys for model_id=%s: %s", self.identity.model_id, unexpected[:8])
+            logger.warning(
+                "timm load_state_dict unexpected keys for model_id=%s: %s", self.identity.model_id, unexpected[:8]
+            )
 
         return model
 
@@ -177,7 +179,9 @@ class TimmPipelineMixin:
 
         image_size = _image_size_from_input_size(input_size)
         if image_size is None:
-            raise RuntimeError(f"Could not resolve timm preprocess size from config.json for model '{self.identity.model_id}'.")
+            raise RuntimeError(
+                f"Could not resolve timm preprocess size from config.json for model '{self.identity.model_id}'."
+            )
 
         resize_size = image_size
         if crop_pct and 0 < crop_pct < 1:

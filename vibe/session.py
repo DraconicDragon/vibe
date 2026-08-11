@@ -12,7 +12,8 @@ import logging
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
-from typing import Any, Literal
+from types import TracebackType
+from typing import Any, Literal, Self
 
 from vibe import ModelResult
 from vibe.backends.base import ArtifactMap, Backend, ExecutionPlan, ModelPlugin, RuntimeExecutor
@@ -335,15 +336,16 @@ class ModelSession:
                 ):
                     loop.call_soon_threadsafe(queue.put_nowait, chunk)
             except Exception as exc:
+                logger.debug("Async worker caught exception: %s", exc, exc_info=True)
                 try:
                     loop.call_soon_threadsafe(queue.put_nowait, exc)
-                except RuntimeError:
-                    pass  # Event loop is already closed; safe to ignore
+                except RuntimeError as loop_exc:
+                    logger.debug("Event loop closed before async exception could be queued: %s", loop_exc)
             finally:
                 try:
                     loop.call_soon_threadsafe(queue.put_nowait, _ASYNC_INFER_DONE)
-                except RuntimeError:
-                    pass  # Event loop is already closed; safe to ignore
+                except RuntimeError as loop_exc:
+                    logger.debug("Event loop closed before async completion signal could be queued: %s", loop_exc)
 
         # Daemon thread so pending async inference doesn't prevent interpreter shutdown
         thread = threading.Thread(target=_worker, name="vibe-infer-async", daemon=True)
@@ -464,11 +466,16 @@ class ModelSession:
         """Clear aggregated session memory telemetry counters."""
         self._memory_tracker.reset()
 
-    def __enter__(self) -> ModelSession:
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        del exc_type, exc, tb
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        del exc_type, exc_val, exc_tb
         self.close()
 
     def __del__(self) -> None:
@@ -476,9 +483,9 @@ class ModelSession:
             return
         try:
             self.close()
-        except Exception:
-            # Avoid noisy teardown failures at interpreter shutdown.
-            pass
+        except Exception as exc:
+            # Log teardown failures at debug level to avoid try-except-pass anti-pattern
+            logger.debug("Ignored exception during session teardown in __del__: %s", exc)
 
     def __repr__(self) -> str:
         return f"ModelSession(model_id={self.model_id!r}, backend={self._backend.value!r})"

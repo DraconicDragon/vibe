@@ -83,7 +83,7 @@ def _load_mapping_json(path: Path) -> dict[str, list[str]]:
     try:
         with path.open("r", encoding="utf-8") as f:
             raw = json.load(f)
-    except Exception as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         logger.warning("Failed to load character mapping JSON %s: %s", path, exc)
         return {}
 
