@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path
 
-from vibe.hf_downloader import HFDownloadError, download_or_cached
+from vibe.hf_downloader import download_or_cached
 
 logger = logging.getLogger(__name__)
 
