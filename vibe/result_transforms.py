@@ -48,7 +48,7 @@ KAOMOJIS = {
 class PluginData:
     """
     Base marker for typed, plugin-computed data handed to transforms at runtime.
-    Transforms fetch them by type from TransformContext. 
+    Transforms fetch them by type from TransformContext.
     """
 
 
@@ -75,6 +75,7 @@ class TransformContext:
     artifacts: ArtifactMap
     source: str
     auto_download: bool
+    token: str | None = None
     _plugin_data: dict[type[PluginData], PluginData] = field(default_factory=dict, repr=False)
     cache: dict[str, Any] = field(default_factory=dict, repr=False)
     _warned_keys: set[str] = field(default_factory=set, repr=False, compare=False)
@@ -296,6 +297,7 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
         cache = resolve_character_ip_mapping(
             manual_path=self.mapping_file,
             allow_download=context.auto_download,
+            token=context.token,
         )
         self._mapping_cache[cache_key] = cache
         return cache

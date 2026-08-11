@@ -69,6 +69,7 @@ class ModelSession:
             artifacts=file_map,
             source=source,
             auto_download=auto_download,
+            token=plan.hf_token,
             _plugin_data={type(d): d for d in plugin.provide_transform_data()},
         )
         self._pipeline = TransformPipeline(
@@ -116,6 +117,7 @@ class ModelSession:
         *,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
+        prefetch_batch_limit: int = 8,
         on_cancel: Literal["raise", "return_partial"] = "raise",
     ) -> InferenceResult:
         """
@@ -137,6 +139,7 @@ class ModelSession:
                 transforms=transforms,
                 batch_size=batch_size,
                 batch_method=batch_method,
+                prefetch_batch_limit=prefetch_batch_limit,
             ):
                 total_inputs = chunk.total_inputs
                 items.extend(chunk.items)
@@ -179,6 +182,7 @@ class ModelSession:
         *,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
+        prefetch_batch_limit: int = 8,
     ) -> Iterator[InferenceResult]:
         """
         Stream inference results as each completed chunk becomes available.
@@ -232,6 +236,7 @@ class ModelSession:
                 for chunk in iter_load_images(
                     images=images,
                     batch_size=batch_size,
+                    prefetch_batch_limit=prefetch_batch_limit,
                     prefetch=prefetch_images,
                     cancel_check=self._state.check_cancelled,
                     error_cls=SessionError,
@@ -303,6 +308,7 @@ class ModelSession:
         *,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
+        prefetch_batch_limit: int = 8,
     ) -> AsyncIterator[InferenceResult]:
         """
         Async wrapper over infer_batches() for progressive consumption.
@@ -325,6 +331,7 @@ class ModelSession:
                     transforms=transforms,
                     batch_size=batch_size,
                     batch_method=batch_method,
+                    prefetch_batch_limit=prefetch_batch_limit,
                 ):
                     loop.call_soon_threadsafe(queue.put_nowait, chunk)
             except Exception as exc:

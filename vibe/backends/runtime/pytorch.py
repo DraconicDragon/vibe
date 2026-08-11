@@ -14,7 +14,6 @@ from typing import Any
 import numpy as np
 
 from vibe.backends.base import ExecutionPlan, ExecutionPreference, HardwareIntent
-from vibe.config import config
 from vibe.precision import PrecisionPolicy, PrecisionRequest, ResolvedPrecisionPlan
 
 logger = logging.getLogger(__name__)
@@ -91,10 +90,10 @@ class PyTorchBackend:
                 "PyTorch is required to use the pytorch backend. Install it with: pip install torch"
             ) from exc
 
-        # Configure cuDNN based on global config
-        if not config.pytorch.cudnn_enabled:
+        # Configure cuDNN based on ExecutionPlan
+        if not plan.cudnn_enabled:
             torch.backends.cudnn.enabled = False
-            logger.info("cuDNN disabled via config")
+            logger.info("cuDNN disabled for this session")
         else:
             torch.backends.cudnn.enabled = True
             logger.debug("cuDNN enabled")

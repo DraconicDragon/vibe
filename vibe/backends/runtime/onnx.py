@@ -19,7 +19,6 @@ from typing import Any
 import numpy as np
 
 from vibe.backends.base import ExecutionPlan, ExecutionPreference, HardwareIntent
-from vibe.config import config
 from vibe.precision import PrecisionPolicy
 
 logger = logging.getLogger(__name__)
@@ -91,8 +90,7 @@ def resolve_onnx_provider_chain(
     """Resolve providers and provider options from request/device state."""
     available_set = set(_available_onnx_providers(ort_module))
 
-    # Precedence: Explicit argument -> Programmatic VibeConfig -> None (Auto)
-    explicit = requested_providers if requested_providers is not None else config.onnx.providers
+    explicit = requested_providers
 
     wants_accelerator = preference.intent in (HardwareIntent.ACCELERATOR, HardwareIntent.AUTO)
     must_accelerator = preference.intent == HardwareIntent.ACCELERATOR

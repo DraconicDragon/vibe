@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from vibe.config import config
-
 AUTO_DOWNLOAD_DEFAULT = True
 logger = logging.getLogger(__name__)
 
@@ -74,6 +72,7 @@ def download_or_cached(
     cache_dir: str | None = None,
     allow_download: bool | None = None,
     required: bool = True,
+    token: str | None = None,
 ) -> Path | None:
     """
     Resolve file from HF cache, optionally downloading when permitted.
@@ -91,6 +90,7 @@ def download_or_cached(
         cache_dir=cache_dir,
         allow_download=allow_download,
         required=required,
+        token=token,
     )
     return resolved
 
@@ -103,6 +103,7 @@ def download_or_cached_with_reason(
     cache_dir: str | None = None,
     allow_download: bool | None = None,
     required: bool = True,
+    token: str | None = None,
 ) -> tuple[Path | None, str | None]:
     """Resolve file from HF with optional reason string for unresolved optional files."""
     try:
@@ -151,7 +152,7 @@ def download_or_cached_with_reason(
             filename=filename,
             revision=revision,
             cache_dir=cache_dir,
-            token=config.hf.token,
+            token=token,
         )
         logger.debug("Downloaded HF file repo='%s' file='%s'", repo_id, filename)
         return Path(resolved), None

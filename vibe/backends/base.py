@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 import inspect
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -74,6 +75,8 @@ class ExecutionPlan:
     precision: PrecisionRequest
     variant_id: str | None = None
     onnx_providers: tuple[str, ...] | None = None
+    cudnn_enabled: bool = True
+    hf_token: str | None = None
 
 
 class RuntimeExecutor(Protocol):
@@ -237,6 +240,7 @@ class ModelPlugin(ABC):
     capabilities: ModelCapabilities
     default_repo_id: str
     variants: tuple[ModelVariant, ...]
+    _options: dict[str, Any]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -291,21 +295,61 @@ class ModelPlugin(ABC):
 
             warnings.warn(str(exc), stacklevel=2)
 
-    def get_option(self, key: str) -> Any:
-        """Fetch an option value from global vibe.config.plugins, falling back to declared default."""
-        from vibe.config import config
-
+    def set_options(self, options: Mapping[str, Any] | None) -> None:
+        """Initialize plugin-specific options passed during vibe.load()."""
+        provided = dict(options) if options else {}
         declared_specs = {spec.key: spec for spec in self.capabilities.options}
 
-        if key not in declared_specs:
-            available = list(declared_specs.keys())
-            raise KeyError(
-                f"Plugin '{self.identity.model_id}' attempted to access undeclared option '{key}'. "
-                f"Available options for this model: {available if available else 'None'}"
-            )
+        for key, val in provided.items():
+            if key not in declared_specs:
+                available = list(declared_specs.keys())
+                raise ValueError(
+                    f"Unknown option '{key}' provided for plugin '{self.identity.model_id}'. "
+                    f"Available options: {available if available else 'None'}"
+                )
 
-        spec = declared_specs[key]
-        return config.plugins.get(key, spec.default)
+        resolved = {}
+        for spec in self.capabilities.options:
+            val = provided.get(spec.key, spec.default)
+
+            # Validate type
+            if spec.type is float and isinstance(val, int) and not isinstance(val, bool):
+                val = float(val)
+            elif spec.type is int and isinstance(val, bool):
+                raise TypeError(
+                    f"Option '{spec.key}' for model '{self.identity.model_id}' expects type 'int', got 'bool'."
+                )
+            elif not isinstance(val, spec.type):
+                raise TypeError(
+                    f"Option '{spec.key}' for model '{self.identity.model_id}' expects type "
+                    f"'{spec.type.__name__}', got '{type(val).__name__}'."
+                )
+
+            # Validate choices
+            if spec.choices is not None and val not in spec.choices:
+                raise ValueError(f"Invalid value '{val}' for option '{spec.key}'. Valid choices: {spec.choices}")
+
+            # Validate range
+            if spec.min_val is not None and val < spec.min_val:
+                raise ValueError(
+                    f"Value '{val}' for option '{spec.key}' is below minimum allowed value ({spec.min_val})."
+                )
+            if spec.max_val is not None and val > spec.max_val:
+                raise ValueError(
+                    f"Value '{val}' for option '{spec.key}' exceeds maximum allowed value ({spec.max_val})."
+                )
+
+            resolved[spec.key] = val
+
+        self._options = resolved
+
+    def get_option(self, key: str) -> Any:
+        """Fetch a resolved option value for this session."""
+        if not hasattr(self, "_options"):
+            self.set_options(None)
+        if key not in self._options:
+            raise KeyError(f"Plugin '{self.identity.model_id}' accessed undeclared option '{key}'.")
+        return self._options[key]
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         """Initialize plugin-local metadata from resolved artifacts.

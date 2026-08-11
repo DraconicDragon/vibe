@@ -146,6 +146,7 @@ class SourceResolver(ABC):
                 cache_dir=kwargs.get("cache_dir"),
                 allow_download=kwargs.get("allow_download", True),
                 required=spec.required,
+                token=kwargs.get("token"),
             )
             return (Path(path) if path else None), reason
         except HFDownloadError as exc:
@@ -219,8 +220,8 @@ def resolve_variant_artifacts(
     cache_dir: str | None = None,
     allow_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
-    fallback_hf_repo_id: str | None = None,
     source_map: Mapping[str, str] | None = None,
+    token: str | None = None,
 ) -> ArtifactMap:
     """Main entrypoint for session factory to resolve files for a specific variant."""
     s = source.strip()
@@ -237,6 +238,7 @@ def resolve_variant_artifacts(
         revision=revision,
         cache_dir=cache_dir,
         allow_download=allow_download,
+        token=token,
     )
 
 

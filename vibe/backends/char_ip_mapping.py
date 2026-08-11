@@ -23,6 +23,7 @@ DEFAULT_MAP_FILE = "selected_tags.csv"
 def resolve_character_ip_mapping(
     manual_path: str | None = None,
     allow_download: bool | None = None,
+    token: str | None = None,
 ) -> dict[str, list[str]]:
     """
     Resolve mapping in priority order:
@@ -38,6 +39,7 @@ def resolve_character_ip_mapping(
             filename=DEFAULT_MAP_FILE,
             allow_download=allow_download,
             required=False,
+            token=token,
         )
     except HFDownloadError as exc:
         logger.debug("Character mapping fallback not available: %s", exc)

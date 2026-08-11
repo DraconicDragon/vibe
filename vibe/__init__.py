@@ -37,6 +37,7 @@ import logging
 from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
+from typing import Any
 
 from vibe.backends.base import (
     ArtifactMap,
@@ -53,7 +54,6 @@ from vibe.backends.base import (
     ModelVariant,
     PluginOptionSpec,
 )
-from vibe.config import config
 from vibe.exceptions import InferenceCancelled, RegistryError, SessionError, TransformError
 from vibe.hardware import list_available_devices
 from vibe.hf_downloader import (
@@ -120,6 +120,9 @@ def _load_internal(
     hf_revision: str | None,
     hf_cache_dir: str | None,
     onnx_providers: list[str] | None,
+    cudnn_enabled: bool,
+    hf_token: str | None,
+    options: Mapping[str, Any] | None,
     auto_download: bool | None,
     file_name_map: Mapping[str, str] | None,
     memory_tracking: bool,
@@ -164,10 +167,13 @@ def _load_internal(
         device=device,
         precision=precision_request,
         onnx_providers=onnx_providers,
+        cudnn_enabled=cudnn_enabled,
+        hf_token=hf_token,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
         auto_download=effective_auto_download,
         file_name_map=file_name_map,
+        options=options,
         memory_tracking=memory_tracking,
     )
 
@@ -181,9 +187,12 @@ def load(
     variant: str | None = None,
     device: str = "auto",
     precision: str | PrecisionRequest = "auto",
+    onnx_providers: list[str] | None = None,
+    cudnn_enabled: bool = True,
+    hf_token: str | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
-    onnx_providers: list[str] | None = None,
+    options: Mapping[str, Any] | None = None,
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = False,
@@ -248,9 +257,12 @@ def load(
         variant=variant,
         device=device,
         precision=precision,
+        onnx_providers=onnx_providers,
+        cudnn_enabled=cudnn_enabled,
+        hf_token=hf_token,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
-        onnx_providers=onnx_providers,
+        options=options,
         auto_download=auto_download,
         file_name_map=file_name_map,
         memory_tracking=memory_tracking,
@@ -267,9 +279,12 @@ def load_custom(
     variant: str | None = None,
     device: str = "auto",
     precision: str | PrecisionRequest = "auto",
+    onnx_providers: list[str] | None = None,
+    cudnn_enabled: bool = True,
+    hf_token: str | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
-    onnx_providers: list[str] | None = None,
+    options: Mapping[str, Any] | None = None,
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = False,
@@ -320,9 +335,12 @@ def load_custom(
         variant=variant,
         device=device,
         precision=precision,
+        onnx_providers=onnx_providers,
+        cudnn_enabled=cudnn_enabled,
+        hf_token=hf_token,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
-        onnx_providers=onnx_providers,
+        options=options,
         auto_download=auto_download,
         file_name_map=file_name_map,
         memory_tracking=memory_tracking,
@@ -446,7 +464,6 @@ __all__ = [
     "__author__",
     "__license__",
     "__version__",
-    "config",
     "describe",
     "describe_all",
     "get_auto_download_default",

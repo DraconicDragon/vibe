@@ -102,11 +102,14 @@ def build_session(
     device: str = "auto",
     precision: str | PrecisionRequest = "auto",
     onnx_providers: list[str] | None = None,
+    cudnn_enabled: bool = True,
+    hf_token: str | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
     source_map: Mapping[str, str] | None = None,
+    options: Mapping[str, Any] | None = None,
     memory_tracking: bool = False,
 ) -> ModelSession:
     """Build a ModelSession from a plugin class and a file source."""
@@ -158,6 +161,7 @@ def build_session(
                 allow_download=effective_auto_download,
                 file_name_map=file_name_map,
                 source_map=source_map,
+                token=hf_token,
             )
         except LoaderError as exc:
             # Artifact resolution failed. If we have more variants to try, continue seamlessly.
@@ -178,13 +182,16 @@ def build_session(
             precision=precision_req,
             variant_id=selected_variant.variant_id,
             onnx_providers=tuple(onnx_providers) if onnx_providers is not None else None,
+            cudnn_enabled=cudnn_enabled,
+            hf_token=hf_token,
         )
 
         try:
             plugin = plugin_cls()
+            plugin.set_options(options)
             plugin.load_ancillary(file_map)
 
-            pool_key = _make_runtime_pool_key(plugin_cls, file_map, plan)
+            pool_key = _make_runtime_pool_key(plugin_cls, file_map, plan, options=plugin._options)
             runtime, release_fn = _acquire_runtime(
                 key=pool_key,
                 model_id=model_id,
@@ -249,11 +256,13 @@ def _make_runtime_pool_key(
     plugin_cls: type[ModelPlugin],
     artifacts: ArtifactMap,
     plan: ExecutionPlan,
+    options: dict[str, Any] | None = None,
 ) -> tuple[Any, ...]:
     """Key a completed runtime by all inputs which can affect its construction."""
     artifact_key = tuple(
         sorted((artifact_id, str(path.resolve())) for artifact_id, path in artifacts.as_path_dict().items())
     )
+    options_key = tuple(sorted(options.items())) if options else ()
     return (
         plugin_cls.__module__,
         plugin_cls.__qualname__,
@@ -265,6 +274,8 @@ def _make_runtime_pool_key(
         plan.precision.weight.value,
         plan.precision.compute.value,
         plan.onnx_providers,
+        plan.cudnn_enabled,
+        options_key,
     )
 
 
