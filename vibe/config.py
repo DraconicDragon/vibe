@@ -7,6 +7,16 @@ from typing import Any
 
 
 @dataclass
+class HFConfig:
+    token: str | None = None
+
+
+@dataclass
+class EngineConfig:
+    prefetch_batch_limit: int = 8
+
+
+@dataclass
 class ONNXConfig:
     providers: list[str] | None = None
 
@@ -36,6 +46,8 @@ class VibeConfig:
         self.onnx = ONNXConfig()
         self.pytorch = PyTorchConfig()
         self.plugins = PluginConfig()
+        self.hf = HFConfig()
+        self.engine = EngineConfig()
 
 
 config = VibeConfig()

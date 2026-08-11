@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from vibe.config import config
+
 AUTO_DOWNLOAD_DEFAULT = True
 logger = logging.getLogger(__name__)
 
@@ -149,6 +151,7 @@ def download_or_cached_with_reason(
             filename=filename,
             revision=revision,
             cache_dir=cache_dir,
+            token=config.hf.token,
         )
         logger.debug("Downloaded HF file repo='%s' file='%s'", repo_id, filename)
         return Path(resolved), None

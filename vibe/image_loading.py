@@ -12,6 +12,8 @@ from typing import Any
 
 from PIL import Image
 
+from vibe.config import config
+
 logger = logging.getLogger(__name__)
 
 CancelCheck = Callable[[], None]
@@ -139,7 +141,7 @@ def iter_load_images(
     # Queue-based prefetch
     from collections import deque
 
-    max_prefetch_batches = max(1, 8 // batch_size)
+    max_prefetch_batches = max(1, config.engine.prefetch_batch_limit // batch_size)
     futures_queue: deque[tuple[int, int, Future[list[Any]]]] = deque()
 
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="vibe-image-loader") as executor:
