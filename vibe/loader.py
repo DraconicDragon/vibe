@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from vibe.backends.base import ArtifactMap, ArtifactSpec, Backend, FileRole, ModelVariant
-from vibe.exceptions import LoaderError
-from vibe.hf_downloader import HFDownloadError, download_or_cached_with_reason
+from vibe.exceptions import HFDownloadError, LoaderError
+from vibe.hf_downloader import download_or_cached_with_reason
 
 logger = logging.getLogger(__name__)
 

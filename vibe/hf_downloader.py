@@ -5,15 +5,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from vibe.exceptions import HFDownloadError
+
 AUTO_DOWNLOAD_DEFAULT = True
 logger = logging.getLogger(__name__)
 
 
 # region Policy
-
-
-class HFDownloadError(Exception):
-    """Raised when a HuggingFace download/cached lookup cannot be satisfied."""
 
 
 def _response_status_code(exc: Exception) -> int | None:

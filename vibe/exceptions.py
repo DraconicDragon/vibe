@@ -16,3 +16,7 @@ class RegistryError(Exception):
 
 class LoaderError(Exception):
     """Raised when file resolution or validation fails."""
+
+
+class HFDownloadError(Exception):
+    """Raised when a HuggingFace download/cached lookup cannot be satisfied."""
