@@ -173,6 +173,7 @@ class JTPHydraBasePlugin(ModelPlugin):
         self._tag_thresholds = {}
 
         # 1. Check for embedded 'validation' tensor in weights (Hydra 3.5 format)
+        # NOTE: This should be the correct math for F1 but the model still outputs more false positives than I thought
         try:
             from safetensors import safe_open
 
