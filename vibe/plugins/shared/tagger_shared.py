@@ -111,8 +111,20 @@ def preprocess_tagger_image(
     return np.expand_dims(arr, axis=0).astype(np.float32, copy=False)
 
 
-def normalize_output_scores(raw_output: Any, expected_count: int | None = None) -> np.ndarray:
-    """Flatten model output into probabilities in [0, 1]."""
+def normalize_output_scores(
+    raw_output: Any,
+    *,
+    is_logits: bool,
+    expected_count: int | None = None,
+) -> np.ndarray:
+    """Flatten model output into probabilities in [0, 1].
+
+    Args:
+        raw_output: Raw model output (tensor, list, or tuple).
+        is_logits: True if the model outputs raw logits (sigmoid will be applied).
+                   False if the model already outputs probabilities (values will be clipped to [0, 1]).
+        expected_count: Optional expected number of tags for disambiguating multi-output models.
+    """
     if isinstance(raw_output, (tuple, list)):
         if len(raw_output) == 1:
             raw_output = raw_output[0]
@@ -158,10 +170,11 @@ def normalize_output_scores(raw_output: Any, expected_count: int | None = None) 
             scores = np.squeeze(scores, axis=0)
         scores = np.ravel(scores)
 
-    # Smart Sigmoid: Only apply sigmoid if values are raw logits outside [0, 1]
-    if np.min(scores) < 0.0 or np.max(scores) > 1.0:
+    if is_logits:
         clipped = np.clip(scores, -80.0, 80.0)
         scores = 1.0 / (1.0 + np.exp(-clipped))
+    else:
+        scores = np.clip(scores, 0.0, 1.0)
 
     return scores.astype(np.float32, copy=False)
 

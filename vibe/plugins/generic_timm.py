@@ -58,6 +58,7 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
     _labels: list[str] | None = None
     _num_classes: int | None = None
+    _is_logits: bool | None = None
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         logger.info(
@@ -68,13 +69,18 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
         self._labels = self._resolve_labels(config)
         self._num_classes = self._resolve_num_classes(config)
+        self._is_logits = self._resolve_is_logits_from_config(config)
 
         preprocess_path = artifacts.get_optional("preprocess")
         self.prepare_timm_runtime_preprocess(config, preprocess_path, prefer_timm=True)
 
     def postprocess(self, raw_output: Any) -> ScoreResult | MultiScoreResult | TagResult:
         expected_count = self._num_classes if self._num_classes else (len(self._labels) if self._labels else None)
-        scores = normalize_output_scores(raw_output, expected_count=expected_count)
+
+        # Detect or confirm whether the output tensor represents raw logits
+        is_logits = self._determine_is_logits(raw_output)
+
+        scores = normalize_output_scores(raw_output, is_logits=is_logits, expected_count=expected_count)
 
         output_type = self.capabilities.output_type
 
@@ -125,6 +131,66 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             normalized_score=float(np.mean(score_values)) if score_values else 0.0,
         )
 
+    def _determine_is_logits(self, raw_output: Any) -> bool:
+        """Determine whether the raw output represents logits, locking the decision once proven."""
+        # 1. Return cached determination if already locked
+        if self._is_logits is not None:
+            return self._is_logits
+
+        # 2. PyTorch timm models natively output raw linear logits
+        if self._active_backend == Backend.PYTORCH:
+            self._is_logits = True
+            return True
+
+        # 3. Dynamic inspection for ONNX or unconfigured models
+        arr = np.asarray(raw_output, dtype=np.float32)
+        min_val = float(np.min(arr)) if arr.size > 0 else 0.0
+        max_val = float(np.max(arr)) if arr.size > 0 else 0.0
+
+        # Irrefutable proof: values < 0 or > 1 cannot be probabilities
+        if min_val < -1e-4 or max_val > 1.0 + 1e-4:
+            logger.debug(
+                "Detected raw logits for model '%s' (min=%.4f, max=%.4f)", self.identity.model_id, min_val, max_val
+            )
+            self._is_logits = True
+            return True
+
+        # For models with many classes (>10), if all values fall in [0, 1], it is almost certainly probabilities
+        num_classes = self._num_classes or (len(self._labels) if self._labels else 0)
+        if num_classes > 10:
+            logger.debug(
+                "Detected probabilities for model '%s' (%d classes, all in [0, 1])", self.identity.model_id, num_classes
+            )
+            self._is_logits = False
+            return False
+
+        # Fallback for ambiguous cases (e.g. single-scalar score ONNX models)
+        return False
+
+    def _resolve_is_logits_from_config(self, config: dict[str, Any]) -> bool | None:
+        """Inspect config.json for explicit activation settings."""
+        for key in ("classifier_activation", "activation_fn", "activation"):
+            act = config.get(key)
+            if isinstance(act, str):
+                act_lower = act.lower().strip()
+                if act_lower in ("sigmoid", "softmax"):
+                    return False
+                if act_lower in ("none", "identity", "linear"):
+                    return True
+
+        for cfg_key in ("pretrained_cfg", "pretrained_cfg_overlay"):
+            sub_cfg = config.get(cfg_key)
+            if isinstance(sub_cfg, dict):
+                act = sub_cfg.get("classifier_activation")
+                if isinstance(act, str):
+                    act_lower = act.lower().strip()
+                    if act_lower in ("sigmoid", "softmax"):
+                        return False
+                    if act_lower in ("none", "identity", "linear"):
+                        return True
+
+        return None
+
     def _resolve_labels(self, config: dict[str, Any]) -> list[str] | None:
         """Attempt to extract label list from various common HF/timm config keys."""
         for key in ("label_names", "labels", "classes", "categories"):
@@ -150,8 +216,6 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
                 label_list = sub_cfg.get("label_names") or sub_cfg.get("classes")
                 if isinstance(label_list, list) and all(isinstance(item, str) for item in label_list):
                     return [str(item) for item in label_list]
-
-        return None
 
         return None
 

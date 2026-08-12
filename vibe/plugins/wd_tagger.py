@@ -124,7 +124,11 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
 
     def postprocess(self, raw_output: Any) -> TagResult:
         """Return full scored output grouped by WD tag category."""
-        scores = normalize_output_scores(raw_output, expected_count=len(self._raw_tag_names))
+        scores = normalize_output_scores(
+            raw_output,
+            is_logits=True,
+            expected_count=len(self._raw_tag_names),
+        )
         return build_categorized_tag_result(self._raw_tag_names, scores, self._category_indices)
 
 

@@ -261,7 +261,7 @@ class JTPHydraBasePlugin(ModelPlugin):
         return _preprocess_image_jtp3(image, self._seqlen)
 
     def postprocess(self, raw_output: Any) -> TagResult:
-        probs = normalize_output_scores(raw_output, expected_count=len(self._raw_tag_names))
+        probs = normalize_output_scores(raw_output, is_logits=True, expected_count=len(self._raw_tag_names))
         return build_categorized_tag_result(self._raw_tag_names, probs, self._category_indices)
 
 
