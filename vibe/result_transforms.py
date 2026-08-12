@@ -8,13 +8,13 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar, cast, get_args, get_origin
 
 from vibe.backends.base import ArtifactMap
 from vibe.backends.char_ip_mapping import apply_character_ip_mapping, resolve_character_ip_mapping
-from vibe.exceptions import TransformError
+from vibe.exceptions import TransformRequirementError
 from vibe.registry import transform_registry
-from vibe.results import ModelResult, TagEntry, TagResult
+from vibe.results import BaseModelResult, ModelResult, TagEntry, TagResult
 from vibe.tag_categories import TagCategory
 
 logger = logging.getLogger(__name__)
@@ -82,8 +82,24 @@ class TransformContext:
     _warned_keys: set[str] = field(default_factory=set, repr=False, compare=False)
 
     def get_plugin_data(self, kind: type[TData]) -> TData | None:
+        """Fetch optional plugin data, returning None if not provided."""
         found = self._plugin_data.get(kind)
         return found if isinstance(found, kind) else None
+
+    def require_plugin_data(self, kind: type[TData]) -> TData:
+        """
+        Fetch required plugin data.
+        Raises TransformRequirementError if the model did not provide it,
+        triggering the pipeline's fallback policy.
+        """
+        found = self.get_plugin_data(kind)
+        if found is None:
+            from vibe.exceptions import TransformRequirementError
+
+            raise TransformRequirementError(
+                f"Model '{self.model_id}' did not provide the required {kind.__name__} data."
+            )
+        return found
 
     def get_cached_or_load(self, key: str, loader_fn: Callable[[], Any]) -> Any:
         if key not in self.cache:
@@ -91,7 +107,6 @@ class TransformContext:
         return self.cache[key]
 
     def warn_once(self, key: str, message: str) -> None:
-        """Log a warning message exactly once for the given key in this context (session)."""
         if key in self._warned_keys:
             return
         self._warned_keys.add(key)
@@ -178,6 +193,7 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
     display_name: ClassVar[str]
     description: ClassVar[str]
     priority: ClassVar[int] = 0
+    requires_result_type: ClassVar[type[BaseModelResult]] = BaseModelResult
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -191,7 +207,20 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
                     f"Concrete transform subclass '{cls.__name__}' must define a non-empty '{attr}' string."
                 )
 
+        # Automatically deduce expected result type from generic type signature (e.g., TagResult)
+        for base in getattr(cls, "__orig_bases__", ()):
+            origin = get_origin(base)
+            if origin is ResultTransform or (isinstance(origin, type) and issubclass(origin, ResultTransform)):
+                args = get_args(base)
+                if args and isinstance(args[0], type) and issubclass(args[0], BaseModelResult):
+                    cls.requires_result_type = args[0]
+                break
+
         transform_registry.register(cls)
+
+    def accepts_result(self, result: BaseModelResult) -> bool:
+        """Return True if the result matches the required output type for this transform."""
+        return isinstance(result, self.requires_result_type)
 
     def __call__(self, result: TIn, *, context: TransformContext) -> TOut:
         """Convenience caller forwarding directly to apply()."""
@@ -277,10 +306,11 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
         try:
             mapping = self._get_mapping(context)
         except Exception as exc:
-            raise TransformError(f"Failed to load character IP mapping data: {exc}") from exc
+            # A failure to load is a requirement failure
+            raise TransformRequirementError(f"Failed to load character IP mapping data: {exc}") from exc
 
         if not mapping:
-            raise TransformError(
+            raise TransformRequirementError(
                 f"CharacterIPMapping on model '{context.model_id}' failed to load any valid mapping data "
                 f"(manual_path={self.mapping_file!r}, auto_download={context.auto_download})."
             )
@@ -434,18 +464,12 @@ class TagLevelThresholds(ResultTransform[TagResult, TagResult]):
             raise ValueError("threshold_fallback must be in [0.0, 1.0].")
 
     def on_infer_start(self, *, context: TransformContext) -> None:
-        # VALIDATION: Fail immediately if the plugin didn't provide the required data.
-        if context.get_plugin_data(TagThresholds) is None:
-            raise RuntimeError(
-                f"Model '{context.model_id}' declared TagLevelThresholds in its transforms, "
-                "but failed to provide TagThresholds in provide_transform_data()."
-            )
+        # Fails with TransformRequirementError automatically if data is missing
+        context.require_plugin_data(TagThresholds)
 
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
-        data = context.get_plugin_data(TagThresholds)
-        if data is None:
-            return result
-
+        # Data is guaranteed to exist here if on_infer_start passed
+        data = context.require_plugin_data(TagThresholds)
         threshold_map = data.values
 
         for entries in result.tags.values():

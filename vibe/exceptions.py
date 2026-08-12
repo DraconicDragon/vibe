@@ -6,6 +6,10 @@ class TransformError(SessionError):
     """Raised specifically when a result transform fails inside the pipeline."""
 
 
+class TransformRequirementError(TransformError):
+    """Raised by a transform when a prerequisite (like model-provided data) is missing."""
+
+
 class InferenceCancelled(SessionError):
     """Raised when an in-flight inference run is cancelled by user request."""
 
