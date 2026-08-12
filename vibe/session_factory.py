@@ -261,6 +261,14 @@ def build_session(
     raise SessionError(f"Failed to resolve files or build runtime for '{model_id}'. Attempts: {attempts}")
 
 
+def _make_hashable(val: Any) -> Any:
+    if isinstance(val, dict):
+        return tuple(sorted((k, _make_hashable(v)) for k, v in val.items()))
+    elif isinstance(val, (list, set, tuple)):
+        return tuple(_make_hashable(v) for v in val)
+    return val
+
+
 def _make_runtime_pool_key(
     plugin_cls: type[ModelPlugin],
     artifacts: ArtifactMap,
@@ -271,7 +279,7 @@ def _make_runtime_pool_key(
     artifact_key = tuple(
         sorted((artifact_id, str(path.resolve())) for artifact_id, path in artifacts.as_path_dict().items())
     )
-    options_key = tuple(sorted(options.items())) if options else ()
+    options_key = tuple(sorted((k, _make_hashable(v)) for k, v in options.items())) if options else ()
     return (
         plugin_cls.__module__,
         plugin_cls.__qualname__,
