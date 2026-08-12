@@ -20,6 +20,7 @@ from vibe.backends.base import (
 )
 from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.scores_utils import normalize_scalar
+from vibe.plugins.shared.tagger_shared import normalize_output_scores
 from vibe.results import MultiScoreResult, OutputType, ScoreEntry, ScoreResult, TagEntry, TagResult
 from vibe.tag_categories import TagCategory
 
@@ -72,14 +73,14 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
         self.prepare_timm_runtime_preprocess(config, preprocess_path, prefer_timm=True)
 
     def postprocess(self, raw_output: Any) -> ScoreResult | MultiScoreResult | TagResult:
-        scores = self._flatten_scores(raw_output)
+        expected_count = self._num_classes if self._num_classes else (len(self._labels) if self._labels else None)
+        scores = normalize_output_scores(raw_output, expected_count=expected_count)
+
         output_type = self.capabilities.output_type
 
         # 1. Single Scalar Score Result
         if output_type == OutputType.SCORE:
             val = float(scores[0]) if len(scores) > 0 else 0.0
-            if val < 0.0 or val > 1.0:
-                val = float(1.0 / (1.0 + np.exp(-np.clip(val, -80.0, 80.0))))
             label = self._labels[0] if self._labels else "score"
             return ScoreResult(
                 score=val,
@@ -92,11 +93,6 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
         labels = self._labels
         if labels is None or len(labels) != len(scores):
             labels = [f"class_{index}" for index in range(len(scores))]
-
-        # Apply sigmoid to raw logits if values fall outside [0, 1]
-        if np.min(scores) < 0.0 or np.max(scores) > 1.0:
-            clipped = np.clip(scores, -80.0, 80.0)
-            scores = 1.0 / (1.0 + np.exp(-clipped))
 
         score_values = [float(val) for val in scores]
 
@@ -128,20 +124,6 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             entries=entries,
             normalized_score=float(np.mean(score_values)) if score_values else 0.0,
         )
-
-    def _flatten_scores(self, raw_output: Any) -> np.ndarray:
-        """Extract flat 1D score array from arbitrary backend model outputs."""
-        if isinstance(raw_output, (tuple, list)):
-            raw_output = raw_output[0]
-
-        scores = np.asarray(raw_output, dtype=np.float32)
-        if scores.ndim == 0:
-            scores = scores.reshape(1)
-        elif scores.ndim > 1:
-            if scores.shape[0] == 1:
-                scores = np.squeeze(scores, axis=0)
-            scores = np.ravel(scores)
-        return scores.astype(np.float32, copy=False)
 
     def _resolve_labels(self, config: dict[str, Any]) -> list[str] | None:
         """Attempt to extract label list from various common HF/timm config keys."""
