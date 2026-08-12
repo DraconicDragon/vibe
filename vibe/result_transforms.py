@@ -271,9 +271,6 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
             description="Path to custom mapping JSON. If omitted, uses model bundle or HF fallback."
         ),
     )
-    _mapping_cache: dict[str, dict[str, list[str]]] = field(
-        default_factory=dict, repr=False, compare=False, metadata=transform_meta(internal=True)
-    )
 
     def on_infer_start(self, *, context: TransformContext) -> None:
         """Pre-flight check: validate and pre-cache mapping before running inference."""
@@ -303,18 +300,16 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
         return result
 
     def _get_mapping(self, context: TransformContext) -> dict[str, list[str]]:
-        cache_key = self.mapping_file or ""
+        cache_key = f"char_ip_mapping:{self.mapping_file or 'default'}"
 
-        if cache_key in self._mapping_cache:
-            return self._mapping_cache[cache_key]
-
-        cache = resolve_character_ip_mapping(
-            manual_path=self.mapping_file,
-            allow_download=context.auto_download,
-            token=context.token,
+        return context.get_cached_or_load(
+            cache_key,
+            lambda: resolve_character_ip_mapping(
+                manual_path=self.mapping_file,
+                allow_download=context.auto_download,
+                token=context.token,
+            ),
         )
-        self._mapping_cache[cache_key] = cache
-        return cache
 
 
 @dataclass(frozen=True)
