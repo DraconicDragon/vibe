@@ -1,6 +1,5 @@
 import logging
 import math
-from functools import lru_cache
 from typing import Any
 
 import torch
@@ -26,19 +25,16 @@ LAYERSCALE = 1.0
 FEATURE_DIM = (1 + N_REGISTERS) * D_MODEL  # 6400
 
 
-@lru_cache(maxsize=32)
-def _patch_coords_cached(h: int, w: int, device_str: str) -> torch.Tensor:
-    device = torch.device(device_str)
-    cy = torch.arange(0.5, h, dtype=torch.float32, device=device) / h
-    cx = torch.arange(0.5, w, dtype=torch.float32, device=device) / w
+def _compute_patch_coords(h: int, w: int) -> torch.Tensor:
+    cy = torch.arange(0.5, h, dtype=torch.float32) / h
+    cx = torch.arange(0.5, w, dtype=torch.float32) / w
     coords = torch.stack(torch.meshgrid(cy, cx, indexing="ij"), dim=-1).flatten(0, 1)
     coords = 2.0 * coords - 1.0
     coords = coords * ROPE_RESCALE
     return coords
 
 
-def _build_rope(h_patches: int, w_patches: int, dtype: torch.dtype, device: torch.device):
-    coords = _patch_coords_cached(h_patches, w_patches, str(device))
+def _build_rope(coords: torch.Tensor, dtype: torch.dtype, device: torch.device):
     inv_freq = 1.0 / (ROPE_THETA ** torch.arange(0, 1, 4 / HEAD_DIM, dtype=torch.float32, device=device))
     angles = 2 * math.pi * coords[:, :, None] * inv_freq[None, None, :]
     angles = angles.flatten(1, 2).tile(2)
@@ -129,12 +125,24 @@ class DINOv3ViTH(nn.Module):
         self.embeddings = _Embeddings()
         self.layer = nn.ModuleList([_Block() for _ in range(N_LAYERS)])
         self.norm = nn.LayerNorm(D_MODEL, eps=LN_EPS)
+        self._rope_cache: dict[tuple[int, int, str], torch.Tensor] = {}
+
+    def _get_rope_coords(self, h: int, w: int, device: torch.device) -> torch.Tensor:
+        key = (h, w, str(device))
+        coords = self._rope_cache.get(key)
+        if coords is None:
+            coords = _compute_patch_coords(h, w).to(device)
+            if len(self._rope_cache) >= 32:
+                self._rope_cache.pop(next(iter(self._rope_cache)))
+            self._rope_cache[key] = coords
+        return coords
 
     def forward(self, pixel_values):
         _, _, H, W = pixel_values.shape
         x = self.embeddings(pixel_values)
         h_p, w_p = H // PATCH_SIZE, W // PATCH_SIZE
-        cos, sin = _build_rope(h_p, w_p, x.dtype, pixel_values.device)
+        coords = self._get_rope_coords(h_p, w_p, pixel_values.device)
+        cos, sin = _build_rope(coords, x.dtype, pixel_values.device)
         for block in self.layer:
             x = block(x, cos, sin)
         return self.norm(x)
