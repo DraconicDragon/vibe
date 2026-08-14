@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
@@ -47,12 +47,42 @@ class ImageChunk:
     refs: list[Any]
 
 
+def _is_image_like(x: Any) -> bool:
+    """Check if an object looks like a single image (path, array, PIL image, tensor)."""
+    if isinstance(x, (str, Path, bytes, bytearray)):
+        return True
+    if hasattr(x, "shape"):  # numpy arrays, torch tensors
+        return True
+    return bool(isinstance(x, Image.Image))
+
+
 def normalize_input_format(
     images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
     *,
     error_cls: type[Exception] = ValueError,
 ) -> tuple[list[Any | str], list[Any]]:
-    entries = images if isinstance(images, list) else [images]
+    # 1. Single image types (paths, byte streams, PIL images, numpy arrays, tensors, non-iterables)
+    if (
+        isinstance(images, (str, Path, bytes, bytearray))
+        or hasattr(images, "shape")
+        or not isinstance(images, Iterable)
+    ):
+        entries = [images]
+
+    # 2. Tuples: Distinguish single (image, ref) 2-tuple from a tuple container of items
+    elif isinstance(images, tuple):
+        # If it is a 2-tuple where only the first item is image-like and the second is non-image metadata
+        # (e.g. integer ID, dict, UUID), treat it as a single (image, ref) pair.
+        # Otherwise (both are image-like, or len != 2), treat the tuple as a batch container.
+        if len(images) == 2 and _is_image_like(images[0]) and not _is_image_like(images[1]):
+            entries = [images]
+        else:
+            entries = list(images)
+
+    # 3. Other iterables (list, generator, iterator, set, deque, etc.)
+    else:
+        entries = list(images)
+
     if not entries:
         return [], []
 
