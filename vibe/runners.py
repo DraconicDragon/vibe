@@ -187,10 +187,14 @@ class BatchRunner:
         self.engine = engine
         self.state = state
         self.backend = backend
+        self._batching_disabled = False
 
     def resolve_batch_method(
         self, requested: Literal["auto", "true", "sequential"], batch_size: int
     ) -> Literal["true", "sequential"]:
+        # Reset per inference run
+        self._batching_disabled = False
+
         if batch_size <= 1:
             return "sequential"
 
@@ -216,6 +220,30 @@ class BatchRunner:
             logger.exception("Backend supports_true_batching() failed; using conservative sequential fallback.")
             return False
 
+    def _run_sequential(self, chunk_tensors: list[Any], transforms: list[ResultTransform] | None) -> list[ModelResult]:
+        """Process preprocessed tensors one-by-one with cancellation checks and backend cache cleanup."""
+        clear_cache = getattr(self.engine.backend_instance, "clear_cache", None)
+        if callable(clear_cache):
+            try:
+                clear_cache()
+            except Exception as exc:
+                logger.debug("Backend clear_cache() failed during sequential fallback: %s", exc)
+
+        results = []
+        for tensor in chunk_tensors:
+            self.state.check_cancelled()
+            try:
+                results.append(self.engine.execute_tensor(tensor, transforms))
+            except InferenceCancelled:
+                raise
+            except Exception:
+                logger.exception(
+                    "Sequential inference failed for model '%s' during batch fallback",
+                    self.engine.model_id,
+                )
+                raise
+        return results
+
     def execute_chunk(
         self, chunk_images: list[Any], transforms: list[ResultTransform] | None, fallback_to_sequential: bool
     ) -> list[ModelResult]:
@@ -228,33 +256,84 @@ class BatchRunner:
         except Exception as exc:
             raise SessionError(f"Preprocessing failed for model '{self.engine.model_id}': {exc}") from exc
 
+        # Skip batch attempt if a previous chunk in this run already failed
+        if self._batching_disabled and fallback_to_sequential:
+            logger.debug(
+                "Batching remains disabled for model '%s'; processing chunk sequentially",
+                self.engine.model_id,
+            )
+            return self._run_sequential(chunk_tensors, transforms)
+
+        # 1. Collation Stage
         try:
             batch_tensor = self.engine.plugin.collate_batch(chunk_tensors)
         except Exception as exc:
             if fallback_to_sequential:
-                self.state.warn_once(
-                    key="batch_fallback",
-                    message=f"Batch stacking failed for model '{self.engine.model_id}': {exc}. Falling back to sequential execution.",
+                self._batching_disabled = True
+                logger.debug(
+                    "Batch collation failure for model '%s'; sequential fallback details",
+                    self.engine.model_id,
+                    exc_info=True,
                 )
-
-                results = []
-                for tensor in chunk_tensors:
-                    self.state.check_cancelled()
-                    results.append(self.engine.execute_tensor(tensor, transforms))
-                return results
+                self.state.warn_once(
+                    key="batch_collate_fallback",
+                    message=(
+                        f"Batch stacking failed for model '{self.engine.model_id}': {exc}. "
+                        "Falling back to sequential execution for this and subsequent chunks."
+                    ),
+                )
+                return self._run_sequential(chunk_tensors, transforms)
+            logger.exception("Batch collation failed for model '%s'", self.engine.model_id)
             raise SessionError(f"Could not collate batch for model '{self.engine.model_id}': {exc}") from exc
 
+        # Execution Stage
         try:
             raw_output = self.engine.backend_instance.run(batch_tensor)
         except Exception as exc:
+            if fallback_to_sequential:
+                self._batching_disabled = True
+                del batch_tensor
+                logger.debug(
+                    "Batch execution failure for model '%s'; sequential fallback details",
+                    self.engine.model_id,
+                    exc_info=True,
+                )
+                self.state.warn_once(
+                    key="batch_run_fallback",
+                    message=(
+                        f"Batch execution failed for model '{self.engine.model_id}': {exc}. "
+                        "Falling back to sequential execution for this and subsequent chunks."
+                    ),
+                )
+                return self._run_sequential(chunk_tensors, transforms)
+            logger.exception("Batch execution failed for model '%s'", self.engine.model_id)
             raise SessionError(f"Inference failed for model '{self.engine.model_id}': {exc}") from exc
 
-        results = []
+        # Output Splitting
         try:
             split_outputs = self.engine.plugin.split_batch(raw_output, len(chunk_images))
         except Exception as exc:
+            if fallback_to_sequential:
+                self._batching_disabled = True
+                del batch_tensor, raw_output
+                logger.debug(
+                    "Batch output splitting failure for model '%s'; sequential fallback details",
+                    self.engine.model_id,
+                    exc_info=True,
+                )
+                self.state.warn_once(
+                    key="batch_split_fallback",
+                    message=(
+                        f"Batch splitting failed for model '{self.engine.model_id}': {exc}. "
+                        "Falling back to sequential execution for this and subsequent chunks."
+                    ),
+                )
+                return self._run_sequential(chunk_tensors, transforms)
+            logger.exception("Batch output splitting failed for model '%s'", self.engine.model_id)
             raise SessionError(f"Could not split batch output for model '{self.engine.model_id}': {exc}") from exc
 
+        # Success path
+        results = []
         for sample_output in split_outputs:
             self.state.check_cancelled()
             results.append(self.engine.postprocess_and_audit(sample_output, transforms))

@@ -399,6 +399,26 @@ class ONNXBackend:
         # Plugin owns output selection. Return the full list of output arrays.
         return outputs if outputs else []
 
+    def clear_cache(self) -> None:
+        """Release runtime cache/resources if applicable (no-op for standard ONNX sessions)."""
+
+    def supports_true_batching(self) -> bool:
+        """True batching is supported when a non-CPU provider is active and graph input batch dimension is dynamic."""
+        if not any(provider != "CPUExecutionProvider" for provider in self._providers):
+            return False
+        if self._session is None:
+            return False
+        try:
+            inputs = self._session.get_inputs()
+            if inputs and len(inputs[0].shape) > 0:
+                batch_dim = inputs[0].shape[0]
+                # If batch_dim is a fixed integer == 1, batching is impossible
+                if isinstance(batch_dim, int) and batch_dim == 1:
+                    return False
+        except Exception as exc:
+            logger.warning("Failed to query ONNX session inputs for dynamic batch support: %s", exc)
+        return True
+
     def close(self) -> None:
         """Release runtime references so memory can be reclaimed promptly."""
         logger.debug("Closing ONNX backend")
@@ -427,10 +447,6 @@ class ONNXBackend:
     @property
     def provider_options(self) -> list[dict[str, Any]]:
         return list(self._provider_options)
-
-    def supports_true_batching(self) -> bool:
-        """True batching is generally useful when a non-CPU provider is active."""
-        return any(provider != "CPUExecutionProvider" for provider in self._providers)
 
 
 # endregion ONNXBackend

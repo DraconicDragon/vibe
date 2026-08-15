@@ -168,6 +168,8 @@ class PyTorchBackend:
 
         def _to_dev(val: Any) -> Any:
             if isinstance(val, np.ndarray):
+                if not val.flags.c_contiguous:
+                    val = np.ascontiguousarray(val)
                 val = torch_module.from_numpy(val)
             if isinstance(val, torch_module.Tensor):
                 if val.dtype.is_floating_point:
@@ -182,6 +184,7 @@ class PyTorchBackend:
         if isinstance(inputs, dict):
             return (), {k: _to_dev(v) for k, v in inputs.items()}
 
+        # Handles standard tuples, lists, and NamedTuples
         if isinstance(inputs, (tuple, list)):
             return tuple(_to_dev(v) for v in inputs), {}
 
@@ -209,17 +212,29 @@ class PyTorchBackend:
 
         return np.array(output)
 
+    def clear_cache(self) -> None:
+        """Release framework device cache (CUDA, XPU, MPS)."""
+        try:
+            import torch
+
+            if self._device.startswith("cuda") and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif self._device.startswith("xpu"):
+                xpu_mod = getattr(torch, "xpu", None)
+                if xpu_mod and callable(getattr(xpu_mod, "empty_cache", None)):
+                    xpu_mod.empty_cache()
+            elif self._device.startswith("mps"):
+                mps_mod = getattr(torch, "mps", None)
+                if mps_mod and callable(getattr(mps_mod, "empty_cache", None)):
+                    mps_mod.empty_cache()
+        except Exception as err:
+            logger.debug("Failed to clear PyTorch device cache: %s", err)
+
     def close(self) -> None:
         """Release model references and clear GPU cache."""
         logger.debug("Closing PyTorch backend device=%s", self._device)
         self._model = None
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception as err:
-            logger.debug("Failed to clear PyTorch CUDA cache on close: %s", err)
+        self.clear_cache()
 
     @property
     def device(self) -> str:
