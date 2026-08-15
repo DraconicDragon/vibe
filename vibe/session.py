@@ -325,27 +325,41 @@ class ModelSession:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[object] = asyncio.Queue()
 
-        def _worker() -> None:
+        def _queue_from_worker(payload: object) -> bool:
+            """Queue a worker payload while tolerating event-loop shutdown."""
             try:
-                for chunk in self.infer_batches(
-                    images,
-                    transforms=transforms,
-                    batch_size=batch_size,
-                    batch_method=batch_method,
-                    prefetch_batch_limit=prefetch_batch_limit,
-                ):
-                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
+                loop.call_soon_threadsafe(queue.put_nowait, payload)
+            except RuntimeError as exc:
+                logger.debug("Event loop closed before async payload could be queued: %s", exc)
+                return False
+            return True
+
+        def _worker() -> None:
+            batches = self.infer_batches(
+                images,
+                transforms=transforms,
+                batch_size=batch_size,
+                batch_method=batch_method,
+                prefetch_batch_limit=prefetch_batch_limit,
+            )
+            try:
+                for chunk in batches:
+                    if self._state.is_cancellation_requested:
+                        logger.debug("Async inference cancellation observed model_id=%s", self.model_id)
+                        break
+                    if not _queue_from_worker(chunk):
+                        break
             except Exception as exc:
                 logger.debug("Async worker caught exception: %s", exc, exc_info=True)
-                try:
-                    loop.call_soon_threadsafe(queue.put_nowait, exc)
-                except RuntimeError as loop_exc:
-                    logger.debug("Event loop closed before async exception could be queued: %s", loop_exc)
+                _queue_from_worker(exc)
             finally:
-                try:
-                    loop.call_soon_threadsafe(queue.put_nowait, _ASYNC_INFER_DONE)
-                except RuntimeError as loop_exc:
-                    logger.debug("Event loop closed before async completion signal could be queued: %s", loop_exc)
+                close_batches = getattr(batches, "close", None)
+                if callable(close_batches):
+                    try:
+                        close_batches()
+                    except Exception:
+                        logger.exception("Failed to close async inference generator model_id=%s", self.model_id)
+                _queue_from_worker(_ASYNC_INFER_DONE)
 
         # Daemon thread so pending async inference doesn't prevent interpreter shutdown
         thread = threading.Thread(target=_worker, name="vibe-infer-async", daemon=True)
@@ -361,9 +375,11 @@ class ModelSession:
 
                 assert isinstance(payload, InferenceResult)
                 yield payload
-        except asyncio.CancelledError:
-            self.cancel_current_inference()
-            raise  # Exit immediately. Let the daemon thread die naturally in the background.
+        finally:
+            # Covers task cancellation, caller exceptions, and early async-generator
+            # closure after an async-for break/return.
+            if self.cancel_current_inference():
+                logger.debug("Async inference cancellation requested model_id=%s", self.model_id)
 
     def cancel_current_inference(self) -> bool:
         """
