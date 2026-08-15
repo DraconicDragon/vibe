@@ -27,8 +27,14 @@ logger = logging.getLogger(__name__)
 # region Runtime Model Definition
 
 
+_WAIFU_SCORER_RUNTIME_CLS: type | None = None
+
+
 def _get_runtime_model_cls(nn_module: Any) -> type:
     """Dynamically define the combined CLIP + MLP scorer module."""
+    global _WAIFU_SCORER_RUNTIME_CLS
+    if _WAIFU_SCORER_RUNTIME_CLS is not None:
+        return _WAIFU_SCORER_RUNTIME_CLS
 
     class WaifuScorerRuntimeModel(nn_module.Module):
         """Combined CLIP image encoder + MLP scorer."""
@@ -43,7 +49,8 @@ def _get_runtime_model_cls(nn_module: Any) -> type:
             features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
             return self.mlp(features).clamp(0, 10)
 
-    return WaifuScorerRuntimeModel
+    _WAIFU_SCORER_RUNTIME_CLS = WaifuScorerRuntimeModel
+    return _WAIFU_SCORER_RUNTIME_CLS
 
 
 # endregion
