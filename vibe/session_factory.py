@@ -68,15 +68,27 @@ def _resolve_backend_candidates(
 
     if not available:
         raise SessionError(
-            f"No supported backend available for model '{plugin_cls.identity.model_id}'. Install torch or onnxruntime."
+            f"No supported backend available for model '{plugin_cls.identity.model_id}'. "
+            f"Checked PyTorch (installed={torch_ok}), ONNX Runtime (installed={onnx_ok})."
         )
 
     # Fail hard if an accelerator was explicitly requested but no GPU acceleration is active in any runtime
     if preference.intent == HardwareIntent.ACCELERATOR and not any(available.values()):
         device_str = preference.hint or "accelerator"
+        diag = [
+            f"PyTorch (installed={torch_ok}, accelerator={torch_accel})",
+            f"ONNX Runtime (installed={onnx_ok}, accelerator={onnx_accel})",
+        ]
+        logger.error(
+            "Accelerator device '%s' requested for model '%s', but no backend has accelerator support: %s",
+            device_str,
+            plugin_cls.identity.model_id,
+            ", ".join(diag),
+        )
         raise SessionError(
-            f"Accelerator device '{device_str}' explicitly requested, but no active GPU/accelerator support was found "
-            "in PyTorch or ONNX Runtime. Install PyTorch with CUDA/ROCm/MPS support or 'onnxruntime-gpu'."
+            f"Accelerator device '{device_str}' explicitly requested, but no active GPU/accelerator support was found. "
+            f"Backend capabilities: {', '.join(diag)}. "
+            "Install PyTorch with CUDA/ROCm/MPS support or 'onnxruntime-gpu'."
         )
 
     if len(available) == 1:
@@ -262,11 +274,23 @@ def build_session(
 
 
 def _make_hashable(val: Any) -> Any:
+    """Recursively convert arbitrary data structures (dicts, lists, sets, arrays) into hashable tuples."""
     if isinstance(val, dict):
-        return tuple(sorted((k, _make_hashable(v)) for k, v in val.items()))
-    elif isinstance(val, (list, set, tuple)):
+        return tuple(sorted(((str(k), _make_hashable(v)) for k, v in val.items()), key=lambda item: item[0]))
+    if isinstance(val, (list, tuple)):
         return tuple(_make_hashable(v) for v in val)
-    return val
+    if isinstance(val, set):
+        return tuple(sorted((_make_hashable(v) for v in val), key=repr))
+    if hasattr(val, "tolist") and callable(val.tolist):  # Handles numpy arrays and torch tensors
+        try:
+            return _make_hashable(val.tolist())
+        except Exception as exc:
+            logger.debug("Failed to convert array-like object with tolist() for pool key hashing: %s", exc)
+    try:
+        hash(val)
+        return val
+    except TypeError:
+        return repr(val)
 
 
 def _make_runtime_pool_key(
