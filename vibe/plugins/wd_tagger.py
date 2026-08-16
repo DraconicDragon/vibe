@@ -89,11 +89,6 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
             TagCategory.CHARACTER.value: metadata.indices_for(int(DanbooruTagCategory.CHARACTER)),
         }
 
-        config_path = artifacts.get_optional("config")
-        if config_path:
-            config = self.read_timm_config_json(config_path)
-            self.prepare_timm_runtime_preprocess(config)
-
     def preprocess(self, image: Any) -> np.ndarray:
         """Convert image to layout expected by the active backend."""
         # NOTE: PyTorch - models expect standard (1, C, H, W) NCHW format
