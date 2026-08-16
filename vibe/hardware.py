@@ -18,14 +18,14 @@ def list_available_devices() -> list[str]:
 
         # Intel GPU (XPU)
         xpu_backend = getattr(torch, "xpu", None)
-        if xpu_backend and callable(getattr(xpu_backend, "is_available", None)) and xpu_backend.is_available():
+        if xpu_backend is not None and xpu_backend.is_available():
             candidates.add("xpu")
-            for i in range(int(getattr(xpu_backend, "device_count", lambda: 1)())):
+            device_count = getattr(xpu_backend, "device_count", lambda: 1)()
+            for i in range(int(device_count)):
                 candidates.add(f"xpu:{i}")
 
         # Apple Silicon (MPS)
-        mps_backend = getattr(torch.backends, "mps", None)
-        if mps_backend and callable(getattr(mps_backend, "is_available", None)) and mps_backend.is_available():
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             candidates.add("mps")
     except ImportError:
         pass
@@ -34,15 +34,14 @@ def list_available_devices() -> list[str]:
     try:
         import onnxruntime as ort  # ty:ignore[unresolved-import, unused-ignore-comment]
 
-        if hasattr(ort, "get_available_providers"):
-            available = {str(p) for p in ort.get_available_providers()}
-            if "ROCMExecutionProvider" in available or "MIGraphXExecutionProvider" in available:
-                candidates.add("rocm")
-            if "OpenVINOExecutionProvider" in available:
-                candidates.add("openvino")
-            if "DmlExecutionProvider" in available:
-                candidates.add("dml")
-    except ImportError:
+        available = set(ort.get_available_providers())
+        if "ROCMExecutionProvider" in available or "MIGraphXExecutionProvider" in available:
+            candidates.add("rocm")
+        if "OpenVINOExecutionProvider" in available:
+            candidates.add("openvino")
+        if "DmlExecutionProvider" in available:
+            candidates.add("dml")
+    except (ImportError, AttributeError):
         pass
 
     def _sort_key(dev: str) -> tuple[int, str, int]:
