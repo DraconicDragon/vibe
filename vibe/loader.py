@@ -40,12 +40,7 @@ def _local_source_to_path(source: str) -> Path:
 
 
 def _hf_source_to_repo(source: str) -> str:
-    source = source.strip()
-
-    if source.startswith("hf:"):
-        return source[3:]
-
-    return source
+    return source.strip().removeprefix("hf:")
 
 
 # region Data Classes
