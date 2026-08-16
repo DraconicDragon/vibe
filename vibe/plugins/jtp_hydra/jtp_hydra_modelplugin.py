@@ -30,6 +30,7 @@ from vibe.backends.runtime.pytorch import PyTorchBackend
 from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
     normalize_output_scores,
+    resolve_category_name,
 )
 from vibe.result_transforms import (
     CharacterIPMapping,
@@ -160,8 +161,6 @@ class JTPHydraBasePlugin(ModelPlugin):
         self._category_indices = {}
         self._tag_thresholds = {}
 
-        cat_to_name = {cat_id: str(name) for cat_id, name in E621_CATEGORY_LABELS.items()}
-
         # 1. Parse tag labels and embedded validation tensor directly via safe_open (0 MB RAM load)
         try:
             from safetensors import safe_open
@@ -181,11 +180,7 @@ class JTPHydraBasePlugin(ModelPlugin):
                         cat_raw = parts[1] if len(parts) > 1 else "general"
                         # implications = parts[2] if len(parts) > 2 else ""  # Ready for future use
 
-                        # Resolve category name if cat_to_name mapping is used, otherwise use as-is
-                        if cat_raw.isdigit():
-                            cat_name = cat_to_name.get(int(cat_raw), cat_raw)
-                        else:
-                            cat_name = cat_to_name.get(cat_raw, cat_raw)
+                        cat_name = resolve_category_name(cat_raw, E621_CATEGORY_LABELS, namespace="e621")
 
                         self._raw_tag_names.append(tag)
                         self._category_indices.setdefault(cat_name, []).append(idx)

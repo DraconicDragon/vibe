@@ -21,10 +21,11 @@ from vibe.plugins.shared.tagger_shared import (
     load_tag_metadata,
     normalize_output_scores,
     preprocess_tagger_image,
+    resolve_category_indices,
 )
 from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds
 from vibe.results import OutputType, TagResult
-from vibe.tag_categories import DanbooruTagCategory, TagCategory
+from vibe.tag_categories import DANBOORU_CATEGORY_LABELS, TagCategory
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +84,11 @@ class WDTaggerBasePlugin(TimmPipelineMixin, ModelPlugin):
         metadata = load_tag_metadata(csv_path)
 
         self._raw_tag_names = metadata.raw_tag_names
-        self._category_indices = {
-            TagCategory.RATING.value: metadata.indices_for(int(DanbooruTagCategory.RATING)),
-            TagCategory.GENERAL.value: metadata.indices_for(int(DanbooruTagCategory.GENERAL)),
-            TagCategory.CHARACTER.value: metadata.indices_for(int(DanbooruTagCategory.CHARACTER)),
-        }
+        self._category_indices = resolve_category_indices(
+            metadata.category_indices,
+            DANBOORU_CATEGORY_LABELS,
+            namespace="danbooru",
+        )
 
     def preprocess(self, image: Any) -> np.ndarray:
         """Convert image to layout expected by the active backend."""

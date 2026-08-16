@@ -27,6 +27,7 @@ from vibe.backends.runtime.pytorch import PyTorchBackend
 from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
     normalize_output_scores,
+    resolve_category_name,
 )
 from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds
 from vibe.results import OutputType, TagResult
@@ -132,18 +133,16 @@ class TaggerinePlugin(ModelPlugin):
         self._raw_tag_names = vocab_data.get("idx2tag", [])
         self._category_indices = {}
 
-        cat_to_name = {cat_id: str(name) for cat_id, name in E621_CATEGORY_LABELS.items()}
-
         # Look for tag2category mapping first
         if "tag2category" in vocab_data:
             tag2category = vocab_data["tag2category"]
             for idx, tag in enumerate(self._raw_tag_names):
                 cat_id = tag2category.get(tag, 0)
-                cat_name = cat_to_name.get(int(cat_id), str(cat_id))
+                cat_name = resolve_category_name(cat_id, E621_CATEGORY_LABELS, namespace="e621")
                 self._category_indices.setdefault(cat_name, []).append(idx)
         elif "idx2category" in vocab_data:
             for idx, cat_id in enumerate(vocab_data["idx2category"]):
-                cat_name = cat_to_name.get(int(cat_id), str(cat_id))
+                cat_name = resolve_category_name(cat_id, E621_CATEGORY_LABELS, namespace="e621")
                 self._category_indices.setdefault(cat_name, []).append(idx)
         else:
             self._category_indices[TagCategory.GENERAL.value] = list(range(len(self._raw_tag_names)))

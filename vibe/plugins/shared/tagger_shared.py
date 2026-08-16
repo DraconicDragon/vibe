@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from vibe.results import TagEntry, TagResult
-from vibe.tag_categories import DanbooruTagCategory
+from vibe.tag_categories import TagCategory
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +20,11 @@ class TagMetadata:
     """Parsed tag metadata loaded from selected_tags.csv-like files."""
 
     raw_tag_names: list[str] = field(default_factory=list)
-    category_indices: dict[int, list[int]] = field(default_factory=dict)
+    category_indices: dict[int | str, list[int]] = field(default_factory=dict)
     per_tag_thresholds: list[float | None] = field(default_factory=list)
     threshold_column_present: bool = False
 
-    def indices_for(self, category: int) -> list[int]:
+    def indices_for(self, category: int | str) -> list[int]:
         """Return CSV row indices for a category, or an empty list when absent."""
         return self.category_indices.get(category, [])
 
@@ -37,8 +37,8 @@ def load_tag_metadata(
     """
     Parse selected tag metadata from a CSV file.
 
-    The parser is intentionally permissive: missing/invalid columns fall back
-    to safe defaults so models with reduced metadata can still run.
+    The parser is intentionally permissive: missing categories use general,
+    while invalid/custom category values are preserved for later resolution.
     """
     metadata = TagMetadata()
 
@@ -50,10 +50,14 @@ def load_tag_metadata(
             name = "" if raw_name is None else str(raw_name).strip()
             metadata.raw_tag_names.append(name)
 
+            raw_category = row.get("category", "0")
             try:
-                category = int(row.get("category", "0"))
-            except ValueError:
-                category = int(DanbooruTagCategory.GENERAL)
+                category: int | str = int(raw_category or "0")
+            except (TypeError, ValueError):
+                # Preserve malformed/custom category metadata. The shared
+                # resolver will expose it as a namespaced category instead of
+                # silently reclassifying the tag as general.
+                category = str(raw_category).strip() or "unknown"
             metadata.category_indices.setdefault(category, []).append(idx)
 
             raw_threshold = row.get(threshold_column, "") if metadata.threshold_column_present else ""
@@ -64,6 +68,51 @@ def load_tag_metadata(
             metadata.per_tag_thresholds.append(parsed_threshold)
 
     return metadata
+
+
+def resolve_category_name(
+    raw_category: Any,
+    category_labels: Mapping[int, TagCategory],
+    *,
+    namespace: str,
+) -> str:
+    """Resolve source category metadata to a canonical or custom category name.
+
+    Known source IDs and canonical names use Vibe's standard category names.
+    Anything else is preserved under a source namespace so category-aware
+    plugins remain lossless for compatible custom models and fine-tunes.
+    """
+    raw_value = str(raw_category).strip()
+
+    try:
+        category_id = int(raw_value)
+    except (TypeError, ValueError):
+        category_id = None
+
+    if category_id is not None:
+        known_name = category_labels.get(category_id)
+        if known_name is not None:
+            return str(known_name)
+
+    canonical_names = {str(category) for category in category_labels.values()}
+    if raw_value in canonical_names:
+        return raw_value
+
+    return f"{namespace}:{raw_value or 'unknown'}"
+
+
+def resolve_category_indices(
+    category_indices: Mapping[int | str, list[int]],
+    category_labels: Mapping[int, TagCategory],
+    *,
+    namespace: str,
+) -> dict[str, list[int]]:
+    """Resolve every parsed category while retaining unknown categories."""
+    resolved: dict[str, list[int]] = {}
+    for raw_category, indices in category_indices.items():
+        category_name = resolve_category_name(raw_category, category_labels, namespace=namespace)
+        resolved.setdefault(category_name, []).extend(indices)
+    return resolved
 
 
 def preprocess_tagger_image(

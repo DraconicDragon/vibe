@@ -172,9 +172,9 @@ class InferenceEngine:
                     key=f"metadata-cats-{self.model_id}",
                     message=(
                         f"Metadata mismatch for model '{self.model_id}': returned undocumented categories {undocumented_cats}. "
-                        "Please add them to ModelCapabilities.output_categories."
+                        "These categories are preserved as model output."
                     ),
-                    level=logging.ERROR,
+                    level=logging.WARNING,
                 )
 
         # Audit Top-Level Extras

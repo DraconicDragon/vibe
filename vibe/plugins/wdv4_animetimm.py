@@ -23,6 +23,7 @@ from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
     load_tag_metadata,
     normalize_output_scores,
+    resolve_category_indices,
 )
 from vibe.result_transforms import (
     CharacterIPMapping,
@@ -33,7 +34,7 @@ from vibe.result_transforms import (
     TagThresholds,
 )
 from vibe.results import OutputType, TagResult
-from vibe.tag_categories import DanbooruTagCategory, TagCategory
+from vibe.tag_categories import DANBOORU_CATEGORY_LABELS, TagCategory
 
 logger = logging.getLogger(__name__)
 
@@ -99,12 +100,11 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
         self._raw_tag_names = metadata.raw_tag_names
         self._num_classes = len(self._raw_tag_names)
 
-        self._category_indices = {
-            TagCategory.RATING.value: metadata.indices_for(int(DanbooruTagCategory.RATING)),
-            TagCategory.GENERAL.value: metadata.indices_for(int(DanbooruTagCategory.GENERAL)),
-            TagCategory.CHARACTER.value: metadata.indices_for(int(DanbooruTagCategory.CHARACTER)),
-            TagCategory.ARTIST.value: metadata.indices_for(int(DanbooruTagCategory.ARTIST)),
-        }
+        self._category_indices = resolve_category_indices(
+            metadata.category_indices,
+            DANBOORU_CATEGORY_LABELS,
+            namespace="danbooru",
+        )
 
         # Parse per-tag thresholds from selected_tags.csv
         self._tag_thresholds = {
