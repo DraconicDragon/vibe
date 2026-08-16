@@ -296,23 +296,13 @@ def _make_runtime_pool_key(
     artifacts: ArtifactMap,
     plan: ExecutionPlan,
     options: dict[str, Any] | None = None,
-) -> tuple[Any, ...]:
-    """Key a completed runtime by all inputs which can affect its construction."""
-    artifact_key = tuple(
-        sorted((artifact_id, str(path.resolve())) for artifact_id, path in artifacts.as_path_dict().items())
-    )
-    options_key = tuple(sorted((k, _make_hashable(v)) for k, v in options.items())) if options else ()
+) -> tuple[type[ModelPlugin], tuple[tuple[str, str], ...], ExecutionPlan, tuple[Any, ...]]:
+    """Key a completed runtime using immutable construction inputs."""
+    options_key = _make_hashable(options) if options else ()
     return (
-        plugin_cls.__module__,
-        plugin_cls.__qualname__,
-        artifact_key,
-        plan.backend.value,
-        plan.variant_id,
-        plan.preference.intent.value,
-        plan.preference.ordinal,
-        plan.precision.weight.value,
-        plan.precision.compute.value,
-        plan.onnx_providers,
+        plugin_cls,
+        artifacts.cache_key,
+        plan,
         options_key,
     )
 
@@ -363,7 +353,7 @@ def _release_runtime(key: tuple[Any, ...]) -> None:
 
         if cached[1] > 1:
             _RUNTIME_POOL[key] = (cached[0], cached[1] - 1)
-            logger.debug("Released pooled runtime key=%s refcount=%s", key, cached[1] - 1)
+            logger.debug("Released pooled runtime refcount=%s", cached[1] - 1)
             return
 
         popped = _RUNTIME_POOL.pop(key, None)
@@ -377,7 +367,7 @@ def _release_runtime(key: tuple[Any, ...]) -> None:
     except Exception:
         logger.exception("Failed to close pooled runtime during release.")
 
-    logger.debug("Closed pooled runtime key=%s", key)
+    logger.debug("Closed pooled runtime")
 
 
 def _onnx_runtime_capabilities() -> tuple[bool, bool]:

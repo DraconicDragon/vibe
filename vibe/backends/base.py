@@ -233,6 +233,11 @@ class ArtifactMap:
         return dict(self._paths)
 
     @property
+    def cache_key(self) -> tuple[tuple[str, str], ...]:
+        """Return a deterministic, immutable identity for the resolved artifacts."""
+        return tuple(sorted((artifact_id, str(path.resolve())) for artifact_id, path in self._paths.items()))
+
+    @property
     def optional_missing(self) -> dict[str, str]:
         return self._optional_missing
 
