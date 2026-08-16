@@ -46,7 +46,9 @@ def load_tag_metadata(
         reader = csv.DictReader(handle)
         metadata.threshold_column_present = threshold_column in (reader.fieldnames or [])
         for idx, row in enumerate(reader):
-            metadata.raw_tag_names.append(row.get("name", ""))
+            raw_name = row.get("name")
+            name = "" if raw_name is None else str(raw_name).strip()
+            metadata.raw_tag_names.append(name)
 
             try:
                 category = int(row.get("category", "0"))
