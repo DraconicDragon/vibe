@@ -147,11 +147,6 @@ def resolve_onnx_provider_chain(
     return providers, provider_options if has_non_empty_options else None
 
 
-def _has_accelerator_provider(providers: list[str]) -> bool:
-    accelerator_eps = _GPU_CLASS_PROVIDERS | {"CoreMLExecutionProvider", "DirectMLExecutionProvider"}
-    return any(p in accelerator_eps for p in providers)
-
-
 def _iter_candidate_nvidia_lib_dirs() -> list[Path]:
     # Common pip locations for NVIDIA runtime wheels used by torch/onnxruntime.
     candidates: list[Path] = []
