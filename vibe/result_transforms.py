@@ -194,6 +194,8 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
     description: ClassVar[str]
     priority: ClassVar[int] = 0
     requires_result_type: ClassVar[type[BaseModelResult]] = BaseModelResult
+    output_extras: ClassVar[dict[str, str]] = {}
+    entry_extras: ClassVar[dict[str, str]] = {}
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -293,6 +295,9 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
     display_name: ClassVar[str] = "Character IP Mapping"
     description: ClassVar[str] = "Maps copyright tags to character tags from tag results."
     priority: ClassVar[int] = 0
+    output_extras: ClassVar[dict[str, str]] = {
+        "character_copyright_mapping": "Mapping of detected character tags to their corresponding copyright/IP tags."
+    }
 
     mapping_file: str | None = field(
         default=None,

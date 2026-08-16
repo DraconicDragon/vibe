@@ -111,12 +111,48 @@ class InferenceEngine:
         except Exception as exc:
             raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
 
+        capabilities = self.plugin.capabilities
+
+        # Audit plugin-produced extras before transforms run. This keeps a transform's
+        # declarations from masking an undeclared extra emitted by the plugin itself.
+        plugin_extras = set(result.extras.keys())
+        undocumented_plugin_extras = plugin_extras - set(capabilities.output_extras.keys())
+        if undocumented_plugin_extras:
+            self.state.warn_once(
+                key=f"metadata-plugin-extras-{self.model_id}",
+                message=(
+                    f"Metadata mismatch for model '{self.model_id}': plugin postprocess returned undocumented "
+                    f"top-level extras {undocumented_plugin_extras}. "
+                    "Please add them to ModelCapabilities.output_extras."
+                ),
+                level=logging.ERROR,
+            )
+
+        plugin_entry_extras = set()
+        if is_tag_result(result):
+            for entries in result.tags.values():
+                for entry in entries:
+                    plugin_entry_extras.update(entry.extras.keys())
+        elif is_multi_score_result(result):
+            for entry in result.entries:
+                plugin_entry_extras.update(entry.extras.keys())
+
+        undocumented_plugin_entry_extras = plugin_entry_extras - set(capabilities.entry_extras.keys())
+        if undocumented_plugin_entry_extras:
+            self.state.warn_once(
+                key=f"metadata-plugin-entry-extras-{self.model_id}",
+                message=(
+                    f"Metadata mismatch for model '{self.model_id}': plugin postprocess returned undocumented "
+                    f"entry extras {undocumented_plugin_entry_extras}. "
+                    "Please add them to ModelCapabilities.entry_extras."
+                ),
+                level=logging.ERROR,
+            )
+
         # Run transforms
         final_result = self.pipeline.apply(result, transforms)
 
         # region Metadata Audit
-        capabilities = self.plugin.capabilities
-
         # Audit Output Type
         if final_result.output_type != capabilities.output_type:
             self.state.warn_once(
@@ -143,13 +179,18 @@ class InferenceEngine:
 
         # Audit Top-Level Extras
         if final_result.extras:
-            undocumented_extras = set(final_result.extras.keys()) - set(capabilities.output_extras.keys())
+            declared_extras = set(capabilities.output_extras.keys())
+            if transforms:
+                for t in transforms:
+                    declared_extras.update(t.output_extras.keys())
+
+            undocumented_extras = set(final_result.extras.keys()) - declared_extras
             if undocumented_extras:
                 self.state.warn_once(
                     key=f"metadata-extras-{self.model_id}",
                     message=(
                         f"Metadata mismatch for model '{self.model_id}': returned undocumented top-level extras {undocumented_extras}. "
-                        "Please add them to ModelCapabilities.output_extras."
+                        "Declare them in ModelCapabilities.output_extras or the producing ResultTransform.output_extras."
                     ),
                     level=logging.ERROR,
                 )
@@ -157,6 +198,9 @@ class InferenceEngine:
         # Audit Entry-Level Extras
         undocumented_entry_extras = set()
         declared_entry_extras = set(capabilities.entry_extras.keys())
+        if transforms:
+            for t in transforms:
+                declared_entry_extras.update(t.entry_extras.keys())
 
         if is_tag_result(final_result):
             for entries in final_result.tags.values():
@@ -173,7 +217,7 @@ class InferenceEngine:
                 key=f"metadata-entry-extras-{self.model_id}",
                 message=(
                     f"Metadata mismatch for model '{self.model_id}': returned undocumented entry extras {undocumented_entry_extras}. "
-                    "Please add them to ModelCapabilities.entry_extras."
+                    "Declare them in ModelCapabilities.entry_extras or the producing ResultTransform.entry_extras."
                 ),
                 level=logging.ERROR,
             )
