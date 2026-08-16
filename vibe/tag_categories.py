@@ -17,6 +17,7 @@ class TagCategory(str, Enum):
     CHARACTER = "character"
     SPECIES = "species"
     META = "meta"
+    INVALID = "invalid"
     RATING = "rating"
     LORE = "lore"
 
@@ -35,7 +36,7 @@ class DanbooruTagCategory(IntEnum):
 
     GENERAL = 0
     ARTIST = 1
-    # INVALID = 2
+    INVALID = 2
     COPYRIGHT = 3
     CHARACTER = 4
     META = 5
@@ -53,7 +54,7 @@ class E621TagCategory(IntEnum):
     COPYRIGHT = 3
     CHARACTER = 4
     SPECIES = 5
-    # INVALID = 6
+    INVALID = 6
     META = 7
     LORE = 8
 
@@ -73,6 +74,7 @@ class E621TagCategory(IntEnum):
 DANBOORU_CATEGORY_LABELS: dict[int, TagCategory] = {
     DanbooruTagCategory.GENERAL: TagCategory.GENERAL,
     DanbooruTagCategory.ARTIST: TagCategory.ARTIST,
+    DanbooruTagCategory.INVALID: TagCategory.INVALID,
     DanbooruTagCategory.COPYRIGHT: TagCategory.COPYRIGHT,
     DanbooruTagCategory.CHARACTER: TagCategory.CHARACTER,
     DanbooruTagCategory.META: TagCategory.META,
@@ -86,6 +88,7 @@ E621_CATEGORY_LABELS: dict[int, TagCategory] = {
     E621TagCategory.COPYRIGHT: TagCategory.COPYRIGHT,
     E621TagCategory.CHARACTER: TagCategory.CHARACTER,
     E621TagCategory.SPECIES: TagCategory.SPECIES,
+    E621TagCategory.INVALID: TagCategory.INVALID,
     E621TagCategory.META: TagCategory.META,
     E621TagCategory.LORE: TagCategory.LORE,
 }

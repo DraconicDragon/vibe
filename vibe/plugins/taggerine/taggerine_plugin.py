@@ -68,6 +68,7 @@ class TaggerinePlugin(ModelPlugin):
             TagCategory.COPYRIGHT,
             TagCategory.CHARACTER,
             TagCategory.SPECIES,
+            TagCategory.INVALID,
             TagCategory.META,
             TagCategory.LORE,
         ),
