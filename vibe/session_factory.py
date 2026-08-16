@@ -122,7 +122,6 @@ def build_session(
     device: str = "auto",
     precision: str | PrecisionRequest = "auto",
     onnx_providers: list[str] | None = None,
-    cudnn_enabled: bool = True,
     hf_token: str | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
@@ -203,7 +202,6 @@ def build_session(
             precision=precision_req,
             variant_id=selected_variant.variant_id,
             onnx_providers=tuple(onnx_providers) if onnx_providers is not None else None,
-            cudnn_enabled=cudnn_enabled,
             hf_token=hf_token,
         )
 
@@ -315,7 +313,6 @@ def _make_runtime_pool_key(
         plan.precision.weight.value,
         plan.precision.compute.value,
         plan.onnx_providers,
-        plan.cudnn_enabled,
         options_key,
     )
 

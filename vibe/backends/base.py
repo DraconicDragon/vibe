@@ -75,7 +75,6 @@ class ExecutionPlan:
     precision: PrecisionRequest
     variant_id: str | None = None
     onnx_providers: tuple[str, ...] | None = None
-    cudnn_enabled: bool = True
     hf_token: str | None = None
 
 

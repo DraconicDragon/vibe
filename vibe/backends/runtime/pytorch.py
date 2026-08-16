@@ -7,6 +7,7 @@ Wraps a loaded torch model and provides a uniform .run(inputs) -> ndarray interf
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any
@@ -95,13 +96,10 @@ class PyTorchBackend:
                 "PyTorch is required to use the pytorch backend. Install it with: pip install torch"
             ) from exc
 
-        # Configure cuDNN based on ExecutionPlan
-        if not plan.cudnn_enabled:
-            torch.backends.cudnn.enabled = False
-            logger.info("cuDNN disabled for this session")
-        else:
-            torch.backends.cudnn.enabled = True
-            logger.debug("cuDNN enabled")
+        # Optional process-level cuDNN toggle via environment variable
+        cudnn_env = os.environ.get("VIBE_CUDNN_ENABLED")
+        if cudnn_env is not None:
+            torch.backends.cudnn.enabled = cudnn_env.strip().lower() not in ("0", "false", "off")
 
         self._model = model
         self._device = _resolve_pytorch_device(plan.preference, torch)
