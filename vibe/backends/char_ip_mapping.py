@@ -74,7 +74,8 @@ def _load_mapping_csv(path: Path) -> dict[str, list[str]]:
             if not ips:
                 continue
 
-            out[name] = [str(x) for x in ips]
+            # Canonicalize key to underscores at load time
+            out[name.replace(" ", "_")] = [str(x) for x in ips]
 
     return out
 
@@ -100,7 +101,7 @@ def _load_mapping_json(path: Path) -> dict[str, list[str]]:
     for key, value in candidate.items():
         if not key or not isinstance(value, list) or not value:
             continue
-        out[str(key)] = [str(x) for x in value]
+        out[str(key).replace(" ", "_")] = [str(x) for x in value]
     if out:
         return out
 
@@ -115,7 +116,7 @@ def _load_mapping_json(path: Path) -> dict[str, list[str]]:
         for tag_name, tag_id in tag_map.items():
             ips = ips_by_tag_id.get(str(tag_id), ips_by_tag_id.get(tag_id))
             if isinstance(ips, list) and ips:
-                out[str(tag_name)] = [str(x) for x in ips]
+                out[str(tag_name).replace(" ", "_")] = [str(x) for x in ips]
 
     return out
 
@@ -168,17 +169,13 @@ def apply_character_ip_mapping(
     if not character_tags or not mapping:
         return {}
 
-    normalized = {k.replace(" ", "_"): v for k, v in mapping.items()}
     resolved: dict[str, list[str]] = {}
 
     for tag in character_tags:
-        if tag in mapping:
-            resolved[tag] = mapping[tag]
-            continue
-
-        normalized_tag = tag.replace(" ", "_")
-        if normalized_tag in normalized:
-            resolved[tag] = normalized[normalized_tag]
+        # Single O(1) lookup against canonicalized mapping; preserves caller's tag as output key
+        normalized_key = tag.replace(" ", "_")
+        if normalized_key in mapping:
+            resolved[tag] = mapping[normalized_key]
 
     return resolved
 
