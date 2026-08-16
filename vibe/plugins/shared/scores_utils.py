@@ -24,7 +24,8 @@ def load_samples_file(path: Path) -> tuple[np.ndarray, np.ndarray]:
 
     order = np.argsort(x)
     x, y = x[order], y[order]
-    x = np.concatenate(([0.0], x, [x[-1] + 1e-6])).astype(np.float32, copy=False)
+    min_x = min(0.0, float(x[0]) - 1e-6)
+    x = np.concatenate(([min_x], x, [x[-1] + 1e-6])).astype(np.float32, copy=False)
     y = np.concatenate(([0.0], y, [1.0])).astype(np.float32, copy=False)
     return x, y
 
