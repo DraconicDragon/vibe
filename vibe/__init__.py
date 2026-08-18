@@ -1,34 +1,5 @@
 """
 vibe — vision transformer inference backend.
-
-# todo: change
-
-Quick start
------------
-    import vibe
-
-    # Load a registered model (downloads from HF automatically)
-    session = vibe.load("wd-eva02-large-v3")
-    result = session.infer(image).first()
-    print([entry.tag for entry in result.tags["general"][:5]])
-
-    # Batch processing: infer returns InferenceResult with multiple items
-    results = session.infer([image1, image2, image3])
-    for item in results:
-        print(f"Input {item.index}: {[entry.tag for entry in item.result.tags['general'][:3]]}")
-
-    # Use a local folder instead of HF
-    session = vibe.load("wd-eva02-large-v3", source="local:/path/to/folder")
-
-    # Custom: arbitrary source with a chosen plugin
-    session = vibe.load_custom(
-        source="hf:SmilingWolf/wd-eva02-large-tagger-v3-updated", # doesn't exist, just example
-        plugin="WDEva02Plugin",
-    )
-
-    # Inspect available models
-    vibe.list_models()
-    vibe.describe("wd-eva02-large-v3")
 """
 
 from __future__ import annotations
@@ -37,7 +8,6 @@ import logging
 from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
-from typing import Any
 
 from vibe.backends.base import (
     ArtifactMap,
@@ -52,16 +22,29 @@ from vibe.backends.base import (
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
-    PluginOptionSpec,
 )
 from vibe.exceptions import InferenceCancelled, RegistryError, SessionError, TransformError
+from vibe.features import (
+    FeatureSpec,
+    InferenceRequest,
+    OptionScope,
+    OptionSpec,
+    ValueSchema,
+    compile_features,
+    transform_meta,
+)
 from vibe.hardware import list_available_devices
 from vibe.hf_downloader import (
     get_auto_download_default,
     set_auto_download_default,
 )
 from vibe.image_loading import ImageChunk, iter_load_images
-from vibe.loader import ModelAvailability, VariantAvailability, inspect_variant_artifacts
+from vibe.loader import (
+    ArtifactAvailability,
+    ModelAvailability,
+    VariantAvailability,
+    inspect_variant_artifacts,
+)
 from vibe.memory_stats import (
     InferenceMemoryRecord,
     MemorySnapshot,
@@ -75,9 +58,6 @@ from vibe.result_transforms import (
     ResultTransform,
     ScoreThresholds,
     TagLevelThresholds,
-    TransformInfo,
-    TransformOptionSpec,
-    transform_meta,
 )
 from vibe.results import (
     InferenceResult,
@@ -122,7 +102,6 @@ def _load_internal(
     hf_cache_dir: str | None,
     onnx_providers: list[str] | None,
     hf_token: str | None,
-    options: Mapping[str, Any] | None,
     auto_download: bool | None,
     file_name_map: Mapping[str, str] | None,
     memory_tracking: bool,
@@ -172,7 +151,6 @@ def _load_internal(
         hf_cache_dir=hf_cache_dir,
         auto_download=effective_auto_download,
         file_name_map=file_name_map,
-        options=options,
         memory_tracking=memory_tracking,
     )
 
@@ -190,7 +168,6 @@ def load(
     hf_token: str | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
-    options: Mapping[str, Any] | None = None,
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = False,
@@ -259,7 +236,6 @@ def load(
         hf_token=hf_token,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
-        options=options,
         auto_download=auto_download,
         file_name_map=file_name_map,
         memory_tracking=memory_tracking,
@@ -280,7 +256,6 @@ def load_custom(
     hf_token: str | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
-    options: Mapping[str, Any] | None = None,
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = False,
@@ -321,7 +296,6 @@ def load_custom(
         )
     """
     model_registry.ensure_discovered()
-
     plugin_cls = model_registry.get_by_class_name(plugin)
     return _load_internal(
         plugin_cls=plugin_cls,
@@ -335,7 +309,6 @@ def load_custom(
         hf_token=hf_token,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
-        options=options,
         auto_download=auto_download,
         file_name_map=file_name_map,
         memory_tracking=memory_tracking,
@@ -434,11 +407,9 @@ def check_availability(
             )
         )
 
-    model_ok = any(v.is_available for v in variant_statuses)
-
     return ModelAvailability(
         model_id=plugin_cls.identity.model_id,
-        is_available=model_ok,
+        is_available=any(v.is_available for v in variant_statuses),
         variants=variant_statuses,
     )
 
@@ -454,6 +425,10 @@ def _resolve_source(
     plugin_cls: type[ModelPlugin],
 ) -> str:
     if source is None:
+        if getattr(plugin_cls, "custom_only", False):
+            raise SessionError(
+                f"Model '{plugin_cls.identity.model_id}' has no default source; use load_custom() with an explicit source."
+            )
         return f"hf:{plugin_cls.default_repo_id}"
 
     normalized = source.strip()
@@ -462,30 +437,20 @@ def _resolve_source(
     return normalized
 
 
-# endregion Helpers
-
-
-# region Utils
-# todo: move out in future
-
-
-def list_transforms() -> list[TransformInfo]:
-    """Return metadata in form of TransformInfo for all available transforms in the library."""
-    # Triggers evaluation of any pending class decorators
+def list_transforms() -> list[FeatureSpec]:
+    """Return metadata for all registered result transforms as feature specs."""
     model_registry.ensure_discovered()
     return transform_registry.list_all()
 
 
 def get_transform(transform_id: str) -> type[ResultTransform]:
-    """Return a result transform class by its string ID."""
+    """Return a registered result-transform class by its string ID."""
     model_registry.ensure_discovered()
     return transform_registry.get(transform_id)
 
 
-# endregion Utils
+# endregion
 
-# region Public re-Exports
-# for users doing from vibe import ...
 
 __all__ = [
     "ArtifactAvailability",
@@ -496,11 +461,13 @@ __all__ = [
     "CleanTags",
     "ExecutionPlan",
     "ExecutionPreference",
+    "FeatureSpec",
     "FileRole",
     "HardwareIntent",
     "ImageChunk",
     "InferenceCancelled",
     "InferenceMemoryRecord",
+    "InferenceRequest",
     "InferenceResult",
     "InferenceResultItem",
     "MemorySnapshot",
@@ -514,8 +481,9 @@ __all__ = [
     "ModelSession",
     "ModelVariant",
     "MultiScoreResult",
+    "OptionScope",
+    "OptionSpec",
     "OutputType",
-    "PluginOptionSpec",
     "PrecisionPolicy",
     "PrecisionRequest",
     "RegistryError",
@@ -528,13 +496,13 @@ __all__ = [
     "TagLevelThresholds",
     "TagResult",
     "TransformError",
-    "TransformInfo",
-    "TransformOptionSpec",
+    "ValueSchema",
     "VariantAvailability",
     "__author__",
     "__license__",
     "__version__",
     "check_availability",
+    "compile_features",
     "describe",
     "describe_all",
     "get_auto_download_default",
@@ -555,5 +523,3 @@ __all__ = [
     "transform_meta",
     "transform_registry",
 ]
-
-# endregion Public re-Exports

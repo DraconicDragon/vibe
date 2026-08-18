@@ -18,6 +18,7 @@ from vibe.backends.base import (
     ModelPlugin,
     ModelVariant,
 )
+from vibe.features import FeatureSpec
 from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
@@ -39,9 +40,6 @@ from vibe.tag_categories import DANBOORU_CATEGORY_LABELS, TagCategory
 logger = logging.getLogger(__name__)
 
 
-# region Base Plugin
-
-
 class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
     """Shared implementation for AnimeTimm dbv4-full taggers."""
 
@@ -55,11 +53,11 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             TagCategory.CHARACTER,
             TagCategory.ARTIST,
         ),
-        transforms=(
-            CleanTags,
-            ScoreThresholds(threshold=0.35),
-            CharacterIPMapping,
-            TagLevelThresholds,
+        features=(
+            FeatureSpec.from_transform(CleanTags),
+            FeatureSpec.from_transform(ScoreThresholds, recommended=ScoreThresholds(threshold=0.35)),
+            FeatureSpec.from_transform(CharacterIPMapping),
+            FeatureSpec.from_transform(TagLevelThresholds),
         ),
     )
 

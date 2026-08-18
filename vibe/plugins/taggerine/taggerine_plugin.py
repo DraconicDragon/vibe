@@ -24,6 +24,7 @@ from vibe.backends.base import (
     RuntimeExecutor,
 )
 from vibe.backends.runtime.pytorch import PyTorchBackend
+from vibe.features import FeatureSpec, InferenceRequest
 from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
     normalize_output_scores,
@@ -73,10 +74,13 @@ class TaggerinePlugin(ModelPlugin):
             TagCategory.META,
             TagCategory.LORE,
         ),
-        transforms=(
-            CleanTags,
-            CharacterIPMapping,
-            ScoreThresholds(threshold=0.35),
+        features=(
+            FeatureSpec.from_transform(CleanTags),
+            FeatureSpec.from_transform(CharacterIPMapping),
+            FeatureSpec.from_transform(
+                ScoreThresholds,
+                recommended=ScoreThresholds(threshold=0.35),
+            ),
         ),
     )
 
@@ -155,13 +159,9 @@ class TaggerinePlugin(ModelPlugin):
             raise ValueError(f"Taggerine only supports PyTorch, got '{plan.backend}'.")
 
         weights_path = artifacts.get("model_pt")
+        from safetensors.torch import load_file
 
-        try:
-            from safetensors.torch import load_file
-
-            from .model import DINOv3Tagger, _build_head_from_checkpoint, split_and_clean_state_dict
-        except ImportError as exc:
-            raise RuntimeError("safetensors and torch are required for Taggerine.") from exc
+        from .model import DINOv3Tagger, _build_head_from_checkpoint, split_and_clean_state_dict
 
         sd = load_file(weights_path, device="cpu")
         backbone_sd, head_sd = split_and_clean_state_dict(sd)
@@ -183,7 +183,7 @@ class TaggerinePlugin(ModelPlugin):
         backend.load(model, plan)
         return backend
 
-    def preprocess(self, image: Any) -> Any:
+    def preprocess(self, image: Any, request: InferenceRequest | None = None) -> Any:
         import torch
         from PIL import Image
 
@@ -211,8 +211,9 @@ class TaggerinePlugin(ModelPlugin):
         arr = (arr - _IMAGENET_MEAN) / _IMAGENET_STD
 
         # HWC to CHW
-        arr = np.transpose(arr, (2, 0, 1))
+        arr = np.ascontiguousarray(np.transpose(arr, (2, 0, 1)))
 
+        # todo: fact check comment
         # Vibe expects all preprocessed tensors to have a batch dimension of 1
         return torch.from_numpy(arr).unsqueeze(0)
 

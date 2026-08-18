@@ -117,7 +117,7 @@ class SourceResolver(ABC):
         optional_missing: dict[str, str] = {}
 
         for spec in variant.artifacts:
-            mapped_name = self.file_name_map.get(spec.id, spec.name)
+            mapped_name = self.file_name_map.get(spec.id, self.file_name_map.get(spec.name, spec.name))
             override_source = self.source_map.get(spec.id)
 
             # 1. Handle Explicit Artifact Override (via source_map)

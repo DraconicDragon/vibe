@@ -7,17 +7,17 @@ from __future__ import annotations
 import dataclasses
 import inspect
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, Self
 
+from vibe.features import FeatureSpec, InferenceRequest
 from vibe.precision import PrecisionRequest
 from vibe.results import ModelResult, OutputType
 
 if TYPE_CHECKING:
-    from vibe.result_transforms import PluginData, ResultTransform
+    from vibe.result_transforms import PluginData
 
 
 class FileRole(str, Enum):
@@ -88,34 +88,8 @@ class RuntimeExecutor(Protocol):
 
 
 @dataclass(frozen=True)
-class PluginOptionSpec:
-    key: str
-    type: type[int | float | str | bool]
-    default: int | float | str | bool
-    display_name: str
-    description: str
-    choices: tuple[Any, ...] | None = None
-    min_val: float | None = None
-    max_val: float | None = None
-    step: float | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "key": self.key,
-            "type": self.type.__name__,
-            "default": self.default,
-            "display_name": self.display_name,
-            "description": self.description,
-            "choices": self.choices,
-            "min_val": self.min_val,
-            "max_val": self.max_val,
-            "step": self.step,
-        }
-
-
-@dataclass(frozen=True)
 class ArtifactSpec:
-    """A logical file required by the model. Identity is driven by 'id', not 'name'."""
+    """A logical file required by the model."""
 
     id: str
     name: str  # Default download/lookup filename
@@ -170,28 +144,52 @@ class ModelCapabilities:
     output_extras: dict[str, str] = field(default_factory=dict)
     # Per-entry extras
     entry_extras: dict[str, str] = field(default_factory=dict)
-    transforms: tuple[type[ResultTransform] | ResultTransform, ...] = ()
-    options: tuple[PluginOptionSpec, ...] = ()
+    features: tuple[FeatureSpec, ...] = ()
 
-    def with_transforms(self, *overrides: type[ResultTransform] | ResultTransform) -> Self:
-        """Return a copy with specified transforms added or replaced by their transform_id."""
-        override_map = {o.transform_id: o for o in overrides}
-        seen_overrides = set()
-        new_transforms = []
+    def __post_init__(self) -> None:
+        if any(not isinstance(feature, FeatureSpec) for feature in self.features):
+            raise TypeError("ModelCapabilities.features must contain only FeatureSpec instances.")
 
-        for t in self.transforms:
-            tid = t.transform_id
-            if tid in override_map:
-                new_transforms.append(override_map[tid])
-                seen_overrides.add(tid)
+        output_categories = tuple(
+            str(category.value if isinstance(category, Enum) else category) for category in self.output_categories
+        )
+        object.__setattr__(self, "output_categories", output_categories)
+        object.__setattr__(
+            self,
+            "features",
+            tuple(dataclasses.replace(feature, _output_categories=output_categories) for feature in self.features),
+        )
+
+        feature_ids = [feature.id for feature in self.features]
+        if len(feature_ids) != len(set(feature_ids)):
+            raise ValueError(f"ModelCapabilities contains duplicate feature IDs: {feature_ids}")
+
+        config_types = [feature.config_type for feature in self.features]
+        if len(config_types) != len(set(config_types)):
+            raise ValueError("ModelCapabilities cannot bind one configuration type to multiple features.")
+
+    def with_features(self, *overrides: FeatureSpec) -> Self:
+        """Return a copy with specified feature specs added or replaced."""
+        override_ids = [override.id for override in overrides]
+        if len(override_ids) != len(set(override_ids)):
+            raise ValueError(f"Duplicate feature IDs in overrides: {override_ids}")
+        override_map = {o.id: o for o in overrides}
+        seen = set()
+        new_features = []
+
+        for f in self.features:
+            if f.id in override_map:
+                new_features.append(override_map[f.id])
+                seen.add(f.id)
             else:
-                new_transforms.append(t)
+                new_features.append(f)
 
-        for tid, o in override_map.items():
-            if tid not in seen_overrides:
-                new_transforms.append(o)
+        for o in overrides:
+            if o.id not in seen:
+                new_features.append(o)
+                seen.add(o.id)
 
-        return dataclasses.replace(self, transforms=tuple(new_transforms))
+        return dataclasses.replace(self, features=tuple(new_features))
 
 
 @dataclass(frozen=True)
@@ -207,15 +205,13 @@ class ModelDescriptor:
     output_extras: dict[str, str]
     entry_extras: dict[str, str]
     supported_backends: tuple[Backend, ...]
-    supported_transforms: tuple[str, ...]
-    recommended_transforms: dict[str, dict[str, Any]]  # transform_id -> dict of recommended values
-    options: tuple[dict[str, Any], ...]
-    default_repo_id: str
+    features: tuple[dict[str, Any], ...]
+    default_repo_id: str | None
     variants: tuple[ModelVariant, ...]
 
 
 class ArtifactMap:
-    """A strictly ID-keyed mapping of resolved paths. Plugins never index by filename."""
+    """Strictly ID-keyed mapping of resolved file paths."""
 
     def __init__(self, paths_by_id: dict[str, Path], optional_missing: dict[str, str] | None = None):
         self._paths = paths_by_id
@@ -243,17 +239,14 @@ class ArtifactMap:
 
 
 class ModelPlugin(ABC):
-    """
-    Abstract base class for all vibe model plugins.
-    Concrete subclasses MUST define `identity`, `capabilities`, and `variants`.
-    """
+    """Abstract base class for all vibe model plugins."""
 
     family_name: str
     identity: ModelIdentity
     capabilities: ModelCapabilities
     default_repo_id: str
     variants: tuple[ModelVariant, ...]
-    _options: dict[str, Any]
+    custom_only: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -271,14 +264,13 @@ class ModelPlugin(ABC):
         # Validate required class-level metadata on concrete models
         if not getattr(cls, "family_name", None):
             raise ValueError(f"Concrete plugin '{cls.__name__}' must inherit or define a 'family_name' string.")
-        if not getattr(cls, "default_repo_id", None):
+        if not getattr(cls, "default_repo_id", None) and not getattr(cls, "custom_only", False):
             raise ValueError(f"Concrete plugin '{cls.__name__}' must define a valid 'default_repo_id' string.")
 
         variants = getattr(cls, "variants", None)
         if not variants:
             raise ValueError(f"Concrete plugin '{cls.__name__}' must define at least one ModelVariant.")
 
-        # region Variant Validation
         seen_variant_ids: set[str] = set()
         backend_counts: dict[Backend, int] = {}
 
@@ -297,7 +289,6 @@ class ModelPlugin(ABC):
                     f"Concrete plugin '{cls.__name__}' defines multiple variants for backend '{v.backend.value}'. "
                     f"Every variant for backend '{v.backend.value}' MUST declare a unique 'variant_id'."
                 )
-        # endregion Variant Validation
 
         from vibe.registry import model_registry
 
@@ -308,91 +299,21 @@ class ModelPlugin(ABC):
 
             warnings.warn(str(exc), stacklevel=2)
 
-    def set_options(self, options: Mapping[str, Any] | None) -> None:
-        """Initialize plugin-specific options passed during vibe.load()."""
-        provided = dict(options) if options else {}
-        declared_specs = {spec.key: spec for spec in self.capabilities.options}
-
-        for key, val in provided.items():
-            if key not in declared_specs:
-                available = list(declared_specs.keys())
-                raise ValueError(
-                    f"Unknown option '{key}' provided for plugin '{self.identity.model_id}'. "
-                    f"Available options: {available if available else 'None'}"
-                )
-
-        resolved = {}
-        for spec in self.capabilities.options:
-            val = provided.get(spec.key, spec.default)
-
-            # Validate type
-            if spec.type is float and isinstance(val, int) and not isinstance(val, bool):
-                val = float(val)
-            elif spec.type is int and isinstance(val, bool):
-                raise TypeError(
-                    f"Option '{spec.key}' for model '{self.identity.model_id}' expects type 'int', got 'bool'."
-                )
-            elif not isinstance(val, spec.type):
-                raise TypeError(
-                    f"Option '{spec.key}' for model '{self.identity.model_id}' expects type "
-                    f"'{spec.type.__name__}', got '{type(val).__name__}'."
-                )
-
-            # Validate choices
-            if spec.choices is not None and val not in spec.choices:
-                raise ValueError(f"Invalid value '{val}' for option '{spec.key}'. Valid choices: {spec.choices}")
-
-            # Validate range
-            if spec.min_val is not None and val < spec.min_val:
-                raise ValueError(
-                    f"Value '{val}' for option '{spec.key}' is below minimum allowed value ({spec.min_val})."
-                )
-            if spec.max_val is not None and val > spec.max_val:
-                raise ValueError(
-                    f"Value '{val}' for option '{spec.key}' exceeds maximum allowed value ({spec.max_val})."
-                )
-
-            resolved[spec.key] = val
-
-        self._options = resolved
-
-    def get_option(self, key: str) -> Any:
-        """Fetch a resolved option value for this session."""
-        if not hasattr(self, "_options"):
-            self.set_options(None)
-        if key not in self._options:
-            raise KeyError(f"Plugin '{self.identity.model_id}' accessed undeclared option '{key}'.")
-        return self._options[key]
-
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
-        """Initialize plugin-local metadata from resolved artifacts.
-
-        This hook must not configure or mutate a runtime executor. It remains
-        separate from `build_runtime` so every session has its own plugin
-        state even when a completed runtime is shared from the pool.
-        """
+        """Initialize plugin-local static metadata from resolved artifacts."""
 
     def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
-        """Build a fully initialized runtime for this model and execution plan.
-
-        This is intentionally not abstract during the metadata migration:
-        making it abstract would make old concrete plugins unimportable before
-        they can be migrated.
-        """
+        """Build a fully initialized runtime for this model and execution plan."""
         raise NotImplementedError(
-            f"Plugin '{self.identity.model_id}' has not migrated to the build_runtime() contract."
+            f"Plugin '{self.identity.model_id}' has not implemented the build_runtime() contract."
         )
 
     def provide_transform_data(self) -> tuple[PluginData, ...]:
-        """Optional hook: return typed data this plugin has precomputed for transforms to consume."""
+        """Optional hook: return static data precomputed by this plugin for transforms."""
         return ()
 
     def collate_batch(self, samples: list[Any]) -> Any:
-        """Collate a list of preprocessed samples into a batch tensor.
-
-        The default implementation handles standard NumPy arrays and PyTorch tensors
-        that already have a batch dimension (e.g. shape (1, C, H, W)).
-        """
+        """Collate a list of preprocessed samples into a batch tensor."""
         if not samples:
             raise ValueError("Cannot collate an empty batch.")
 
@@ -417,11 +338,7 @@ class ModelPlugin(ABC):
         )
 
     def split_batch(self, batched_output: Any, expected_size: int) -> list[Any]:
-        """Split a batched raw output back into a list of per-sample outputs.
-
-        The default implementation safely slices numpy arrays, torch tensors,
-        and traverses nested dictionaries/tuples recursively.
-        """
+        """Split a batched raw output back into a list of per-sample outputs."""
         if expected_size == 1:
             return [batched_output]
 
@@ -434,6 +351,17 @@ class ModelPlugin(ABC):
         # Handle nested tuples/lists
         if isinstance(batched_output, (tuple, list)):
             split_vals = [self.split_batch(v, expected_size) for v in batched_output]
+            if isinstance(batched_output, tuple):
+                results: list[Any] = []
+                for i in range(expected_size):
+                    values = [v[i] for v in split_vals]
+                    # NamedTuple subclasses require positional construction;
+                    # plain tuples take one iterable argument.
+                    if hasattr(batched_output, "_fields"):
+                        results.append(type(batched_output)(*values))
+                    else:
+                        results.append(tuple(values))
+                return results
             return [type(batched_output)(v[i] for v in split_vals) for i in range(expected_size)]
 
         shape = getattr(batched_output, "shape", None)
@@ -460,7 +388,7 @@ class ModelPlugin(ABC):
         raise ValueError(f"Batch dimension mismatch: expected {expected_size}, got shape {arr.shape}.")
 
     @abstractmethod
-    def preprocess(self, image: Any) -> Any:
+    def preprocess(self, image: Any, request: InferenceRequest | None = None) -> Any:
         pass
 
     @abstractmethod
@@ -472,20 +400,6 @@ class ModelPlugin(ABC):
         """Assembles a structured descriptor of the model plugin's metadata."""
         resolved_variants = tuple(v.resolve(cls.default_repo_id) for v in cls.variants)
 
-        supported_ids = []
-        recommended_configs = {}
-
-        from vibe.result_transforms import ResultTransform
-
-        for t in cls.capabilities.transforms:
-            if isinstance(t, type) and issubclass(t, ResultTransform):
-                supported_ids.append(t.transform_id)
-            elif isinstance(t, ResultTransform):
-                supported_ids.append(t.transform_id)
-                recommended_configs[t.transform_id] = t.to_config_dict()
-
-        supported_ids = list(dict.fromkeys(supported_ids))
-
         return ModelDescriptor(
             model_id=cls.identity.model_id,
             display_name=cls.identity.display_name,
@@ -496,9 +410,7 @@ class ModelPlugin(ABC):
             output_extras=cls.capabilities.output_extras,
             entry_extras=cls.capabilities.entry_extras,
             supported_backends=tuple(v.backend for v in cls.variants),
-            supported_transforms=tuple(supported_ids),
-            recommended_transforms=recommended_configs,
-            options=tuple(opt.to_dict() for opt in cls.capabilities.options),
-            default_repo_id=cls.default_repo_id,
+            features=tuple(f.to_dict() for f in cls.capabilities.features),
+            default_repo_id=None if cls.custom_only and not cls.default_repo_id else cls.default_repo_id,
             variants=resolved_variants,
         )

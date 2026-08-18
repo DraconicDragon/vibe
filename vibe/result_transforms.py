@@ -5,14 +5,17 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import logging
+import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, ClassVar, Generic, TypeVar, cast, get_args, get_origin
 
 from vibe.backends.base import ArtifactMap
 from vibe.backends.char_ip_mapping import apply_character_ip_mapping, resolve_character_ip_mapping
-from vibe.exceptions import TransformRequirementError
+from vibe.exceptions import SessionError, TransformRequirementError
+from vibe.features import FeatureSpec, ValueSchema, transform_meta
 from vibe.registry import transform_registry
 from vibe.results import BaseModelResult, ModelResult, TagEntry, TagResult
 from vibe.tag_categories import TagCategory
@@ -47,10 +50,7 @@ KAOMOJIS = {
 
 @dataclass(frozen=True)
 class PluginData:
-    """
-    Base marker for typed, plugin-computed data handed to transforms at runtime.
-    Transforms fetch them by type from TransformContext.
-    """
+    """Base marker for typed, plugin-computed data handed to transforms at runtime."""
 
 
 @dataclass(frozen=True)
@@ -94,8 +94,6 @@ class TransformContext:
         """
         found = self.get_plugin_data(kind)
         if found is None:
-            from vibe.exceptions import TransformRequirementError
-
             raise TransformRequirementError(
                 f"Model '{self.model_id}' did not provide the required {kind.__name__} data."
             )
@@ -111,73 +109,6 @@ class TransformContext:
             return
         self._warned_keys.add(key)
         logger.warning(message)
-
-
-@dataclass(frozen=True)
-class TransformOptionSpec:
-    """UI-facing schema for an individual transform parameter."""
-
-    name: str
-    type: str | None
-    default: Any
-    required: bool
-    description: str
-    choices: tuple[Any, ...] | None = None
-    min_val: float | None = None
-    max_val: float | None = None
-    step: float | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "type": self.type,
-            "default": self.default,
-            "required": self.required,
-            "description": self.description,
-            "choices": self.choices,
-            "min_val": self.min_val,
-            "max_val": self.max_val,
-            "step": self.step,
-        }
-
-
-@dataclass(frozen=True)
-class TransformInfo:
-    """Metadata wrapper for the entire transform class."""
-
-    transform_id: str
-    display_name: str
-    description: str
-    options: list[TransformOptionSpec]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "transform_id": self.transform_id,
-            "display_name": self.display_name,
-            "description": self.description,
-            "options": [o.to_dict() for o in self.options],
-        }
-
-
-def transform_meta(
-    description: str = "",
-    choices: tuple[Any, ...] | None = None,
-    min_val: float | None = None,
-    max_val: float | None = None,
-    step: float | None = None,
-    internal: bool = False,
-) -> dict[str, Any]:
-    """
-    Strongly-typed helper to generate standard metadata dicts for Transform options.
-    """
-    return {
-        "description": description,
-        "choices": choices,
-        "min_val": min_val,
-        "max_val": max_val,
-        "step": step,
-        "internal": internal,
-    }
 
 
 # endregion
@@ -229,40 +160,15 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
         return self.apply(result, context=context)
 
     @classmethod
-    def describe(cls) -> TransformInfo:
-        """Dynamically build transform metadata from dataclass fields."""
-        if not dataclasses.is_dataclass(cls):
-            raise TypeError(f"ResultTransform subclass '{cls.__name__}' must be decorated with @dataclass.")
+    def describe(cls) -> FeatureSpec:
+        """Return the unified feature descriptor for this transform class.
 
-        options: list[TransformOptionSpec] = []
-
-        for f in dataclasses.fields(cls):
-            if f.metadata.get("internal", False):
-                continue
-
-            is_required = f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
-            default_val = None if is_required else (f.default if f.default is not dataclasses.MISSING else None)
-
-            options.append(
-                TransformOptionSpec(
-                    name=f.name,
-                    type=getattr(f.type, "__name__", str(f.type)) if f.type else None,
-                    default=default_val,
-                    required=is_required,
-                    description=f.metadata.get("description", ""),
-                    choices=f.metadata.get("choices"),
-                    min_val=f.metadata.get("min_val"),
-                    max_val=f.metadata.get("max_val"),
-                    step=f.metadata.get("step"),
-                )
-            )
-
-        return TransformInfo(
-            transform_id=cls.transform_id,
-            display_name=cls.display_name,
-            description=cls.description,
-            options=options,
-        )
+        Transform metadata used to be exposed through the separate
+        ``TransformInfo``/``TransformOptionSpec`` hierarchy.  Keeping this
+        method preserves the introspection entry point while making
+        ``FeatureSpec`` the single metadata representation.
+        """
+        return FeatureSpec.from_transform(cls)
 
     def on_infer_start(self, *, context: TransformContext) -> None:
         """Hook called once per infer call before any outputs are processed."""
@@ -271,7 +177,6 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
         """Serialize non-internal dataclass fields for third-party inspection."""
         if not dataclasses.is_dataclass(self):
             return {}
-
         return {
             f.name: getattr(self, f.name)
             for f in dataclasses.fields(cast(Any, self))
@@ -286,7 +191,7 @@ class ResultTransform(ABC, Generic[TIn, TOut]):
 # endregion
 
 
-# region Transforms
+# region Concrete Transforms
 
 
 @dataclass(frozen=True)
@@ -302,7 +207,8 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
     mapping_file: str | None = field(
         default=None,
         metadata=transform_meta(
-            description="Path to custom mapping JSON. If omitted, uses model bundle or HF fallback."
+            description="Path to custom mapping JSON. If omitted, uses model bundle or HF fallback.",
+            schema=ValueSchema(kind="string", nullable=True),
         ),
     )
 
@@ -316,8 +222,7 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
 
         if not mapping:
             raise TransformRequirementError(
-                f"CharacterIPMapping on model '{context.model_id}' failed to load any valid mapping data "
-                f"(manual_path={self.mapping_file!r}, auto_download={context.auto_download})."
+                f"CharacterIPMapping on model '{context.model_id}' failed to load any valid mapping data."
             )
 
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
@@ -336,7 +241,6 @@ class CharacterIPMapping(ResultTransform[TagResult, TagResult]):
 
     def _get_mapping(self, context: TransformContext) -> dict[str, list[str]]:
         cache_key = f"char_ip_mapping:{self.mapping_file or 'default'}"
-
         return context.get_cached_or_load(
             cache_key,
             lambda: resolve_character_ip_mapping(
@@ -391,20 +295,53 @@ class ScoreThresholds(ResultTransform[TagResult, TagResult]):
             min_val=0.0,
             max_val=1.0,
             step=0.01,
+            schema=ValueSchema(kind="float"),
         ),
     )
     category_thresholds: dict[str | TagCategory, float] | None = field(
         default=None,
-        metadata=transform_meta(description="Per-category threshold overrides."),
+        metadata=transform_meta(
+            description="Per-category threshold overrides.",
+            schema=ValueSchema(
+                kind="mapping",
+                key_schema=ValueSchema(kind="string"),
+                value_schema=ValueSchema(kind="float"),
+                allow_custom_keys=True,
+                nullable=True,
+                known_keys_source="output_categories",
+            ),
+        ),
     )
 
     def __post_init__(self) -> None:
-        if not (0.0 <= self.threshold <= 1.0):
-            raise ValueError("threshold must be between 0.0 and 1.0.")
-        if self.category_thresholds:
+        if isinstance(self.threshold, bool) or not isinstance(self.threshold, (int, float)):
+            raise SessionError("threshold must be a number between 0.0 and 1.0.")
+        if not math.isfinite(float(self.threshold)) or not (0.0 <= self.threshold <= 1.0):
+            raise SessionError("threshold must be between 0.0 and 1.0.")
+
+        if self.category_thresholds is not None:
+            normalized_map: dict[str, float] = {}
+            seen_canonical: dict[str, Any] = {}
+
             for cat, val in self.category_thresholds.items():
-                if not (0.0 <= val <= 1.0):
-                    raise ValueError(f"Threshold for category '{cat}' must be between 0.0 and 1.0.")
+                canonical_cat = str(cat.value if isinstance(cat, Enum) else cat)
+                if canonical_cat in seen_canonical and seen_canonical[canonical_cat] != cat:
+                    raise SessionError(
+                        f"Duplicate normalized category collision in category_thresholds: '{cat}' conflicts with '{seen_canonical[canonical_cat]}'."
+                    )
+                seen_canonical[canonical_cat] = cat
+
+                if isinstance(val, bool):
+                    raise SessionError(f"Threshold for category '{canonical_cat}' must be a number.")
+                try:
+                    float_val = float(val)
+                except (TypeError, ValueError) as exc:
+                    raise SessionError(f"Threshold for category '{canonical_cat}' must be a number.") from exc
+                if not math.isfinite(float_val) or not (0.0 <= float_val <= 1.0):
+                    raise SessionError(f"Threshold for category '{canonical_cat}' must be between 0.0 and 1.0.")
+                normalized_map[canonical_cat] = float_val
+
+            object.__setattr__(self, "category_thresholds", normalized_map)
 
     def apply(self, result: TagResult, *, context: TransformContext) -> TagResult:
         cat_thresh = self.category_thresholds or {}
@@ -439,6 +376,7 @@ class TagLevelThresholds(ResultTransform[TagResult, TagResult]):
             min_val=-1.0,
             max_val=1.0,
             step=0.01,
+            schema=ValueSchema(kind="float"),
         ),
     )
     threshold_relative_offset: float = field(
@@ -448,6 +386,7 @@ class TagLevelThresholds(ResultTransform[TagResult, TagResult]):
             min_val=-1.0,
             max_val=1.0,
             step=0.01,
+            schema=ValueSchema(kind="float"),
         ),
     )
     threshold_fallback: float | None = field(
@@ -457,16 +396,27 @@ class TagLevelThresholds(ResultTransform[TagResult, TagResult]):
             min_val=0.0,
             max_val=1.0,
             step=0.01,
+            schema=ValueSchema(kind="float", nullable=True),
         ),
     )
 
     def __post_init__(self) -> None:
+        if not all(
+            isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+            for value in (self.threshold_offset, self.threshold_relative_offset)
+        ):
+            raise SessionError("Threshold offsets must be finite numbers.")
         if self.threshold_offset != 0.0 and self.threshold_relative_offset != 0.0:
-            raise ValueError("Use only one of threshold_offset or threshold_relative_offset.")
+            raise SessionError("Use only one of threshold_offset or threshold_relative_offset.")
         if not (-1.0 <= self.threshold_relative_offset <= 1.0):
-            raise ValueError("threshold_relative_offset must be in [-1.0, 1.0].")
-        if self.threshold_fallback is not None and not (0.0 <= self.threshold_fallback <= 1.0):
-            raise ValueError("threshold_fallback must be in [0.0, 1.0].")
+            raise SessionError("threshold_relative_offset must be in [-1.0, 1.0].")
+        if self.threshold_fallback is not None and (
+            isinstance(self.threshold_fallback, bool)
+            or not isinstance(self.threshold_fallback, (int, float))
+            or not math.isfinite(float(self.threshold_fallback))
+            or not (0.0 <= self.threshold_fallback <= 1.0)
+        ):
+            raise SessionError("threshold_fallback must be in [0.0, 1.0].")
 
     def on_infer_start(self, *, context: TransformContext) -> None:
         # Fails with TransformRequirementError automatically if data is missing

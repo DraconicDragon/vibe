@@ -18,6 +18,7 @@ from vibe.backends.base import (
     RuntimeExecutor,
 )
 from vibe.backends.runtime.pytorch import PyTorchBackend
+from vibe.features import InferenceRequest
 from vibe.plugins.shared.scores_utils import normalize_scalar
 from vibe.results import OutputType, ScoreResult
 
@@ -45,7 +46,12 @@ def _get_runtime_model_cls(nn_module: Any) -> type:
             self.mlp = mlp
 
         def forward(self, images: Any) -> Any:
-            features = self.clip_model.get_image_features(images).pooler_output
+            features = self.clip_model.get_image_features(images)
+            # todo: check if this works with transformers v4.x and v5.x
+            if hasattr(features, "pooler_output"):
+                features = features.pooler_output
+            elif hasattr(features, "image_embeds"):
+                features = features.image_embeds
             features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-6)
             return self.mlp(features).clamp(0, 10)
 
@@ -71,7 +77,6 @@ class WaifuScorerBasePlugin(ModelPlugin):
     capabilities = ModelCapabilities(
         output_type=OutputType.SCORE,
         output_categories=(),
-        transforms=(),
     )
 
     # NOTE: if user overrides source with local dir for example, then user needs to
@@ -157,7 +162,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
         backend.load(model, plan)
         return backend
 
-    def preprocess(self, image: Any) -> Any:
+    def preprocess(self, image: Any, request: InferenceRequest | None = None) -> Any:
         if self._clip_preprocess is None:
             raise RuntimeError("Waifu scorer preprocessor is not loaded.")
 

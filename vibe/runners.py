@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 from vibe.backends.base import Backend, ModelPlugin, RuntimeExecutor
 from vibe.exceptions import InferenceCancelled, SessionError
+from vibe.features import InferenceRequest
 from vibe.result_transforms import ResultTransform
 from vibe.results import ModelResult, is_multi_score_result, is_tag_result
 from vibe.transform_pipeline import TransformPipeline
@@ -34,7 +35,6 @@ class SessionRunnerState:
             if key in self._warned_keys:
                 return
             self._warned_keys.add(key)
-
         logger.log(level, message)
 
     def start_run(self) -> None:
@@ -86,9 +86,14 @@ class InferenceEngine:
         self.model_id = plugin.identity.model_id
         self.state = state
 
-    def execute_single(self, image: Any, transforms: list[ResultTransform] | None) -> ModelResult:
+    def execute_single(
+        self,
+        image: Any,
+        transforms: list[ResultTransform] | None,
+        request: InferenceRequest | None = None,
+    ) -> ModelResult:
         try:
-            tensor = self.plugin.preprocess(image)
+            tensor = self.plugin.preprocess(image, request=request)
             logger.debug("Preprocess output shape=%s dtype=%s", _fmt_shape(tensor), _fmt_dtype(tensor))
         except Exception as exc:
             raise SessionError(f"Preprocessing failed for model '{self.model_id}': {exc}") from exc
@@ -122,8 +127,7 @@ class InferenceEngine:
                 key=f"metadata-plugin-extras-{self.model_id}",
                 message=(
                     f"Metadata mismatch for model '{self.model_id}': plugin postprocess returned undocumented "
-                    f"top-level extras {undocumented_plugin_extras}. "
-                    "Please add them to ModelCapabilities.output_extras."
+                    f"top-level extras {undocumented_plugin_extras}."
                 ),
                 level=logging.ERROR,
             )
@@ -143,8 +147,7 @@ class InferenceEngine:
                 key=f"metadata-plugin-entry-extras-{self.model_id}",
                 message=(
                     f"Metadata mismatch for model '{self.model_id}': plugin postprocess returned undocumented "
-                    f"entry extras {undocumented_plugin_entry_extras}. "
-                    "Please add them to ModelCapabilities.entry_extras."
+                    f"entry extras {undocumented_plugin_entry_extras}."
                 ),
                 level=logging.ERROR,
             )
@@ -170,58 +173,48 @@ class InferenceEngine:
             if undocumented_cats:
                 self.state.warn_once(
                     key=f"metadata-cats-{self.model_id}",
-                    message=(
-                        f"Metadata mismatch for model '{self.model_id}': returned undocumented categories {undocumented_cats}. "
-                        "These categories are preserved as model output."
-                    ),
+                    message=f"Metadata mismatch for model '{self.model_id}': returned undocumented categories {undocumented_cats}.",
                     level=logging.WARNING,
                 )
 
-        # Audit Top-Level Extras
-        if final_result.extras:
-            declared_extras = set(capabilities.output_extras.keys())
-            if transforms:
-                for t in transforms:
-                    declared_extras.update(t.output_extras.keys())
+        # Transforms may intentionally add declared metadata. Audit the final
+        # result against both model and active-transform declarations so those
+        # additions remain visible without masking genuine mismatches.
+        declared_output_extras = set(capabilities.output_extras)
+        declared_entry_extras = set(capabilities.entry_extras)
+        for transform in transforms or ():
+            declared_output_extras.update(transform.output_extras)
+            declared_entry_extras.update(transform.entry_extras)
 
-            undocumented_extras = set(final_result.extras.keys()) - declared_extras
-            if undocumented_extras:
-                self.state.warn_once(
-                    key=f"metadata-extras-{self.model_id}",
-                    message=(
-                        f"Metadata mismatch for model '{self.model_id}': returned undocumented top-level extras {undocumented_extras}. "
-                        "Declare them in ModelCapabilities.output_extras or the producing ResultTransform.output_extras."
-                    ),
-                    level=logging.ERROR,
-                )
+        undocumented_extras = set(final_result.extras) - declared_output_extras
+        if undocumented_extras:
+            self.state.warn_once(
+                key=f"metadata-extras-{self.model_id}",
+                message=(
+                    f"Metadata mismatch for model '{self.model_id}': returned undocumented top-level extras "
+                    f"{undocumented_extras}."
+                ),
+                level=logging.ERROR,
+            )
 
-        # Audit Entry-Level Extras
-        undocumented_entry_extras = set()
-        declared_entry_extras = set(capabilities.entry_extras.keys())
-        if transforms:
-            for t in transforms:
-                declared_entry_extras.update(t.entry_extras.keys())
-
+        undocumented_entry_extras: set[str] = set()
         if is_tag_result(final_result):
             for entries in final_result.tags.values():
                 for entry in entries:
-                    if entry.extras:
-                        undocumented_entry_extras.update(set(entry.extras.keys()) - declared_entry_extras)
+                    undocumented_entry_extras.update(set(entry.extras) - declared_entry_extras)
         elif is_multi_score_result(final_result):
             for entry in final_result.entries:
-                if entry.extras:
-                    undocumented_entry_extras.update(set(entry.extras.keys()) - declared_entry_extras)
+                undocumented_entry_extras.update(set(entry.extras) - declared_entry_extras)
 
         if undocumented_entry_extras:
             self.state.warn_once(
                 key=f"metadata-entry-extras-{self.model_id}",
                 message=(
-                    f"Metadata mismatch for model '{self.model_id}': returned undocumented entry extras {undocumented_entry_extras}. "
-                    "Declare them in ModelCapabilities.entry_extras or the producing ResultTransform.entry_extras."
+                    f"Metadata mismatch for model '{self.model_id}': returned undocumented entry extras "
+                    f"{undocumented_entry_extras}."
                 ),
                 level=logging.ERROR,
             )
-        # endregion
 
         return final_result
 
@@ -238,12 +231,9 @@ class BatchRunner:
     ) -> Literal["true", "sequential"]:
         # Reset per inference run
         self._batching_disabled = False
-
         if batch_size <= 1:
             return "sequential"
-
         supports_true = self._supports_true_batching()
-
         if requested == "true":
             if not supports_true:
                 logger.warning(
@@ -289,14 +279,18 @@ class BatchRunner:
         return results
 
     def execute_chunk(
-        self, chunk_images: list[Any], transforms: list[ResultTransform] | None, fallback_to_sequential: bool
+        self,
+        chunk_images: list[Any],
+        transforms: list[ResultTransform] | None,
+        request: InferenceRequest | None,
+        fallback_to_sequential: bool,
     ) -> list[ModelResult]:
         self.state.check_cancelled()
         try:
             chunk_tensors = []
             for img in chunk_images:
                 self.state.check_cancelled()
-                chunk_tensors.append(self.engine.plugin.preprocess(img))
+                chunk_tensors.append(self.engine.plugin.preprocess(img, request=request))
         except Exception as exc:
             raise SessionError(f"Preprocessing failed for model '{self.engine.model_id}': {exc}") from exc
 
@@ -308,7 +302,7 @@ class BatchRunner:
             )
             return self._run_sequential(chunk_tensors, transforms)
 
-        # 1. Collation Stage
+        # Collation
         try:
             batch_tensor = self.engine.plugin.collate_batch(chunk_tensors)
         except Exception as exc:
@@ -321,16 +315,13 @@ class BatchRunner:
                 )
                 self.state.warn_once(
                     key="batch_collate_fallback",
-                    message=(
-                        f"Batch stacking failed for model '{self.engine.model_id}': {exc}. "
-                        "Falling back to sequential execution for this and subsequent chunks."
-                    ),
+                    message=f"Batch stacking failed for model '{self.engine.model_id}': {exc}. Sequential fallback active.",
                 )
                 return self._run_sequential(chunk_tensors, transforms)
             logger.exception("Batch collation failed for model '%s'", self.engine.model_id)
             raise SessionError(f"Could not collate batch for model '{self.engine.model_id}': {exc}") from exc
 
-        # Execution Stage
+        # Execution
         try:
             raw_output = self.engine.backend_instance.run(batch_tensor)
         except Exception as exc:
@@ -344,10 +335,7 @@ class BatchRunner:
                 )
                 self.state.warn_once(
                     key="batch_run_fallback",
-                    message=(
-                        f"Batch execution failed for model '{self.engine.model_id}': {exc}. "
-                        "Falling back to sequential execution for this and subsequent chunks."
-                    ),
+                    message=f"Batch execution failed for model '{self.engine.model_id}': {exc}. Sequential fallback active.",
                 )
                 return self._run_sequential(chunk_tensors, transforms)
             logger.exception("Batch execution failed for model '%s'", self.engine.model_id)
@@ -367,10 +355,7 @@ class BatchRunner:
                 )
                 self.state.warn_once(
                     key="batch_split_fallback",
-                    message=(
-                        f"Batch splitting failed for model '{self.engine.model_id}': {exc}. "
-                        "Falling back to sequential execution for this and subsequent chunks."
-                    ),
+                    message=f"Batch splitting failed for model '{self.engine.model_id}': {exc}. Sequential fallback active.",
                 )
                 return self._run_sequential(chunk_tensors, transforms)
             logger.exception("Batch output splitting failed for model '%s'", self.engine.model_id)

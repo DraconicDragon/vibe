@@ -16,7 +16,8 @@ from vibe.exceptions import RegistryError
 
 if TYPE_CHECKING:
     from vibe.backends.base import ModelDescriptor, ModelPlugin
-    from vibe.result_transforms import ResultTransform, TransformInfo
+    from vibe.features import FeatureSpec
+    from vibe.result_transforms import ResultTransform
 
 
 class ModelRegistry:
@@ -173,7 +174,7 @@ class TransformRegistry:
             raise RegistryError(f"No transform found for '{transform_id}'. Known: {list(self._transforms)}")
         return self._transforms[transform_id]
 
-    def list_all(self) -> list[TransformInfo]:
+    def list_all(self) -> list[FeatureSpec]:
         return [transform_cls.describe() for transform_cls in self._transforms.values()]
 
 

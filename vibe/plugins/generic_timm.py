@@ -31,6 +31,7 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
     """Generic timm classifier/scorer for arbitrary timm-style repos."""
 
     family_name = "Generic Timm Models"
+    custom_only = True
 
     capabilities = ModelCapabilities(
         output_type=OutputType.TAGS,

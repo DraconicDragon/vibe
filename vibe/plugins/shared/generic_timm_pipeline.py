@@ -13,6 +13,7 @@ from PIL import Image
 from vibe.backends.base import ArtifactMap, Backend, ExecutionPlan, RuntimeExecutor
 from vibe.backends.runtime.onnx import ONNXBackend
 from vibe.backends.runtime.pytorch import PyTorchBackend
+from vibe.features import InferenceRequest
 
 if TYPE_CHECKING:
     from vibe.backends.base import ModelIdentity
@@ -253,7 +254,6 @@ class TimmPipelineMixin:
         try:
             return timm_module.create_model(architecture, pretrained=False, **model_args)
         except TypeError as exc:
-            num_classes = model_args.get("num_classes")
             logger.warning(
                 "timm.create_model rejected model_args for model_id=%s architecture=%s (%s). "
                 "Retrying with conservative fallback args.",
@@ -262,8 +262,8 @@ class TimmPipelineMixin:
                 exc,
             )
             fallback_args = {}
-            if num_classes is not None:
-                fallback_args["num_classes"] = int(num_classes)
+            if "num_classes" in model_args:
+                fallback_args["num_classes"] = int(model_args["num_classes"])
             return timm_module.create_model(architecture, pretrained=False, **fallback_args)
 
     def resolve_timm_architecture(self, config: dict[str, Any] | None) -> str | None:
@@ -297,7 +297,7 @@ class TimmPipelineMixin:
 
     # region Preprocess
 
-    def preprocess(self, image: Any) -> np.ndarray:
+    def preprocess(self, image: Any, request: InferenceRequest | None = None) -> np.ndarray:
         if self._runtime_timm_transform is not None:
             return self.preprocess_with_native_timm(image, self._runtime_timm_transform)
         return self.preprocess_with_timm_steps(image, self._runtime_preprocess_steps)
@@ -357,7 +357,7 @@ class TimmPipelineMixin:
             std_arr = np.asarray(normalize_std, dtype=np.float32).reshape(1, 1, 3)
             arr = (arr - mean_arr) / std_arr
 
-        arr = np.transpose(arr, (2, 0, 1))
+        arr = np.ascontiguousarray(np.transpose(arr, (2, 0, 1)))
         return np.expand_dims(arr, axis=0).astype(np.float32, copy=False)
 
     # endregion Preprocess
@@ -365,9 +365,9 @@ class TimmPipelineMixin:
     # region Image Helpers
 
     def _to_rgb_with_background(self, image: Image.Image) -> Image.Image:
-        if image.mode == "RGBA":
+        if image.mode in ("RGBA", "LA"):
             background = Image.new("RGB", image.size, (255, 255, 255))
-            background.paste(image, mask=image.split()[3])
+            background.paste(image, mask=image.split()[-1])
             return background
         if image.mode == "P" and "transparency" in image.info:
             rgba = image.convert("RGBA")

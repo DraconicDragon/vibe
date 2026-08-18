@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import csv
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 import numpy as np
 
@@ -23,10 +24,10 @@ from vibe.backends.base import (
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
-    PluginOptionSpec,
     RuntimeExecutor,
 )
 from vibe.backends.runtime.pytorch import PyTorchBackend
+from vibe.features import FeatureSpec, InferenceRequest, ValueSchema, transform_meta
 from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
     normalize_output_scores,
@@ -48,7 +49,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# region Constants & Helpers
+
+@dataclass(frozen=True)
+class JTPHydraSettings:
+    """Per-call visual token budget configuration."""
+
+    feature_id: ClassVar[str] = "jtp_hydra"
+
+    seqlen: int = field(
+        default=1024,
+        metadata=transform_meta(
+            display_name="Sequence Length",
+            description="Maximum visual tokens used to represent an image. Higher values preserve fine detail but use more VRAM.",
+            min_val=64,
+            max_val=2048,
+            step=64,
+            schema=ValueSchema(kind="int"),
+        ),
+    )
 
 
 class JTPHydraBatch(NamedTuple):
@@ -105,12 +123,6 @@ def _parse_jtp_val_csv(csv_path: Path) -> dict[str, float]:
     return tag_best_thresh
 
 
-# endregion Constants & Helpers
-
-
-# region Abstract Base Plugin
-
-
 class JTPHydraBasePlugin(ModelPlugin):
     """Shared implementation for JTP 3 / Hydra taggers by RedRocket."""
 
@@ -128,29 +140,25 @@ class JTPHydraBasePlugin(ModelPlugin):
             TagCategory.META,
             TagCategory.LORE,
         ),
-        options=(
-            PluginOptionSpec(
-                key="jtp_hydra_seqlen",
+        features=(
+            FeatureSpec.from_transform(CleanTags),
+            FeatureSpec.from_transform(CharacterIPMapping),
+            FeatureSpec.from_transform(ScoreThresholds, recommended=ScoreThresholds(threshold=0.35)),
+            FeatureSpec.from_transform(TagLevelThresholds),
+            FeatureSpec.from_config(
+                JTPHydraSettings,
+                stage="preprocess",
+                binding="plugin",
                 display_name="Sequence Length",
-                type=int,
-                default=1024,
-                min_val=64,
-                max_val=2048,
-                description="Maximum visual tokens used to represent an image. Higher values preserve fine detail but use more VRAM.",
+                description="Visual token sequence budget for NaFlex patch stacker.",
+                recommended=JTPHydraSettings(seqlen=1024),
             ),
-        ),
-        transforms=(
-            CleanTags,
-            CharacterIPMapping,
-            ScoreThresholds(threshold=0.35),
-            TagLevelThresholds,
         ),
     )
 
     _raw_tag_names: list[str]
     _category_indices: dict[str, list[int]]
     _tag_thresholds: dict[str, float]
-    _seqlen: int = 1024
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         """Parse tag labels, category indices, and optimal thresholds directly from safetensors metadata or validation CSV."""
@@ -214,8 +222,6 @@ class JTPHydraBasePlugin(ModelPlugin):
             self._tag_thresholds = _parse_jtp_val_csv(val_csv_path)
             logger.info("Parsed optimal thresholds from val_csv for %s", self.identity.model_id)
 
-        self._seqlen = int(self.get_option("jtp_hydra_seqlen"))
-
     def provide_transform_data(self) -> tuple[PluginData, ...]:
         if self._tag_thresholds:
             return (TagThresholds(values=self._tag_thresholds),)
@@ -252,18 +258,14 @@ class JTPHydraBasePlugin(ModelPlugin):
         except Exception as exc:
             raise ValueError(f"Failed to collate JTPHydraBatch: {exc}") from exc
 
-    def preprocess(self, image: Any) -> JTPHydraBatch:
-        return _preprocess_image_jtp3(image, self._seqlen)
+    def preprocess(self, image: Any, request: InferenceRequest | None = None) -> JTPHydraBatch:
+        settings = request.get(JTPHydraSettings) if request is not None else None
+        seqlen = settings.seqlen if settings is not None else 1024
+        return _preprocess_image_jtp3(image, seqlen)
 
     def postprocess(self, raw_output: Any) -> TagResult:
         probs = normalize_output_scores(raw_output, is_logits=True, expected_count=len(self._raw_tag_names))
         return build_categorized_tag_result(self._raw_tag_names, probs, self._category_indices)
-
-
-# endregion
-
-
-# region Concrete Plugins
 
 
 class JTP3Plugin(JTPHydraBasePlugin):
@@ -321,6 +323,3 @@ class Hydra35Plugin(JTPHydraBasePlugin):
             ),
         ),
     )
-
-
-# endregion

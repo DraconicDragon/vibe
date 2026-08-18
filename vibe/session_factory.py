@@ -87,8 +87,7 @@ def _resolve_backend_candidates(
         )
         raise SessionError(
             f"Accelerator device '{device_str}' explicitly requested, but no active GPU/accelerator support was found. "
-            f"Backend capabilities: {', '.join(diag)}. "
-            "Install PyTorch with CUDA/ROCm/MPS support or 'onnxruntime-gpu'."
+            f"Backend capabilities: {', '.join(diag)}."
         )
 
     if len(available) == 1:
@@ -128,7 +127,6 @@ def build_session(
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
     source_map: Mapping[str, str] | None = None,
-    options: Mapping[str, Any] | None = None,
     memory_tracking: bool = False,
 ) -> ModelSession:
     """Build a ModelSession from a plugin class and a file source."""
@@ -207,10 +205,9 @@ def build_session(
 
         try:
             plugin = plugin_cls()
-            plugin.set_options(options)
             plugin.load_ancillary(file_map)
 
-            pool_key = _make_runtime_pool_key(plugin_cls, file_map, plan, options=plugin._options)
+            pool_key = (plugin_cls, file_map.cache_key, plan)
             runtime, release_fn = _acquire_runtime(
                 key=pool_key,
                 model_id=model_id,
@@ -269,42 +266,6 @@ def build_session(
 
     attempts = "; ".join(f"{b.value}: {reason}" for b, reason in failures)
     raise SessionError(f"Failed to resolve files or build runtime for '{model_id}'. Attempts: {attempts}")
-
-
-def _make_hashable(val: Any) -> Any:
-    """Recursively convert arbitrary data structures (dicts, lists, sets, arrays) into hashable tuples."""
-    if isinstance(val, dict):
-        return tuple(sorted(((str(k), _make_hashable(v)) for k, v in val.items()), key=lambda item: item[0]))
-    if isinstance(val, (list, tuple)):
-        return tuple(_make_hashable(v) for v in val)
-    if isinstance(val, set):
-        return tuple(sorted((_make_hashable(v) for v in val), key=repr))
-    if hasattr(val, "tolist") and callable(val.tolist):  # Handles numpy arrays and torch tensors
-        try:
-            return _make_hashable(val.tolist())
-        except Exception as exc:
-            logger.debug("Failed to convert array-like object with tolist() for pool key hashing: %s", exc)
-    try:
-        hash(val)
-        return val
-    except TypeError:
-        return repr(val)
-
-
-def _make_runtime_pool_key(
-    plugin_cls: type[ModelPlugin],
-    artifacts: ArtifactMap,
-    plan: ExecutionPlan,
-    options: dict[str, Any] | None = None,
-) -> tuple[type[ModelPlugin], tuple[tuple[str, str], ...], ExecutionPlan, tuple[Any, ...]]:
-    """Key a completed runtime using immutable construction inputs."""
-    options_key = _make_hashable(options) if options else ()
-    return (
-        plugin_cls,
-        artifacts.cache_key,
-        plan,
-        options_key,
-    )
 
 
 def _acquire_runtime(
@@ -390,10 +351,8 @@ def _pytorch_runtime_capabilities() -> tuple[bool, bool]:
         return False, False
 
     has_cuda = bool(torch.cuda.is_available())
-
     xpu_mod = getattr(torch, "xpu", None)
     has_xpu = bool(xpu_mod and callable(getattr(xpu_mod, "is_available", None)) and xpu_mod.is_available())
-
     mps_backend = getattr(torch.backends, "mps", None)
     has_mps = bool(mps_backend and callable(getattr(mps_backend, "is_available", None)) and mps_backend.is_available())
 

@@ -23,6 +23,7 @@ from vibe.backends.base import (
 )
 from vibe.backends.runtime.onnx import ONNXBackend
 from vibe.backends.runtime.pytorch import PyTorchBackend
+from vibe.features import InferenceRequest
 from vibe.plugins.shared.scores_utils import (
     get_weighted_mean,
     interp_percentile,
@@ -125,7 +126,7 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
 
         raise ValueError(f"Unsupported backend '{plan.backend}'.")
 
-    def preprocess(self, image: Any) -> np.ndarray:
+    def preprocess(self, image: Any, request: InferenceRequest | None = None) -> np.ndarray:
         from PIL import Image
 
         if not isinstance(image, Image.Image):

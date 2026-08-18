@@ -25,14 +25,10 @@ def _resolve_pytorch_device(preference: ExecutionPreference, torch_module: Any) 
         return "cpu"
 
     has_cuda = bool(getattr(torch_module.cuda, "is_available", lambda: False)())
-
     xpu_mod = getattr(torch_module, "xpu", None)
     has_xpu = bool(xpu_mod and callable(getattr(xpu_mod, "is_available", None)) and xpu_mod.is_available())
-
-    has_mps = False
     mps_backend = getattr(torch_module.backends, "mps", None)
-    if mps_backend and callable(getattr(mps_backend, "is_available", None)):
-        has_mps = bool(mps_backend.is_available())
+    has_mps = bool(mps_backend and callable(getattr(mps_backend, "is_available", None)) and mps_backend.is_available())
 
     # User explicitly hinted a device class
     if preference.hint == "xpu":
@@ -92,9 +88,7 @@ class PyTorchBackend:
             import torch
             from torch import nn
         except ImportError as exc:
-            raise RuntimeError(
-                "PyTorch is required to use the pytorch backend. Install it with: pip install torch"
-            ) from exc
+            raise RuntimeError("PyTorch is required to use the pytorch backend.") from exc
 
         # Optional process-level cuDNN toggle via environment variable
         cudnn_env = os.environ.get("VIBE_CUDNN_ENABLED")
@@ -206,7 +200,12 @@ class PyTorchBackend:
 
         # Preserve tuple/list outputs natively instead of taking [0]
         if isinstance(output, (tuple, list)):
-            return type(output)(self._tensor_to_numpy(v, torch_module) for v in output)
+            converted = [self._tensor_to_numpy(v, torch_module) for v in output]
+            if isinstance(output, tuple):
+                if hasattr(output, "_fields"):
+                    return type(output)(*converted)
+                return tuple(converted)
+            return type(output)(converted)
 
         return np.array(output)
 
@@ -297,8 +296,10 @@ class PyTorchBackend:
         self._compute_dtype = dtype_map.get(compute_policy, torch_module.float32)
         self._weight_dtype = dtype_map.get(weight_policy)  # None if PRESERVE
 
-        # 4. Apply Weights
-        autocast_needed = self._compute_dtype != torch_module.float32
+        # PyTorch does not support float16 CPU autocast; disable autocast on CPU for fp16
+        autocast_needed = self._compute_dtype != torch_module.float32 and not (
+            self._autocast_device_type == "cpu" and self._compute_dtype == torch_module.float16
+        )
 
         if hasattr(self._model, "apply_precision"):
             logger.debug("Delegating precision casting to model custom apply_precision hook")

@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Literal, Self
 
-from vibe import ModelResult
 from vibe.backends.base import ArtifactMap, Backend, ExecutionPlan, ModelPlugin, RuntimeExecutor
 from vibe.exceptions import InferenceCancelled, SessionError
+from vibe.features import compile_features
 from vibe.image_loading import (
     iter_load_images,
     normalize_input_format,
@@ -25,12 +25,11 @@ from vibe.image_loading import (
 )
 from vibe.memory_stats import MemoryTracker
 from vibe.result_transforms import ResultTransform, TransformContext
-from vibe.results import InferenceResult, InferenceResultItem
+from vibe.results import InferenceResult, InferenceResultItem, ModelResult
 from vibe.runners import BatchRunner, InferenceEngine, SessionRunnerState
 from vibe.transform_pipeline import TransformPipeline
 
 logger = logging.getLogger(__name__)
-
 
 _ASYNC_INFER_DONE = object()
 
@@ -62,7 +61,6 @@ class ModelSession:
         self._closed = False
         self._backend_release = backend_release
         self._memory_tracker = MemoryTracker(enabled=memory_tracking)
-
         self._state = SessionRunnerState(plugin.identity.model_id)
 
         self._transform_context = TransformContext(
@@ -74,7 +72,7 @@ class ModelSession:
             _plugin_data={type(d): d for d in plugin.provide_transform_data()},
         )
         self._pipeline = TransformPipeline(
-            plugin.identity.model_id, self._transform_context, plugin.capabilities.transforms
+            plugin.identity.model_id, self._transform_context, plugin.capabilities.features
         )
         self._engine = InferenceEngine(plugin, backend_instance, self._pipeline, self._state)
         self._runner = BatchRunner(self._engine, self._state, self._backend)
@@ -114,16 +112,15 @@ class ModelSession:
     def infer(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        transforms: list[ResultTransform] | None = None,
         *,
+        features: Mapping[str, Mapping[str, Any]] | Sequence[Any] | None = None,
+        transforms: list[ResultTransform] | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
         prefetch_batch_limit: int = 8,
         on_cancel: Literal["raise", "return_partial"] = "raise",
     ) -> InferenceResult:
-        """
-        Run inference on one image or many images.
-        """
+        """Run inference on one image or many images."""
         if on_cancel not in ("raise", "return_partial"):
             raise SessionError("on_cancel must be one of: 'raise', 'return_partial'")
 
@@ -137,6 +134,7 @@ class ModelSession:
         try:
             for chunk in self.infer_batches(
                 images,
+                features=features,
                 transforms=transforms,
                 batch_size=batch_size,
                 batch_method=batch_method,
@@ -179,15 +177,14 @@ class ModelSession:
     def infer_batches(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        transforms: list[ResultTransform] | None = None,
         *,
+        features: Mapping[str, Mapping[str, Any]] | Sequence[Any] | None = None,
+        transforms: list[ResultTransform] | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
         prefetch_batch_limit: int = 8,
     ) -> Iterator[InferenceResult]:
-        """
-        Stream inference results as each completed chunk becomes available.
-        """
+        """Stream inference results as each completed chunk becomes available."""
         with self._state.lock:
             if self._closed:
                 raise SessionError("Session is closed. Load a new session before inferring.")
@@ -199,12 +196,17 @@ class ModelSession:
 
             try:
                 values, _refs = normalize_input_format(images, error_cls=SessionError)
+
+                # Validate the request even when the input collection is empty,
+                # so callers receive deterministic configuration errors.
+                inference_request, compiled_transforms = compile_features(features, self._plugin.capabilities.features)
+                active_transforms = compiled_transforms + (transforms or [])
+
                 if not values:
                     logger.warning("No input images provided for model_id=%s", self.model_id)
                     return
 
-                # Delegated to the transforms pipeline
-                self._pipeline.notify_infer_start(transforms)
+                self._pipeline.notify_infer_start(active_transforms)
 
                 total_inputs = len(values)
                 path_inputs = sum(1 for value in values if isinstance(value, (str, Path)))
@@ -254,7 +256,9 @@ class ModelSession:
                         chunk_items = []
                         for i, img in enumerate(chunk_images):
                             self._state.check_cancelled()
-                            result = self._engine.execute_single(img, transforms=transforms)
+                            result = self._engine.execute_single(
+                                img, transforms=active_transforms, request=inference_request
+                            )
                             global_idx = start + i
                             chunk_items.append(
                                 InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
@@ -264,7 +268,10 @@ class ModelSession:
                         )
                     else:
                         chunk_results = self._runner.execute_chunk(
-                            chunk_images, transforms=transforms, fallback_to_sequential=(batch_method == "auto")
+                            chunk_images,
+                            transforms=active_transforms,
+                            request=inference_request,
+                            fallback_to_sequential=(batch_method == "auto"),
                         )
                         chunk_items = []
                         for i, result in enumerate(chunk_results):
@@ -305,8 +312,9 @@ class ModelSession:
     async def infer_async(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        transforms: list[ResultTransform] | None = None,
         *,
+        features: Mapping[str, Mapping[str, Any]] | Sequence[Any] | None = None,
+        transforms: list[ResultTransform] | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
         prefetch_batch_limit: int = 8,
@@ -337,6 +345,7 @@ class ModelSession:
         def _worker() -> None:
             batches = self.infer_batches(
                 images,
+                features=features,
                 transforms=transforms,
                 batch_size=batch_size,
                 batch_method=batch_method,
@@ -372,7 +381,6 @@ class ModelSession:
                     break
                 if isinstance(payload, Exception):
                     raise payload
-
                 assert isinstance(payload, InferenceResult)
                 yield payload
         finally:
@@ -400,11 +408,7 @@ class ModelSession:
             return None
         stats = self._memory_tracker.stats()
         record = stats.last_record
-        if record is None:
-            return None
-        if record.operation != operation:
-            return None
-        if record.index <= min_call_index:
+        if record is None or record.operation != operation or record.index <= min_call_index:
             return None
         return record.to_dict()
 
@@ -428,15 +432,12 @@ class ModelSession:
     def source(self) -> str:
         return self._source
 
-    # todo: describe/session info func for the session?
-
     def apply_transforms(self, result: ModelResult, transforms: list[ResultTransform]) -> ModelResult:
         """
         Manually apply a list of transforms to an existing result.
         """
         if self._closed:
             raise SessionError("Cannot apply transforms: Session is closed.")
-
         self._pipeline.notify_infer_start(transforms)
         return self._pipeline.apply(result, transforms)
 
