@@ -11,36 +11,29 @@ import ctypes
 import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from vibe.devices import normalize_device_string
-from vibe.precision import normalize_precision_string
+from vibe.backends.base import ExecutionPlan, ExecutionPreference, HardwareIntent
+from vibe.precision import PrecisionPolicy
 
 logger = logging.getLogger(__name__)
 
-# Auto-priority excludes TensorRT on purpose to keep behavior predictable.
+# Standard auto priority for device="auto"
 ONNX_AUTO_PROVIDER_PRIORITY: tuple[str, ...] = (
     "CUDAExecutionProvider",
+    # "TensorRTExecutionProvider",
     "ROCMExecutionProvider",
-    # todo: add intel GPU EP, onednn or something?
+    "MIGraphXExecutionProvider",
+    "OpenVINOExecutionProvider",
     "DmlExecutionProvider",
     "CoreMLExecutionProvider",
     "CPUExecutionProvider",
 )
-
-_GPU_CLASS_PROVIDERS: frozenset[str] = frozenset(
-    {
-        "CUDAExecutionProvider",
-        "ROCMExecutionProvider",
-    }
-)
-
-_ENV_PROVIDER_SINGLE = "VIBE_ONNX_PROVIDER"
-_ENV_PROVIDER_LIST = "VIBE_ONNX_PROVIDERS"
 
 
 # region Provider Setup
@@ -73,41 +66,6 @@ def _normalize_provider_list(values: list[str]) -> list[str]:
     return out
 
 
-def _providers_from_env() -> list[str] | None:
-    raw_list = os.getenv(_ENV_PROVIDER_LIST, "")
-    if raw_list.strip():
-        parsed = _normalize_provider_list(raw_list.split(","))
-        if parsed:
-            return parsed
-
-    raw_single = os.getenv(_ENV_PROVIDER_SINGLE, "")
-    if raw_single.strip():
-        parsed = _normalize_provider_list([raw_single])
-        if parsed:
-            return parsed
-
-    return None
-
-
-def _device_prefers_accelerator(device: str) -> tuple[bool, int]:
-    value = normalize_device_string(device, backend="onnx")
-    if not value or value == "auto":
-        return True, 0
-    if value == "cpu":
-        return False, 0
-    if value in {"gpu", "rocm", "dml"}:
-        return True, 0
-
-    for prefix in ("gpu:", "rocm:", "dml:"):
-        if value.startswith(prefix):
-            try:
-                return True, max(0, int(value.split(":", 1)[1]))
-            except ValueError:
-                return True, 0
-
-    return value != "cpu", 0
-
-
 def _available_onnx_providers(ort_module: Any) -> list[str]:
     get_available = getattr(ort_module, "get_available_providers", None)
     if callable(get_available):
@@ -117,111 +75,66 @@ def _available_onnx_providers(ort_module: Any) -> list[str]:
 
 def resolve_onnx_provider_chain(
     *,
-    device: str,
+    preference: ExecutionPreference,
     requested_providers: list[str] | None,
     ort_module: Any,
 ) -> tuple[list[str], list[dict[str, Any]] | None]:
-    """Resolve providers and provider options from request/env/device state."""
-    available = _available_onnx_providers(ort_module)
-    available_set = set(available)
+    """Resolve providers and provider options from request/device state."""
+    available_set = set(_available_onnx_providers(ort_module))
 
-    explicit = requested_providers
-    if explicit is None:
-        explicit = _providers_from_env()
+    must_accelerator = preference.intent == HardwareIntent.ACCELERATOR
 
-    wants_accelerator, device_id = _device_prefers_accelerator(device)
+    # 1. Explicit providers requested: Pass them directly, appending CPUExecutionProvider
+    # so ORT can route shape/dimension ops to CPU without triggering node assignment warnings.
+    if requested_providers is not None:
+        providers = _normalize_provider_list([str(p) for p in requested_providers])
+        if "CPUExecutionProvider" not in providers:
+            providers.append("CPUExecutionProvider")
 
-    if explicit is not None:
-        providers = _normalize_provider_list([str(p) for p in explicit])
-        if available:
-            providers = [p for p in providers if p in available_set]
-        if not providers and "CPUExecutionProvider" in available_set:
-            providers = ["CPUExecutionProvider"]
-    else:
-        if wants_accelerator:
-            preferred = [p for p in ONNX_AUTO_PROVIDER_PRIORITY if p != "CPUExecutionProvider"]
-            if available:
-                providers = [p for p in preferred if p in available_set]
-            else:
-                providers = preferred
-
-            if available:
-                if "CPUExecutionProvider" in available_set and "CPUExecutionProvider" not in providers:
-                    providers.append("CPUExecutionProvider")
-            elif "CPUExecutionProvider" not in providers:
-                providers.append("CPUExecutionProvider")
+    # 2. Strict accelerator requested (e.g. device="cuda" or device="cuda:0"):
+    # Target accelerator primary + CPUExecutionProvider for shape ops
+    elif must_accelerator:
+        hint = (preference.hint or "cuda").lower()
+        matched = [p for p in available_set if hint in p.lower() and p != "CPUExecutionProvider"]
+        if matched:
+            providers = matched + ["CPUExecutionProvider"]
         else:
-            if available:
-                providers = ["CPUExecutionProvider"] if "CPUExecutionProvider" in available_set else []
-            else:
-                providers = ["CPUExecutionProvider"]
+            target_ep = (
+                f"{preference.hint.upper()}ExecutionProvider"
+                if preference.hint and preference.hint not in ("gpu", "cuda")
+                else "CUDAExecutionProvider"
+            )
+            providers = [target_ep, "CPUExecutionProvider"]
+
+    # 3. device="cpu" requested
+    elif preference.intent == HardwareIntent.CPU:
+        providers = ["CPUExecutionProvider"]
+
+    # 4. device="auto": Try best available accelerator with graceful CPU fallback
+    else:
+        if preference.hint == "openvino" and "OpenVINOExecutionProvider" in available_set:
+            providers = ["OpenVINOExecutionProvider", "CPUExecutionProvider"]
+        else:
+            preferred = [p for p in ONNX_AUTO_PROVIDER_PRIORITY if p != "CPUExecutionProvider" and p in available_set]
+            providers = preferred + (["CPUExecutionProvider"] if "CPUExecutionProvider" in available_set else [])
 
     if not providers:
         providers = ["CPUExecutionProvider"]
 
+    # Configure provider options (e.g. device_id for GPU)
     provider_options: list[dict[str, Any]] = []
     for provider in providers:
-        if provider in _GPU_CLASS_PROVIDERS:
-            provider_options.append({"device_id": str(device_id)})
+        if preference.ordinal is not None and provider != "CPUExecutionProvider":
+            if provider == "OpenVINOExecutionProvider":
+                provider_options.append({"device_type": f"GPU.{preference.ordinal}"})
+            else:
+                provider_options.append({"device_id": str(preference.ordinal)})
         else:
             provider_options.append({})
 
-    has_non_empty_options = any(bool(options) for options in provider_options)
-    logger.debug(
-        "ONNX providers resolved device=%s providers=%s",
-        device,
-        providers,
-    )
-    logger.debug(
-        "ONNX provider resolution details available=%s explicit=%s provider_options=%s",
-        available,
-        explicit,
-        provider_options if has_non_empty_options else None,
-    )
+    has_non_empty_options = any(bool(opt) for opt in provider_options)
+    logger.debug("ONNX providers resolved preference=%s providers=%s", preference, providers)
     return providers, provider_options if has_non_empty_options else None
-
-
-def _wants_accelerator(device: str) -> bool:
-    try:
-        value = normalize_device_string(device, backend="onnx")
-    except ValueError:
-        return False
-    return value not in {"cpu", "auto"}
-
-
-def _requested_onnx_provider_name(device: str) -> str | None:
-    try:
-        value = normalize_device_string(device, backend="onnx")
-    except ValueError:
-        return None
-
-    if value in {"gpu", "cuda"}:
-        return "CUDAExecutionProvider"
-    if value.startswith("gpu:") or value.startswith("cuda:"):
-        return "CUDAExecutionProvider"
-    if value.startswith("rocm"):
-        return "ROCMExecutionProvider"
-    if value.startswith("dml"):
-        return "DmlExecutionProvider"
-    if value == "mps":
-        return "CoreMLExecutionProvider"
-    return None
-
-
-def _has_accelerator_provider(providers: list[str]) -> bool:
-    accelerator_eps = _GPU_CLASS_PROVIDERS | {"CoreMLExecutionProvider", "DirectMLExecutionProvider"}
-    return any(p in accelerator_eps for p in providers)
-
-
-def _fallback_warning_message(device: str, resolved_providers: list[str], session_provider: str) -> str:
-    requested_provider = _requested_onnx_provider_name(device)
-    if requested_provider is None and resolved_providers:
-        requested_provider = resolved_providers[0]
-    requested_label = requested_provider or device.strip() or "auto"
-    return (
-        f"ONNX backend fell back to {session_provider} after ORT could not load the requested "
-        f"provider {requested_label}."
-    )
 
 
 def _iter_candidate_nvidia_lib_dirs() -> list[Path]:
@@ -336,29 +249,21 @@ class ONNXBackend:
         self._requested_providers: list[str] = []
         self._provider_options: list[dict[str, Any]] = []
         self._requested_precision: str = "auto"
+        self._run_lock = threading.RLock()
+        self._model_precision: str = "unknown"
 
     def load(
         self,
-        weights_path: Path,
-        providers: list[str] | None = None,
-        device: str = "auto",
-        precision: str = "auto",
+        model_path: Path,
+        plan: ExecutionPlan,
     ) -> None:
-        """
-        Load an ONNX model. Raises if onnxruntime is not installed.
-
-        providers:   Override the provider list.
-                 If omitted, resolves from env and device preference.
-        device:      Logical device selector for auto-provider selection
-                 (e.g. "auto", "cpu", "gpu", "gpu1", "cuda:0"). 'cuda' and 'gpu' are interchangeable.
-        """
+        """Load a plugin-selected ONNX graph for execution."""
         started_at = time.perf_counter()
-        logger.debug("Loading ONNX model from %s", weights_path)
-        self._requested_precision = normalize_precision_string(precision)
+        logger.debug("Loading ONNX model from %s", model_path)
         prepare_onnxruntime_environment()
 
         try:
-            import onnxruntime as ort
+            import onnxruntime as ort  # ty:ignore[unresolved-import, unused-ignore-comment]
         except ImportError as exc:
             raise RuntimeError(
                 "onnxruntime is required to use the onnx backend. "
@@ -367,8 +272,8 @@ class ONNXBackend:
             ) from exc
 
         resolved_providers, resolved_provider_options = resolve_onnx_provider_chain(
-            device=device,
-            requested_providers=providers,
+            preference=plan.preference,
+            requested_providers=list(plan.onnx_providers) if plan.onnx_providers is not None else None,
             ort_module=ort,
         )
 
@@ -376,7 +281,7 @@ class ONNXBackend:
         self._providers = resolved_providers
         self._provider_options = resolved_provider_options or []
         self._session = ort.InferenceSession(
-            str(weights_path),
+            str(model_path),
             providers=resolved_providers,
             provider_options=resolved_provider_options,
         )
@@ -386,74 +291,55 @@ class ONNXBackend:
         self._input_name = inputs[0].name
         input_meta = inputs[0]
 
-        # Find the most appropriate output tensor if multiple exist
-        self._output_names = None
+        # Capture all output names. The plugin's postprocess owns selecting outputs.
+        self._output_names = [o.name for o in outputs] if outputs else []
         output_meta = outputs[0] if outputs else None
-        if outputs:
-            out_names = [o.name for o in outputs]
-            target_name = out_names[0]
-            if len(out_names) > 1:
-                # Prioritize prediction/logits over embeddings
-                for pref in (
-                    "prediction",
-                    "predictions",
-                    "probs",
-                    "probabilities",
-                    # "logits",
-                ):
-                    if pref in out_names:
-                        target_name = pref
-                        break
-            self._output_names = [target_name]
-            output_meta = next((o for o in outputs if o.name == target_name), outputs[0])
 
         session_providers = _normalize_provider_list([str(provider) for provider in self._session.get_providers()])
         self._providers = session_providers
         primary_provider = self._providers[0] if self._providers else "CPUExecutionProvider"
 
-        requested_provider = _requested_onnx_provider_name(device)
-        requested_has_accelerator = _has_accelerator_provider(self._requested_providers)
-        session_has_accelerator = _has_accelerator_provider(session_providers)
-
-        if requested_has_accelerator and not session_has_accelerator and _wants_accelerator(device):
+        # 1. If accelerator was explicitly requested, ensure it didn't silently fall back to CPU
+        if plan.preference.intent == HardwareIntent.ACCELERATOR and primary_provider == "CPUExecutionProvider":
             raise RuntimeError(
-                f"ONNX provider request '{device}' ({requested_provider or 'requested provider'}) could not be satisfied; "
-                f"session loaded only with {session_providers}."
+                f"Accelerator requested, but ONNX runtime loaded on {primary_provider}. "
+                f"Active session providers: {session_providers}."
             )
 
-        if requested_has_accelerator and not session_has_accelerator and device.strip().lower() == "auto":
-            fallback_message = _fallback_warning_message(device, self._requested_providers, primary_provider)
+        # 2. In auto mode, warn if no GPU/accelerator was picked up and it defaulted to CPU
+        if plan.preference.intent == HardwareIntent.AUTO and primary_provider == "CPUExecutionProvider":
+            fallback_message = (
+                f"ONNX backend fell back to {primary_provider} (no accelerator execution provider available)."
+            )
             logger.warning(fallback_message)
             import warnings
 
             warnings.warn(fallback_message, RuntimeWarning, stacklevel=2)
 
-        if self._requested_precision in {"fp16", "bf16", "fp32"}:
+        # Precision setting warning
+        compute_prec = plan.precision.compute
+        if compute_prec in (PrecisionPolicy.FP16, PrecisionPolicy.BF16, PrecisionPolicy.FP32):
             logger.warning(
-                "ONNX precision request '%s' is advisory only; most precision behavior is defined by model graph "
+                "ONNX precision request '%s' is advisory only; precision behavior is defined by model graph "
                 "and execution provider kernels.",
-                self._requested_precision,
-            )
-        elif self._requested_precision == "int8_ov":
-            logger.info(
-                "ONNX precision request 'int8_ov' accepted as future provider-specific option; no runtime cast applied yet."
+                compute_prec.value,
             )
 
-        logger.info("ONNX model loaded in %.2fs | session EP=%s", load_seconds, primary_provider)
+        logger.debug("ONNX model loaded in %.2fs | session EP=%s", load_seconds, primary_provider)
         input_precision = _onnx_type_to_precision(getattr(input_meta, "type", None))
         output_precision = _onnx_type_to_precision(getattr(output_meta, "type", None))
         model_precision = input_precision or output_precision or "unknown"
         if input_precision and output_precision and input_precision != output_precision:
             model_precision = f"mixed(input={input_precision}, output={output_precision})"
 
-        logger.info(
+        self._model_precision = model_precision
+
+        logger.debug(
             "ONNX model precision=%s (graph io: input_type=%s output_type=%s)",
             model_precision,
             getattr(input_meta, "type", None),
             getattr(output_meta, "type", None),
         )
-        if self._requested_precision == "int8_ov":
-            logger.info("ONNX cast status: int8_ov requested (provider-specific cast path not enabled yet).")
         logger.debug(
             "ONNX model io inputs=%s outputs=%s",
             [{"name": meta.name, "shape": meta.shape, "type": getattr(meta, "type", None)} for meta in inputs],
@@ -468,48 +354,59 @@ class ONNXBackend:
             getattr(output_meta, "type", None),
         )
 
-    def run(self, array: np.ndarray) -> np.ndarray:
-        """
-        Run a forward pass.
+    def execution_info(self) -> dict[str, Any]:
+        """Return runtime-reported diagnostics."""
+        return {
+            "providers": self._providers,
+            "provider_options": self._provider_options,
+            "graph_precision": self._model_precision,
+        }
 
-        array should be a float32 numpy array of shape (1, C, H, W)
-        or (1, H, W, C) depending on the model — the plugin's preprocess
-        method is responsible for the correct layout.
-
-        Returns the first output tensor as a numpy array.
-        """
+    def run(self, inputs: Any) -> Any:
+        """Run a forward pass on array or dictionary inputs."""
         if self._session is None:
-            raise RuntimeError("ONNXBackend.load() has not been called.")
+            raise RuntimeError("ONNXBackend has not been loaded.")
 
-        logger.debug("ONNX run input_shape=%s input_dtype=%s", array.shape, array.dtype)
-        if array.ndim == 0:
-            logger.error(
-                "ONNX input is scalar for input_name=%s expected_shape=%s actual_shape=%s",
-                self._input_name,
-                self.input_shape(),
-                array.shape,
-            )
+        if isinstance(inputs, dict):
+            input_feed = inputs
+        else:
+            array = np.asarray(inputs)
+            input_feed = {self._input_name: array}
 
-        # TODO: support selecting a specific output name/index per model to avoid
-        # fetching all outputs when only one tensor is needed.
         try:
-            outputs = self._session.run(self._output_names, {self._input_name: array})
+            with self._run_lock:
+                outputs = self._session.run(self._output_names, input_feed)
         except Exception:
-            logger.error(
-                "ONNX inference failed input_name=%s input_shape=%s expected_input_shape=%s",
-                self._input_name,
-                array.shape,
-                self.input_shape(),
-            )
+            logger.error("ONNX inference failed input_keys=%s", list(input_feed.keys()))
             raise
-        if outputs:
-            first = outputs[0]
-            logger.debug(
-                "ONNX run output_shape=%s output_dtype=%s",
-                getattr(first, "shape", None),
-                getattr(first, "dtype", None),
-            )
-        return outputs[0]
+
+        # Plugin owns output selection. Return the full list of output arrays.
+        return outputs if outputs else []
+
+    def clear_cache(self) -> None:
+        """Release runtime cache/resources if applicable (no-op for standard ONNX sessions)."""
+
+    def supports_true_batching(self) -> bool:
+        """True batching is preferred when running on an accelerator and the graph batch dimension is dynamic."""
+        # default to sequential on CPU to avoid thread contention/memory spikes
+        if not self._providers or self._providers[0] == "CPUExecutionProvider":
+            return False
+
+        if self._session is None:
+            return False
+
+        # On accelerators, verify the model graph supports dynamic batch dimensions
+        try:
+            inputs = self._session.get_inputs()
+            if inputs and len(inputs[0].shape) > 0:
+                batch_dim = inputs[0].shape[0]
+                # If batch_dim is a fixed integer == 1, graph cannot accept batches
+                if isinstance(batch_dim, int) and batch_dim == 1:
+                    return False
+        except Exception as exc:
+            logger.warning("Failed to query ONNX session inputs for dynamic batch support: %s", exc)
+
+        return True
 
     def close(self) -> None:
         """Release runtime references so memory can be reclaimed promptly."""
@@ -539,10 +436,6 @@ class ONNXBackend:
     @property
     def provider_options(self) -> list[dict[str, Any]]:
         return list(self._provider_options)
-
-    def supports_true_batching(self) -> bool:
-        """True batching is generally useful when a non-CPU provider is active."""
-        return any(provider != "CPUExecutionProvider" for provider in self._providers)
 
 
 # endregion ONNXBackend

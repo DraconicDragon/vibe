@@ -8,14 +8,10 @@ import json
 import logging
 from pathlib import Path
 
-from vibe.hf_downloader import HFDownloadError, download_or_cached
+from vibe.hf_downloader import download_or_cached
 
 logger = logging.getLogger(__name__)
 
-_MAPPING_PATTERNS = (
-    "*char_ip_map*",
-    "*character_ip_map*",
-)
 
 DEFAULT_MAP_REPO = "deepghs/pixai-tagger-v0.9-onnx"
 DEFAULT_MAP_FILE = "selected_tags.csv"
@@ -25,51 +21,33 @@ DEFAULT_MAP_FILE = "selected_tags.csv"
 
 
 def resolve_character_ip_mapping(
-    model_dir: Path,
     manual_path: str | None = None,
     allow_download: bool | None = None,
+    token: str | None = None,
+    required: bool = True,
 ) -> dict[str, list[str]]:
     """
     Resolve mapping in priority order:
       1) explicit manual path
-      2) local model directory files
-      3) optional HF fallback file
+      2) community fallback file from HF
     """
     if manual_path:
-        mapping = _load_mapping_file(Path(manual_path))
-        if mapping:
-            return mapping
+        path = Path(manual_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Specified character IP mapping file does not exist: '{manual_path}'")
+        return _load_mapping_file(path)
 
-    mapping = load_character_ip_mapping(model_dir)
-    if mapping:
-        return mapping
-
-    try:
-        fallback = download_or_cached(
-            repo_id=DEFAULT_MAP_REPO,
-            filename=DEFAULT_MAP_FILE,
-            allow_download=allow_download,
-            required=False,
-        )
-    except HFDownloadError as exc:
-        logger.debug("Character mapping fallback not available: %s", exc)
-        return {}
+    fallback = download_or_cached(
+        repo_id=DEFAULT_MAP_REPO,
+        filename=DEFAULT_MAP_FILE,
+        allow_download=allow_download,
+        required=required,
+        token=token,
+    )
 
     if fallback is None:
         return {}
     return _load_mapping_file(fallback)
-
-
-def load_character_ip_mapping(model_dir: Path) -> dict[str, list[str]]:
-    """Best-effort load of a character mapping file from a model directory."""
-    for pattern in _MAPPING_PATTERNS:
-        matches = sorted(model_dir.glob(pattern))
-        for match in matches:
-            mapping = _load_mapping_file(match)
-            if mapping:
-                logger.info("Loaded character mapping file: %s", match)
-                return mapping
-    return {}
 
 
 def _load_mapping_file(path: Path) -> dict[str, list[str]]:
@@ -96,7 +74,8 @@ def _load_mapping_csv(path: Path) -> dict[str, list[str]]:
             if not ips:
                 continue
 
-            out[name] = [str(x) for x in ips]
+            # Canonicalize key to underscores at load time
+            out[name.replace(" ", "_")] = [str(x) for x in ips]
 
     return out
 
@@ -105,7 +84,7 @@ def _load_mapping_json(path: Path) -> dict[str, list[str]]:
     try:
         with path.open("r", encoding="utf-8") as f:
             raw = json.load(f)
-    except Exception as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         logger.warning("Failed to load character mapping JSON %s: %s", path, exc)
         return {}
 
@@ -122,7 +101,7 @@ def _load_mapping_json(path: Path) -> dict[str, list[str]]:
     for key, value in candidate.items():
         if not key or not isinstance(value, list) or not value:
             continue
-        out[str(key)] = [str(x) for x in value]
+        out[str(key).replace(" ", "_")] = [str(x) for x in value]
     if out:
         return out
 
@@ -137,7 +116,7 @@ def _load_mapping_json(path: Path) -> dict[str, list[str]]:
         for tag_name, tag_id in tag_map.items():
             ips = ips_by_tag_id.get(str(tag_id), ips_by_tag_id.get(tag_id))
             if isinstance(ips, list) and ips:
-                out[str(tag_name)] = [str(x) for x in ips]
+                out[str(tag_name).replace(" ", "_")] = [str(x) for x in ips]
 
     return out
 
@@ -190,17 +169,13 @@ def apply_character_ip_mapping(
     if not character_tags or not mapping:
         return {}
 
-    normalized = {k.replace(" ", "_"): v for k, v in mapping.items()}
     resolved: dict[str, list[str]] = {}
 
     for tag in character_tags:
-        if tag in mapping:
-            resolved[tag] = mapping[tag]
-            continue
-
-        normalized_tag = tag.replace(" ", "_")
-        if normalized_tag in normalized:
-            resolved[tag] = normalized[normalized_tag]
+        # Single O(1) lookup against canonicalized mapping; preserves caller's tag as output key
+        normalized_key = tag.replace(" ", "_")
+        if normalized_key in mapping:
+            resolved[tag] = mapping[normalized_key]
 
     return resolved
 

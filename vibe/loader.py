@@ -3,665 +3,382 @@
 from __future__ import annotations
 
 import logging
-import re
-import shutil
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping
+from typing import Any
 
-from vibe.hf_downloader import HFDownloadError, download_or_cached_with_reason
-
-
-def download_or_cached(*args, **kwargs):
-    """Compatibility shim for tests/extensions patching vibe.loader.download_or_cached."""
-    return download_or_cached_with_reason(*args, **kwargs)
-
+from vibe.backends.base import ArtifactMap, ArtifactSpec, Backend, FileRole, ModelVariant
+from vibe.exceptions import HFDownloadError, LoaderError
+from vibe.hf_downloader import download_or_cached_with_reason
 
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from vibe.backends.base import Backend, FileSpec
+
+def _is_local_source(source: str) -> bool:
+    s = source.strip()
+    if s.startswith("local:"):
+        return True
+    if s.startswith("hf:"):
+        return False
+
+    # Check for explicit local path syntax (Unix absolute/relative, home dir, Windows drive letter)
+    if s.startswith(("/", "./", "../", "~")) or (len(s) >= 2 and s[1] == ":" and s[0].isalpha()):
+        return True
+
+    path = Path(s).expanduser()
+    return path.is_dir() or path.is_absolute()
 
 
-class LoaderError(Exception):
-    """Raised when file resolution or validation fails."""
-
-
-class FileMap:
-    """
-    A resolved set of file paths for a plugin.
-
-    Access paths by logical file key:  file_map["model.onnx"]  → Path(...)
-    """
-
-    def __init__(
-        self,
-        paths: dict[str, Path],
-        *,
-        optional_missing_reasons: Mapping[str, str] | None = None,
-    ) -> None:
-        self._paths = paths
-        self._optional_missing_reasons = dict(optional_missing_reasons or {})
-
-    def __getitem__(self, name: str) -> Path:
-        if name not in self._paths:
-            raise KeyError(f"File '{name}' was not resolved. Available: {list(self._paths)}")
-        return self._paths[name]
-
-    def get(self, name: str) -> Path | None:
-        return self._paths.get(name)
-
-    def __contains__(self, name: str) -> bool:
-        return name in self._paths
-
-    def __repr__(self) -> str:
-        return f"FileMap({self._paths})"
-
-    def to_dict(self) -> dict[str, str]:
-        return {k: str(v) for k, v in self._paths.items()}
-
-    def as_path_dict(self) -> dict[str, Path]:
-        """Return a copy of resolved paths keyed by file key."""
-        return dict(self._paths)
-
-    def optional_missing_reasons(self) -> dict[str, str]:
-        """Return optional file resolution reasons keyed by plugin-declared file key."""
-        return dict(self._optional_missing_reasons)
-
-    def values(self) -> list[Path]:
-        return list(self._paths.values())
-
-
-# region Resolve Files
-
-
-def _spec_key(spec: FileSpec) -> str:
-    return spec.key or spec.name
-
-
-def _mapped_name_for_hf(spec: FileSpec, normalized_file_name_map: Mapping[str, str]) -> str:
-    spec_key = _spec_key(spec)
-    if spec.hf_subdir:
-        base_name = f"{spec.hf_subdir.rstrip('/')}/{spec.name}"
-    else:
-        base_name = spec.name
-    return normalized_file_name_map.get(spec_key, base_name)
-
-
-def _mapped_name_for_local(spec: FileSpec, normalized_file_name_map: Mapping[str, str]) -> str:
-    spec_key = _spec_key(spec)
-    return normalized_file_name_map.get(spec_key, spec.name)
-
-
-def _local_candidate_names(spec: FileSpec, normalized_file_name_map: Mapping[str, str]) -> list[str]:
-    root_name = _mapped_name_for_local(spec, normalized_file_name_map)
-    candidates = [root_name]
-
-    if spec.hf_subdir:
-        hf_name = _mapped_name_for_hf(spec, normalized_file_name_map)
-        if hf_name not in candidates:
-            candidates.append(hf_name)
-
-    return candidates
-
-
-def resolve_from_hf_repo(
-    repo_id: str,
-    file_specs: tuple[FileSpec, ...],
-    backend: Backend,
-    *,
-    revision: str | None = None,
-    cache_dir: str | None = None,
-    allow_download: bool | None = None,
-    file_name_map: Mapping[str, str] | None = None,
-) -> FileMap:
-    """
-    Download (or reuse cached) files from a HuggingFace repo.
-
-    Only files that are needed for the given backend are fetched.
-    Optional files that are absent from the repo are silently skipped.
-
-    Args:
-        repo_id:    HuggingFace repo ID, e.g. "SmilingWolf/wd-eva02-large-tagger-v3".
-        file_specs: The plugin's required_files list.
-        backend:    Which inference backend is being used.
-        revision:   Git revision (branch/tag/commit). None = default branch.
-        cache_dir:  Override the HF cache directory. None = HF default.
-        file_name_map:
-                    Optional mapping from plugin-declared filename to repo
-                    filename override. Useful when a repo renamed files.
-    """
-    normalized_file_name_map = _normalize_file_name_map(file_name_map, file_specs)
-    paths: dict[str, Path] = {}
-    optional_missing: dict[str, str] = {}
-    needed = [s for s in file_specs if s.needed_for(backend)]
-    logger.debug(
-        "Resolving model files from HF repo '%s' backend=%s files=%d",
-        repo_id,
-        backend.value,
-        len(needed),
-    )
-
-    for spec in needed:
-        spec_key = _spec_key(spec)
-        mapped_name = _mapped_name_for_hf(spec, normalized_file_name_map)
-        spec_repo_id = spec.repo_id or repo_id
-        try:
-            logger.debug(
-                "Resolving file from HF repo='%s' spec='%s' mapped='%s' required=%s",
-                spec_repo_id,
-                spec.name,
-                mapped_name,
-                spec.required,
-            )
-            download_result = download_or_cached(
-                repo_id=spec_repo_id,
-                filename=mapped_name,
-                revision=revision,
-                cache_dir=cache_dir,
-                allow_download=allow_download,
-                required=spec.required,
-            )
-            local: Path | None
-            optional_reason: str | None
-            if isinstance(download_result, tuple):
-                local, optional_reason = download_result
-            else:
-                local = download_result
-                optional_reason = None
-            if local is not None:
-                paths[spec_key] = Path(local)
-                logger.debug(
-                    "Resolved HF file spec='%s' repo='%s' mapped='%s' -> %s",
-                    spec.name,
-                    spec_repo_id,
-                    mapped_name,
-                    local,
-                )
-            elif not spec.required and optional_reason:
-                optional_missing[spec_key] = optional_reason
-        except HFDownloadError as exc:
-            raise LoaderError(str(exc)) from None
-        except Exception as exc:
-            # Keep loader API error surface consistent (LoaderError), including
-            # hub-side validation errors such as invalid repo ID format.
-            raise LoaderError(str(exc)) from None
-
-    logger.debug("Resolved %d file(s) from HF repo '%s'", len(paths), repo_id)
-    return FileMap(paths, optional_missing_reasons=optional_missing)
-
-
-def resolve_from_local_folder(
-    folder: Path,
-    file_specs: tuple[FileSpec, ...],
-    backend: Backend,
-    *,
-    file_name_map: Mapping[str, str] | None = None,
-) -> FileMap:
-    """
-    Resolve files from a local folder.
-
-    The folder must contain files whose names match FileSpec.name exactly
-    for all required files. Optional files that are absent are silently skipped.
-
-    This path requires zero HuggingFace involvement — users just put files
-    in a folder. The folder name doesn't matter here; callers can enforce a
-    naming convention at the session/CLI level if desired.
-    """
-    folder = Path(folder)
-    if not folder.is_dir():
-        raise LoaderError(f"Local folder does not exist: {folder}")
-
-    normalized_file_name_map = _normalize_file_name_map(file_name_map, file_specs)
-    paths: dict[str, Path] = {}
-    optional_missing: dict[str, str] = {}
-    needed = [s for s in file_specs if s.needed_for(backend)]
-    logger.debug(
-        "Resolving model files from local folder '%s' backend=%s files=%d",
-        folder,
-        backend.value,
-        len(needed),
-    )
-
-    for spec in needed:
-        spec_key = _spec_key(spec)
-        candidate_names = _local_candidate_names(spec, normalized_file_name_map)
-        matches = [folder / name for name in candidate_names if (folder / name).is_file()]
-        if matches:
-            candidate = matches[0]
-            mapped_name = candidate.relative_to(folder).as_posix()
-            paths[spec_key] = candidate
-            logger.debug(
-                "Resolved local file spec='%s' mapped='%s' -> %s",
-                spec.name,
-                mapped_name,
-                candidate,
-            )
-        elif spec.required:
-            # List what IS in the folder to help the user debug
-            present = [f.name for f in folder.iterdir() if f.is_file()]
-            map_hint = ""
-            if len(candidate_names) > 1:
-                map_hint = f" (tried '{candidate_names[0]}' and HF-style subfolder '{candidate_names[1]}')"
-            elif candidate_names[0] != spec.name:
-                map_hint = f" (mapped from '{spec.name}' to '{candidate_names[0]}')"
-            raise LoaderError(
-                f"Required file '{candidate_names[0]}' not found in {folder}{map_hint}.\n"
-                f"Files present: {present}\n"
-                f"Rename your file to match exactly, or check the plugin docs."
-            )
-        else:
-            optional_missing[spec_key] = f"'{candidate_names[0]}' not found in local folder '{folder}'"
-
-    logger.debug("Resolved %d file(s) from local folder '%s'", len(paths), folder)
-    return FileMap(paths, optional_missing_reasons=optional_missing)
-
-
-def resolve_from_source_string(
-    source: str,
-    file_specs: tuple[FileSpec, ...],
-    backend: Backend,
-    *,
-    revision: str | None = None,
-    cache_dir: str | None = None,
-    allow_download: bool | None = None,
-    file_name_map: Mapping[str, str] | None = None,
-    fallback_hf_repo_id: str | None = None,
-) -> FileMap:
-    """
-    Resolve files from a user-facing source string.
-
-    Supported source formats:
-      - "local:/path/to/folder"  (strict local mode)
-      - "hf:owner/repo"          (strict HuggingFace mode)
-      - unprefixed text           (auto mode: local folder if it exists, then HF repo)
-
-    Prefix modes are strict and do not fall back to other source kinds.
-    """
+def _local_source_to_path(source: str) -> Path:
     source = source.strip()
-    if not source:
-        raise LoaderError("Source cannot be empty.")
 
-    logger.debug("Resolving source '%s' for backend=%s", source, backend.value)
+    source = source.removeprefix("local:")
 
-    if source.startswith("local:"):
-        return _resolve_local_prefixed(source[6:], file_specs, backend, file_name_map=file_name_map)
+    return Path(source).expanduser()
 
-    if source.startswith("hf:"):
-        return _resolve_hf_prefixed(
-            source[3:],
-            file_specs,
-            backend,
-            revision=revision,
-            cache_dir=cache_dir,
-            allow_download=allow_download,
-            file_name_map=file_name_map,
+
+def _hf_source_to_repo(source: str) -> str:
+    return source.strip().removeprefix("hf:")
+
+
+# region Data Classes
+
+
+@dataclass(frozen=True)
+class ArtifactAvailability:
+    """Status of a single required or optional model artifact on disk/cache."""
+
+    id: str
+    name: str
+    role: FileRole
+    required: bool
+    is_available: bool
+    path: Path | None = None
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "role": self.role.value,
+            "required": self.required,
+            "is_available": self.is_available,
+            "path": str(self.path) if self.path else None,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class VariantAvailability:
+    """Status of a model variant's complete set of required artifacts."""
+
+    variant_id: str | None
+    backend: Backend
+    is_available: bool
+    artifacts: list[ArtifactAvailability]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "variant_id": self.variant_id,
+            "backend": self.backend.value,
+            "is_available": self.is_available,
+            "artifacts": [a.to_dict() for a in self.artifacts],
+        }
+
+
+@dataclass(frozen=True)
+class ModelAvailability:
+    """Overall availability summary for a model across its variants."""
+
+    model_id: str
+    is_available: bool
+    variants: list[VariantAvailability]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "is_available": self.is_available,
+            "variants": [v.to_dict() for v in self.variants],
+        }
+
+
+# endregion Data Classes
+
+
+class SourceResolver(ABC):
+    def __init__(self, file_name_map: Mapping[str, str] | None, source_map: Mapping[str, str] | None):
+        self.file_name_map = file_name_map or {}
+        self.source_map = source_map or {}
+
+    def resolve(self, variant: ModelVariant, **kwargs) -> ArtifactMap:
+        paths: dict[str, Path] = {}
+        optional_missing: dict[str, str] = {}
+
+        for spec in variant.artifacts:
+            mapped_name = self.file_name_map.get(spec.id, self.file_name_map.get(spec.name, spec.name))
+            override_source = self.source_map.get(spec.id)
+
+            # 1. Handle Explicit Artifact Override (via source_map)
+            if override_source:
+                path, reason = self._resolve_override(spec, override_source, mapped_name, **kwargs)
+                if path:
+                    paths[spec.id] = path
+                elif not spec.required and reason:
+                    optional_missing[spec.id] = reason
+                else:
+                    raise LoaderError(
+                        f"Required artifact '{spec.id}' failed to load from override '{override_source}': {reason}"
+                    )
+                continue
+
+            # 2. Delegate standard resolution to subclass
+            path, reason = self._resolve_standard(spec, mapped_name, **kwargs)
+            if path:
+                paths[spec.id] = path
+            elif not spec.required and reason:
+                optional_missing[spec.id] = reason
+            elif spec.required:
+                raise LoaderError(reason or f"Required artifact '{spec.id}' could not be resolved.")
+
+        return ArtifactMap(paths, optional_missing)
+
+    @abstractmethod
+    def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
+        pass
+
+    def _resolve_override(
+        self,
+        spec: ArtifactSpec,
+        override_source: str,
+        mapped_name: str,
+        **kwargs,
+    ) -> tuple[Path | None, str | None]:
+
+        if _is_local_source(override_source):
+            candidate = _local_source_to_path(override_source)
+
+            if candidate.is_dir():
+                candidate = candidate / mapped_name
+
+            if candidate.is_file():
+                return candidate, None
+
+            return None, f"Local override file not found: {candidate}"
+
+        # Resolve overrides. Explicit overrides dictate their own layout, ignoring spec subfolders.
+        repo_id, subfolder = parse_hf_source(override_source)
+        return self._fetch_hf(
+            repo_id,
+            spec,
+            mapped_name,
+            override_subdir=subfolder,
+            ignore_spec_subdir=True,
+            **kwargs,
         )
 
-    return _resolve_auto_source(
-        source,
-        file_specs,
-        backend,
+    def _fetch_hf(
+        self,
+        repo_id: str,
+        spec: ArtifactSpec,
+        mapped_name: str,
+        override_subdir: str | None = None,
+        ignore_spec_subdir: bool = False,
+        **kwargs,
+    ) -> tuple[Path | None, str | None]:
+        """Helper to fetch from Hugging Face cache/download."""
+        if override_subdir is not None:
+            subdir = override_subdir
+        elif ignore_spec_subdir or not spec.hf_subdir:
+            subdir = None
+        else:
+            subdir = spec.hf_subdir
+
+        hf_mapped_name = f"{subdir.rstrip('/')}/{mapped_name}" if subdir else mapped_name
+        try:
+            path, reason = download_or_cached_with_reason(
+                repo_id=repo_id,
+                filename=hf_mapped_name,
+                revision=kwargs.get("revision"),
+                cache_dir=kwargs.get("cache_dir"),
+                allow_download=kwargs.get("allow_download", True),
+                required=spec.required,
+                token=kwargs.get("token"),
+            )
+            return (Path(path) if path else None), reason
+        except HFDownloadError as exc:
+            return None, str(exc)
+
+
+class LocalResolver(SourceResolver):
+    def __init__(
+        self, folder: Path, file_name_map: Mapping[str, str] | None = None, source_map: Mapping[str, str] | None = None
+    ):
+        super().__init__(file_name_map, source_map)
+        self.folder = folder
+
+    def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
+        # Strictly local. Ignore HF repo_ids entirely.
+        if not self.folder.is_dir():
+            return None, f"Local folder does not exist: {self.folder}"
+
+        # Check HF Repo-like nested structure first
+        if spec.hf_subdir:
+            nested_candidate = self.folder / spec.hf_subdir / mapped_name
+            if nested_candidate.is_file():
+                return nested_candidate, None
+
+        # Flat structure
+        candidate = self.folder / mapped_name
+        if candidate.is_file():
+            return candidate, None
+
+        return None, f"Missing in local folder: {candidate}"
+
+
+class HFResolver(SourceResolver):
+    def __init__(
+        self,
+        session_fallback_repo: str,
+        file_name_map: Mapping[str, str] | None = None,
+        source_map: Mapping[str, str] | None = None,
+    ):
+        super().__init__(file_name_map, source_map)
+        # Parse the session's main source into repo_id and optional subfolder
+        self.session_fallback_repo, self.session_fallback_subdir = parse_hf_source(session_fallback_repo)
+
+    def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
+        # If the artifact defines its own repo (e.g. CLIP), use it. Otherwise use session repo.
+        if spec.repo_id:
+            target_repo = spec.repo_id
+            target_subdir = spec.hf_subdir
+        else:
+            target_repo = self.session_fallback_repo
+            # Fall back to spec's directory only if the session source did not specify a subfolder
+            target_subdir = self.session_fallback_subdir or spec.hf_subdir
+
+        if not target_repo:
+            return None, "No repository ID defined for HF resolution."
+
+        return self._fetch_hf(
+            target_repo,
+            spec,
+            mapped_name,
+            override_subdir=target_subdir,
+            **kwargs,
+        )
+
+
+def resolve_variant_artifacts(
+    source: str,
+    variant: ModelVariant,
+    *,
+    revision: str | None = None,
+    cache_dir: str | None = None,
+    allow_download: bool | None = None,
+    file_name_map: Mapping[str, str] | None = None,
+    source_map: Mapping[str, str] | None = None,
+    token: str | None = None,
+) -> ArtifactMap:
+    """Main entrypoint for session factory to resolve files for a specific variant."""
+    s = source.strip()
+
+    if _is_local_source(s):
+        folder = _local_source_to_path(s)
+        resolver = LocalResolver(folder, file_name_map, source_map)
+    else:
+        repo = _hf_source_to_repo(s)
+        resolver = HFResolver(repo, file_name_map, source_map)
+
+    return resolver.resolve(
+        variant,
         revision=revision,
         cache_dir=cache_dir,
         allow_download=allow_download,
-        file_name_map=file_name_map,
-        fallback_hf_repo_id=fallback_hf_repo_id,
+        token=token,
     )
 
 
-def resolve_from_sources(
+def inspect_variant_artifacts(
     source: str,
-    file_specs: tuple[FileSpec, ...],
-    backend: Backend,
+    variant: ModelVariant,
     *,
     revision: str | None = None,
     cache_dir: str | None = None,
-    allow_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
-    fallback_hf_repo_id: str | None = None,
     source_map: Mapping[str, str] | None = None,
-) -> FileMap:
-    """
-    Resolve files from a primary source string plus optional per-repo overrides.
+    token: str | None = None,
+) -> list[ArtifactAvailability]:
+    """Inspect local/cache availability for every artifact in a variant without downloading."""
+    s = source.strip()
 
-    When source_map is provided, any FileSpec with a matching repo_id uses the
-    mapped source string. Specs without a mapping fall back to the primary source.
-    """
-    normalized_file_name_map = _normalize_file_name_map(file_name_map, file_specs)
-
-    if not source_map:
-        return resolve_from_source_string(
-            source,
-            file_specs,
-            backend,
-            revision=revision,
-            cache_dir=cache_dir,
-            allow_download=allow_download,
-            file_name_map=normalized_file_name_map,
-            fallback_hf_repo_id=fallback_hf_repo_id,
-        )
-
-    grouped: dict[tuple[str, str | None], list[FileSpec]] = {}
-    for spec in file_specs:
-        spec_repo = spec.repo_id
-        mapped_source = source_map.get(spec_repo, source) if spec_repo else source
-        fallback_repo = spec_repo if mapped_source != source else fallback_hf_repo_id
-        key = (mapped_source, fallback_repo)
-        grouped.setdefault(key, []).append(spec)
-
-    merged_paths: dict[str, Path] = {}
-    merged_optional: dict[str, str] = {}
-    for (group_source, group_fallback_repo), group_specs in grouped.items():
-        group_keys = {_spec_key(spec) for spec in group_specs}
-        group_file_name_map = {key: value for key, value in normalized_file_name_map.items() if key in group_keys}
-        file_map = resolve_from_source_string(
-            group_source,
-            tuple(group_specs),
-            backend,
-            revision=revision,
-            cache_dir=cache_dir,
-            allow_download=allow_download,
-            file_name_map=group_file_name_map,
-            fallback_hf_repo_id=group_fallback_repo,
-        )
-        for key, value in file_map.as_path_dict().items():
-            if key in merged_paths and merged_paths[key] != value:
-                raise LoaderError(
-                    f"Resolved duplicate file key '{key}' from multiple sources: {merged_paths[key]} vs {value}"
-                )
-            merged_paths[key] = value
-        for key, reason in file_map.optional_missing_reasons().items():
-            merged_optional.setdefault(key, reason)
-
-    return FileMap(merged_paths, optional_missing_reasons=merged_optional)
-
-
-def _resolve_local_prefixed(
-    raw_value: str,
-    file_specs: tuple[FileSpec, ...],
-    backend: Backend,
-    *,
-    file_name_map: Mapping[str, str] | None,
-) -> FileMap:
-    value = raw_value.strip()
-    if not value:
-        raise LoaderError("Local source prefix requires a folder path: local:/path/to/folder")
-
-    folder = Path(value).expanduser()
-    try:
-        return resolve_from_local_folder(folder, file_specs, backend, file_name_map=file_name_map)
-    except LoaderError as exc:
-        hint = ""
-        if _looks_like_hf_repo_id(value):
-            hint = " It looks like a HuggingFace repo ID; use 'hf:<owner/repo>' instead if that was intended."
-        raise LoaderError(f"Requested local source via 'local:' but failed to resolve '{value}': {exc}{hint}".rstrip()) from None
-
-
-def _resolve_hf_prefixed(
-    raw_value: str,
-    file_specs: tuple[FileSpec, ...],
-    backend: Backend,
-    *,
-    revision: str | None,
-    cache_dir: str | None,
-    allow_download: bool | None,
-    file_name_map: Mapping[str, str] | None,
-) -> FileMap:
-    value = raw_value.strip()
-    if not value:
-        raise LoaderError("HF source prefix requires a repo ID: hf:owner/repo")
-
-    try:
-        return resolve_from_hf_repo(
-            value,
-            file_specs,
-            backend,
-            revision=revision,
-            cache_dir=cache_dir,
-            allow_download=allow_download,
-            file_name_map=file_name_map,
-        )
-    except LoaderError as exc:
-        hint = ""
-        if _looks_like_local_folder(value):
-            hint = " It looks like a local folder; use 'local:/path' instead if that was intended."
-        raise LoaderError(f"Requested HF source via 'hf:' but failed to resolve '{value}': {exc}{hint}".rstrip()) from None
-
-
-def _resolve_auto_source(
-    source: str,
-    file_specs: tuple[FileSpec, ...],
-    backend: Backend,
-    *,
-    revision: str | None,
-    cache_dir: str | None,
-    allow_download: bool | None,
-    file_name_map: Mapping[str, str] | None,
-    fallback_hf_repo_id: str | None,
-) -> FileMap:
-    local_candidate = Path(source).expanduser()
-    local_error: str | None = None
-
-    if local_candidate.exists():
-        if local_candidate.is_dir():
-            try:
-                return _resolve_local_then_hf_missing(
-                    local_candidate,
-                    file_specs,
-                    backend,
-                    revision=revision,
-                    cache_dir=cache_dir,
-                    allow_download=allow_download,
-                    file_name_map=file_name_map,
-                    fallback_hf_repo_id=fallback_hf_repo_id,
-                )
-            except LoaderError as exc:
-                raise LoaderError(str(exc)) from None
-        else:
-            local_error = f"Local path exists but is not a directory: {local_candidate}"
-
-    hf_error: str | None = None
-    try:
-        return resolve_from_hf_repo(
-            source,
-            file_specs,
-            backend,
-            revision=revision,
-            cache_dir=cache_dir,
-            allow_download=allow_download,
-            file_name_map=file_name_map,
-        )
-    except LoaderError as exc:
-        hf_error = str(exc)
-
-    parts = [f"Could not resolve source '{source}'."]
-    if local_error is not None:
-        parts.append(f"Local attempt failed: {local_error}")
-    if hf_error is not None:
-        parts.append(f"HF attempt failed: {hf_error}")
-    raise LoaderError(" ".join(parts))
-
-
-def _resolve_local_then_hf_missing(
-    folder: Path,
-    file_specs: tuple[FileSpec, ...],
-    backend: Backend,
-    *,
-    revision: str | None,
-    cache_dir: str | None,
-    allow_download: bool | None,
-    file_name_map: Mapping[str, str] | None,
-    fallback_hf_repo_id: str | None,
-) -> FileMap:
-    normalized_file_name_map = _normalize_file_name_map(file_name_map, file_specs)
-    needed = [s for s in file_specs if s.needed_for(backend)]
-
-    paths: dict[str, Path] = {}
-    optional_missing: dict[str, str] = {}
-    missing_specs: list[FileSpec] = []
-
-    for spec in needed:
-        spec_key = _spec_key(spec)
-        candidate_names = _local_candidate_names(spec, normalized_file_name_map)
-        candidate = next((folder / name for name in candidate_names if (folder / name).is_file()), None)
-        if candidate is not None:
-            paths[spec_key] = candidate
-            continue
-
-        if spec.required:
-            missing_specs.append(spec)
-        else:
-            optional_missing[spec_key] = f"'{candidate_names[0]}' not found in local folder '{folder}'"
-            missing_specs.append(spec)
-
-    if not missing_specs:
-        return FileMap(paths, optional_missing_reasons=optional_missing)
-
-    missing_required = [spec for spec in missing_specs if spec.required]
-    missing_optional = [spec for spec in missing_specs if not spec.required]
-
-    if missing_required:
-        required_names = [_local_candidate_names(spec, normalized_file_name_map)[0] for spec in missing_required]
-        logger.debug("Missing required local files in '%s': %s", folder, required_names)
-    if missing_optional:
-        optional_names = [_local_candidate_names(spec, normalized_file_name_map)[0] for spec in missing_optional]
-        logger.debug("Missing optional local files in '%s': %s", folder, optional_names)
-
-    if not fallback_hf_repo_id:
-        required_mapped = [
-            _local_candidate_names(spec, normalized_file_name_map)[0] for spec in missing_specs if spec.required
-        ]
-        if required_mapped:
-            raise LoaderError(
-                f"Required file(s) {required_mapped} were not found in local folder '{folder}', "
-                "and no fallback HuggingFace repo is configured."
-            )
-        return FileMap(paths, optional_missing_reasons=optional_missing)
-
-    missing_names = [_local_candidate_names(spec, normalized_file_name_map)[0] for spec in missing_specs]
-    if allow_download:
-        logger.info(
-            "Missing local file(s) %s. Attempting HuggingFace fallback repo '%s'.",
-            missing_names,
-            fallback_hf_repo_id,
-        )
+    if _is_local_source(s):
+        folder = _local_source_to_path(s)
+        resolver = LocalResolver(folder, file_name_map, source_map)
     else:
-        logger.debug(
-            "Missing local file(s) %s. Checking HuggingFace cache only for fallback repo '%s' (auto-download disabled).",
-            missing_names,
-            fallback_hf_repo_id,
-        )
+        repo = _hf_source_to_repo(s)
+        resolver = HFResolver(repo, file_name_map, source_map)
 
-    for spec in missing_specs:
-        spec_key = _spec_key(spec)
-        mapped_name = _mapped_name_for_hf(spec, normalized_file_name_map)
-        try:
-            spec_repo_id = spec.repo_id or fallback_hf_repo_id
-            local, reason = download_or_cached_with_reason(
-                repo_id=spec_repo_id,
-                filename=mapped_name,
+    results: list[ArtifactAvailability] = []
+    for spec in variant.artifacts:
+        mapped_name = resolver.file_name_map.get(spec.id, spec.name)
+        override_source = resolver.source_map.get(spec.id)
+
+        if override_source:
+            path, reason = resolver._resolve_override(
+                spec,
+                override_source,
+                mapped_name,
                 revision=revision,
                 cache_dir=cache_dir,
-                allow_download=allow_download,
+                allow_download=False,
+                token=token,
+            )
+        else:
+            path, reason = resolver._resolve_standard(
+                spec,
+                mapped_name,
+                revision=revision,
+                cache_dir=cache_dir,
+                allow_download=False,
+                token=token,
+            )
+
+        is_avail = path is not None and path.is_file()
+        results.append(
+            ArtifactAvailability(
+                id=spec.id,
+                name=mapped_name,
+                role=spec.role,
                 required=spec.required,
+                is_available=is_avail,
+                path=path if is_avail else None,
+                reason=None if is_avail else reason,
             )
-            if local is not None:
-                # TODO: Revisit whether local write-back should be optional/configurable.
-                local_materialized = _materialize_downloaded_file_to_local_folder(
-                    source_path=Path(local),
-                    destination_folder=folder,
-                    destination_name=mapped_name,
-                )
-                paths[spec_key] = local_materialized
-                optional_missing.pop(spec_key, None)
-                continue
+        )
 
-            if not spec.required:
-                local_reason = optional_missing.get(spec_key, "local file missing")
-                hf_reason = reason or "HF fallback did not provide a reason"
-                optional_missing[spec_key] = (
-                    f"{local_reason}; HF fallback '{spec_repo_id}' could not resolve '{mapped_name}': {hf_reason}"
-                )
-        except HFDownloadError as exc:
-            if spec.required:
-                raise LoaderError(
-                    f"Required file '{mapped_name}' was not found in local folder '{folder}', "
-                    f"and could not be resolved from HuggingFace fallback '{spec_repo_id}': {exc}"
-                ) from None
-
-            local_reason = optional_missing.get(spec_key, "local file missing")
-            optional_missing[spec_key] = (
-                f"{local_reason}; HF fallback '{spec_repo_id}' failed for '{mapped_name}': {exc}"
-            )
-
-    return FileMap(paths, optional_missing_reasons=optional_missing)
+    return results
 
 
-def _materialize_downloaded_file_to_local_folder(
-    *,
-    source_path: Path,
-    destination_folder: Path,
-    destination_name: str,
-) -> Path:
-    destination_path = destination_folder / destination_name
-    destination_path.parent.mkdir(parents=True, exist_ok=True)
+def parse_hf_source(source: str) -> tuple[str, str | None]:
+    """
+    Parses a Hugging Face source string into a valid (repo_id, subfolder) tuple.
 
-    if source_path.resolve() == destination_path.resolve():
-        return destination_path
+    Examples:
+        "username/repo-name" -> ("username/repo-name", None)
+        "username/repo-name/models/clip" -> ("username/repo-name", "models/clip")
+        "legacy-repo" -> ("legacy-repo", None)
+    """
+    source = source.strip()
+    source = source.removeprefix("hf:")
 
-    shutil.copy2(source_path, destination_path)
-    return destination_path
+    parts = source.split("/")
+    if len(parts) > 2:
+        # Standard user/repo/subfolder/... layout
+        repo_id = "/".join(parts[:2])
+        subfolder = "/".join(parts[2:])
+        return repo_id, subfolder
 
-
-def _looks_like_hf_repo_id(value: str) -> bool:
-    return bool(re.match(r"^[^/\s]+/[^/\s]+$", value.strip()))
-
-
-def _looks_like_local_folder(value: str) -> bool:
-    p = Path(value).expanduser()
-    if p.is_dir():
-        return True
-
-    raw = value.strip()
-    return raw.startswith(("./", "../", "/", "~/"))
-
-
-def _normalize_file_name_map(
-    file_name_map: Mapping[str, str] | None,
-    file_specs: tuple[FileSpec, ...],
-) -> dict[str, str]:
-    if not file_name_map:
-        return {}
-
-    allowed_names: dict[str, str] = {}
-    for spec in file_specs:
-        spec_key = _spec_key(spec)
-        allowed_names[spec.name] = spec_key
-        if spec.key:
-            if spec.key in allowed_names and allowed_names[spec.key] != spec_key:
-                raise LoaderError(f"file_name_map key '{spec.key}' is ambiguous for multiple plugin files: {spec.name}")
-            allowed_names[spec.key] = spec_key
-    normalized: dict[str, str] = {}
-    for original_name, mapped_name in file_name_map.items():
-        key = str(original_name).strip()
-        value = str(mapped_name).strip()
-        if not key:
-            raise LoaderError("file_name_map has an empty key; expected original plugin file names.")
-        if not value:
-            raise LoaderError(f"file_name_map entry for '{key}' has an empty mapped filename.")
-        if key not in allowed_names:
-            raise LoaderError(
-                f"file_name_map contains unknown key '{key}'. Known plugin files: {sorted(allowed_names)}"
-            )
-        normalized_key = allowed_names[key]
-        existing = normalized.get(normalized_key)
-        if existing is not None and existing != value:
-            raise LoaderError(
-                f"file_name_map provides conflicting values for '{normalized_key}': '{existing}' vs '{value}'"
-            )
-        normalized[normalized_key] = value
-
-    return normalized
-
-
-# endregion Resolve Files
+    # Either just "repo_id" or "username/repo_id" with no subfolder
+    return source, None

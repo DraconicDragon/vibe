@@ -3,83 +3,35 @@ ModelSession — a loaded model, ready to run inference.
 
 This is the object users interact with after calling vibe.load().
 It holds the resolved plugin instance, the active runtime backend,
-and optional result processors. Calling .infer() is the one thing you do with it.
-
-session = vibe.load("wd-eva02-large-v3")
-result  = session.infer(image)
-result  = session.infer(image, result_processors=[...])
+and optional result transforms. Calling .infer() is the one thing you do with it.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Iterator, Literal
+from types import TracebackType
+from typing import Any, Literal, Self
 
-import numpy as np
-
-from vibe.backends.base import Backend, ModelPlugin
+from vibe.backends.base import ArtifactMap, Backend, ExecutionPlan, ModelPlugin, RuntimeExecutor
+from vibe.exceptions import InferenceCancelled, SessionError
+from vibe.features import compile_features
 from vibe.image_loading import (
-    iter_loaded_image_chunks,
-    load_image_if_path,
+    iter_load_images,
     normalize_input_format,
     should_prefetch_image_loading,
 )
-from vibe.loader import FileMap
 from vibe.memory_stats import MemoryTracker
-from vibe.result_processors import CleanTags, ResultProcessor, ResultProcessorContext
+from vibe.result_transforms import ResultTransform, TransformContext
 from vibe.results import InferenceResult, InferenceResultItem, ModelResult
+from vibe.runners import BatchRunner, InferenceEngine, SessionRunnerState
+from vibe.transform_pipeline import TransformPipeline
 
 logger = logging.getLogger(__name__)
 
-
-def _fmt_shape(value: Any) -> Any:
-    return getattr(value, "shape", None)
-
-
-def _fmt_dtype(value: Any) -> Any:
-    return getattr(value, "dtype", None)
-
-
-# Log optional image format support at module load time for diagnostics
-_has_pillow_jxl: bool
-try:
-    import pillow_jxl as _pjxl  # noqa: F401
-
-    _has_pillow_jxl = True
-except ImportError:
-    _has_pillow_jxl = False
-    logger.info(
-        "pillow-jxl-plugin not installed; JPEG XL image format support is unavailable. "
-        "Install 'pillow-jxl-plugin' package to enable JPEG XL support, e.g.: pip install pillow-jxl-plugin"
-    )
-    logger.debug("pillow-jxl-plugin import failed; JPEG XL support unavailable.", exc_info=True)
-
-_has_pillow_heif: bool
-try:
-    import pillow_heif as _pheif  # noqa: F401
-
-    _has_pillow_heif = True
-except ImportError:
-    _has_pillow_heif = False
-    logger.info(
-        "pillow-heif not installed; HEIF/HEIC image format support is unavailable. "
-        "Install 'pillow-heif' package to enable HEIF/HEIC support, e.g.: pip install pillow-heif"
-    )
-    logger.debug("pillow-heif import failed; HEIF/HEIC support unavailable.", exc_info=True)
-
-
 _ASYNC_INFER_DONE = object()
-
-
-class SessionError(Exception):
-    """Raised when session setup or inference fails."""
-
-
-class InferenceCancelled(SessionError):
-    """Raised when an in-flight inference run is cancelled by user request."""
-
 
 # region ModelSession
 
@@ -87,20 +39,14 @@ class InferenceCancelled(SessionError):
 class ModelSession:
     """
     A loaded model instance, ready for inference.
-
-    Attributes:
-        plugin:     The plugin instance (holds ancillary data like tag lists).
-        backend:    Which runtime backend is active ("pytorch" or "onnx").
-        model_id:   Canonical model ID from the plugin.
-        source:     Where the files came from (for debugging/display).
     """
 
     def __init__(
         self,
         plugin: ModelPlugin,
-        backend_instance: Any,
-        backend: Backend,
-        file_map: FileMap,
+        backend_instance: RuntimeExecutor,
+        plan: ExecutionPlan,
+        file_map: ArtifactMap,
         source: str,
         auto_download: bool = True,
         memory_tracking: bool = False,
@@ -108,69 +54,73 @@ class ModelSession:
     ) -> None:
         self._plugin = plugin
         self._backend_instance = backend_instance
-        self._backend = backend
+        self._plan = plan
+        self._backend = plan.backend
         self._file_map = file_map
         self._source = source
         self._closed = False
         self._backend_release = backend_release
         self._memory_tracker = MemoryTracker(enabled=memory_tracking)
-        self._processor_context = ResultProcessorContext(
-            file_map=file_map,
+        self._state = SessionRunnerState(plugin.identity.model_id)
+
+        self._transform_context = TransformContext(
+            model_id=plugin.identity.model_id,
+            artifacts=file_map,
             source=source,
             auto_download=auto_download,
+            token=plan.hf_token,
+            _plugin_data={type(d): d for d in plugin.provide_transform_data()},
         )
-        self._inference_lock = threading.RLock()
-        self._cancel_event = threading.Event()
-        self._run_state_lock = threading.Lock()
-        self._run_active = False
+        self._pipeline = TransformPipeline(
+            plugin.identity.model_id, self._transform_context, plugin.capabilities.features
+        )
+        self._engine = InferenceEngine(plugin, backend_instance, self._pipeline, self._state)
+        self._runner = BatchRunner(self._engine, self._state, self._backend)
+
         logger.debug("Session created model_id=%s backend=%s", self.model_id, self._backend.value)
         logger.debug("Session memory_tracking=%s", self._memory_tracker.enabled)
         if not self._memory_tracker.enabled:
-            logger.info("Memory tracking disabled by user for model_id=%s", self.model_id)
+            logger.debug("Memory tracking disabled for model_id=%s", self.model_id)
         else:
             snap = self._memory_tracker.snapshot()
             if snap.process_rss_bytes is None:
                 logger.debug("Memory tracking available with partial metrics for model_id=%s", self.model_id)
             else:
-                logger.info("Memory tracking enabled")
+                logger.debug("Memory tracking enabled")
             if snap.gpu_process_used_bytes is None:
                 logger.debug("GPU process memory metric unavailable (likely missing NVML/pynvml).")
 
     # region Primary Interface
-    # todo: theres 3 entry points when there only need to be one, consider changing infer_batches() to internal function, mind infer_single() too
+
+    def execution_info(self) -> dict[str, Any]:
+        """Return a diagnostic summary of the requested plan vs actual runtime state."""
+        return {
+            "model_id": self.model_id,
+            "source": self.source,
+            "plan": {
+                "backend": self._plan.backend.value,
+                "variant_id": self._plan.variant_id,
+                "preference": self._plan.preference.intent.value,
+                "precision": {
+                    "weight": self._plan.precision.weight.value,
+                    "compute": self._plan.precision.compute.value,
+                },
+            },
+            "runtime": self._backend_instance.execution_info(),
+        }
+
     def infer(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        result_processors: list[ResultProcessor] | None = None,
         *,
+        features: Mapping[str, Mapping[str, Any]] | Sequence[Any] | None = None,
+        transforms: list[ResultTransform] | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
+        prefetch_batch_limit: int = 8,
         on_cancel: Literal["raise", "return_partial"] = "raise",
     ) -> InferenceResult:
-        """
-        Run inference on one image or many images.
-
-        Args:
-                images: A single image/path, list of images/paths, or list of
-                    (image_or_path, ref) tuples.
-                    The plugin's preprocess() handles conversion.
-            result_processors: Optional ordered list of result processor instances.
-                        Result processors run after model postprocess in the order given.
-            batch_size: Batch chunk size used when true batching is selected.
-            batch_method:
-              - "auto": choose by backend/device (GPU-like -> true batching | CPU -> sequential).
-              - "true": run stacked tensor batches when supported
-              - "sequential": process one image at a time, like batch_size = 1
-                        on_cancel:
-                            - "raise": raise InferenceCancelled when cancellation is requested (default).
-                            - "return_partial": return already processed items instead of raising.
-
-            CPU inference usually does not benefit from batch tensors and may be slower than simply batch size 1/sequential processing.
-
-        Returns:
-            InferenceResult with one item per input image.
-            For single image input this still returns batch shape with one item.
-        """
+        """Run inference on one image or many images."""
         if on_cancel not in ("raise", "return_partial"):
             raise SessionError("on_cancel must be one of: 'raise', 'return_partial'")
 
@@ -184,9 +134,11 @@ class ModelSession:
         try:
             for chunk in self.infer_batches(
                 images,
-                result_processors=result_processors,
+                features=features,
+                transforms=transforms,
                 batch_size=batch_size,
                 batch_method=batch_method,
+                prefetch_batch_limit=prefetch_batch_limit,
             ):
                 total_inputs = chunk.total_inputs
                 items.extend(chunk.items)
@@ -198,13 +150,24 @@ class ModelSession:
             operation="infer_batches",
             min_call_index=tracker_before_calls,
         )
-        logger.info(
-            "Inference completed model_id=%s outputs=%s batch_size=%s cancelled=%s",
-            self.model_id,
-            len(items),
-            batch_size,
-            bool(total_inputs is not None and len(items) < total_inputs),
-        )
+        num_items = len(items)
+        if total_inputs is not None and total_inputs > 1:
+            logger.info(
+                "Inference completed model_id=%s outputs=%s/%s batch_size=%s cancelled=%s",
+                self.model_id,
+                num_items,
+                total_inputs,
+                batch_size,
+                bool(num_items < total_inputs),
+            )
+        else:
+            logger.debug(
+                "Inference completed model_id=%s outputs=%s batch_size=%s",
+                self.model_id,
+                num_items,
+                batch_size,
+            )
+
         return InferenceResult(
             total_inputs=total_inputs if total_inputs is not None else len(items),
             items=items,
@@ -214,41 +177,46 @@ class ModelSession:
     def infer_batches(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        result_processors: list[ResultProcessor] | None = None,
         *,
+        features: Mapping[str, Mapping[str, Any]] | Sequence[Any] | None = None,
+        transforms: list[ResultTransform] | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
+        prefetch_batch_limit: int = 8,
     ) -> Iterator[InferenceResult]:
-        """
-        Stream inference results as each completed chunk becomes available.
-
-        Yields one InferenceResult per finished chunk. In sequential mode, each
-        yielded chunk contains exactly one item.
-        """
-        with self._inference_lock:
+        """Stream inference results as each completed chunk becomes available."""
+        with self._state.lock:
             if self._closed:
                 raise SessionError("Session is closed. Load a new session before inferring.")
             if batch_size < 1:
                 raise SessionError("batch_size must be >= 1")
-            self._start_run()
 
+            self._state.start_run()
             before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
+
             try:
-                values, refs = normalize_input_format(images, error_cls=SessionError)
+                values, _refs = normalize_input_format(images, error_cls=SessionError)
+
+                # Validate the request even when the input collection is empty,
+                # so callers receive deterministic configuration errors.
+                inference_request, compiled_transforms = compile_features(features, self._plugin.capabilities.features)
+                active_transforms = compiled_transforms + (transforms or [])
+
                 if not values:
                     logger.warning("No input images provided for model_id=%s", self.model_id)
                     return
 
-                self._notify_result_processors_infer_start(result_processors)
+                self._pipeline.notify_infer_start(active_transforms)
 
                 total_inputs = len(values)
                 path_inputs = sum(1 for value in values if isinstance(value, (str, Path)))
                 loaded_path_inputs = 0
-                method = self._resolve_batch_method(batch_method, batch_size)
+                method = self._runner.resolve_batch_method(batch_method, batch_size)
                 prefetch_images = should_prefetch_image_loading(path_inputs=path_inputs)
+
                 if batch_size > 1 and method == "sequential" and batch_method != "sequential":
-                    logger.warning(
-                        "Batching disabled for model_id=%s backend=%s; using sequential processing",
+                    logger.info(
+                        "Auto-batching using sequential mode for model_id=%s backend=%s (accelerator not active or graph has fixed batch dimension)",
                         self.model_id,
                         self._backend.value,
                     )
@@ -268,67 +236,57 @@ class ModelSession:
                     if prefetch_images:
                         logger.debug("Image prefetch enabled model_id=%s", self.model_id)
 
-                def _loader(value: Any | str, index: int) -> Any:
-                    return load_image_if_path(
-                        value,
-                        index=index,
-                        cancel_check=self._check_cancelled,
-                        error_cls=SessionError,
-                        has_pillow_jxl=_has_pillow_jxl,
-                        has_pillow_heif=_has_pillow_heif,
+                for chunk in iter_load_images(
+                    images=images,
+                    batch_size=batch_size,
+                    prefetch_batch_limit=prefetch_batch_limit,
+                    prefetch=prefetch_images,
+                    cancel_check=self._state.check_cancelled,
+                    error_cls=SessionError,
+                ):
+                    start = chunk.start_index
+                    chunk_images = chunk.images
+                    chunk_refs = chunk.refs
+
+                    loaded_path_inputs += sum(
+                        1 for i in range(start, start + len(chunk_images)) if isinstance(values[i], (str, Path))
                     )
 
-                if method == "sequential":
-                    for start, chunk_images in iter_loaded_image_chunks(
-                        values,
-                        chunk_size=1,
-                        use_prefetch=prefetch_images,
-                        load_image_fn=_loader,
-                        cancel_check=self._check_cancelled,
-                    ):
-                        index = start
-                        value = values[index]
-                        image = chunk_images[0]
-                        if isinstance(value, (str, Path)):
-                            loaded_path_inputs += 1
-                        self._check_cancelled()
-                        result = self._infer_single(image, result_processors=result_processors)
-                        logger.debug("Completed sequential item index=%s/%s", index + 1, total_inputs)
-                        yield InferenceResult(
-                            total_inputs=total_inputs,
-                            items=[InferenceResultItem(index=index, input_ref=refs[index], result=result)],
-                        )
-                else:
-                    index = 0
-                    for start, chunk_images in iter_loaded_image_chunks(
-                        values,
-                        chunk_size=batch_size,
-                        use_prefetch=prefetch_images,
-                        load_image_fn=_loader,
-                        cancel_check=self._check_cancelled,
-                    ):
-                        chunk_values = values[start : start + len(chunk_images)]
-                        loaded_path_inputs += sum(1 for value in chunk_values if isinstance(value, (str, Path)))
-                        chunk_results = next(
-                            self._infer_many_true_batch_chunks(
-                                chunk_images,
-                                len(chunk_images),
-                                result_processors=result_processors,
-                                fallback_to_sequential_on_stack_error=(batch_method == "auto"),
+                    if method == "sequential":
+                        chunk_items = []
+                        for i, img in enumerate(chunk_images):
+                            self._state.check_cancelled()
+                            result = self._engine.execute_single(
+                                img, transforms=active_transforms, request=inference_request
                             )
+                            global_idx = start + i
+                            chunk_items.append(
+                                InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
+                            )
+                        logger.debug(
+                            "Completed sequential chunk, current index=%s/%s", start + len(chunk_images), total_inputs
                         )
-                        chunk_items: list[InferenceResultItem] = []
-                        for result in chunk_results:
-                            chunk_items.append(InferenceResultItem(index=index, input_ref=refs[index], result=result))
-                            index += 1
-                        self._check_cancelled()
+                    else:
+                        chunk_results = self._runner.execute_chunk(
+                            chunk_images,
+                            transforms=active_transforms,
+                            request=inference_request,
+                            fallback_to_sequential=(batch_method == "auto"),
+                        )
+                        chunk_items = []
+                        for i, result in enumerate(chunk_results):
+                            global_idx = start + i
+                            chunk_items.append(
+                                InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
+                            )
                         logger.debug(
                             "Completed inference batch model_id=%s done=%s/%s",
                             self.model_id,
-                            index,
+                            start + len(chunk_images),
                             total_inputs,
                         )
-                        yield InferenceResult(total_inputs=total_inputs, items=chunk_items)
+
+                    yield InferenceResult(total_inputs=total_inputs, items=chunk_items)
 
                 if path_inputs:
                     logger.info(
@@ -348,16 +306,18 @@ class ModelSession:
                         memory_record.delta_process_rss_bytes,
                         memory_record.delta_gpu_process_used_bytes,
                     )
-                self._finish_run()
+                self._state.finish_run()
                 logger.debug("Inference run finished model_id=%s", self.model_id)
 
     async def infer_async(
         self,
         images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
-        result_processors: list[ResultProcessor] | None = None,
         *,
+        features: Mapping[str, Mapping[str, Any]] | Sequence[Any] | None = None,
+        transforms: list[ResultTransform] | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
+        prefetch_batch_limit: int = 8,
     ) -> AsyncIterator[InferenceResult]:
         """
         Async wrapper over infer_batches() for progressive consumption.
@@ -373,379 +333,84 @@ class ModelSession:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[object] = asyncio.Queue()
 
-        def _worker() -> None:
+        def _queue_from_worker(payload: object) -> bool:
+            """Queue a worker payload while tolerating event-loop shutdown."""
             try:
-                for chunk in self.infer_batches(
-                    images,
-                    result_processors=result_processors,
-                    batch_size=batch_size,
-                    batch_method=batch_method,
-                ):
-                    loop.call_soon_threadsafe(queue.put_nowait, chunk)
-            except Exception as exc:
-                loop.call_soon_threadsafe(queue.put_nowait, exc)
-            finally:
-                loop.call_soon_threadsafe(queue.put_nowait, _ASYNC_INFER_DONE)
+                loop.call_soon_threadsafe(queue.put_nowait, payload)
+            except RuntimeError as exc:
+                logger.debug("Event loop closed before async payload could be queued: %s", exc)
+                return False
+            return True
 
+        def _worker() -> None:
+            batches = self.infer_batches(
+                images,
+                features=features,
+                transforms=transforms,
+                batch_size=batch_size,
+                batch_method=batch_method,
+                prefetch_batch_limit=prefetch_batch_limit,
+            )
+            try:
+                for chunk in batches:
+                    if self._state.is_cancellation_requested:
+                        logger.debug("Async inference cancellation observed model_id=%s", self.model_id)
+                        break
+                    if not _queue_from_worker(chunk):
+                        break
+            except Exception as exc:
+                logger.debug("Async worker caught exception: %s", exc, exc_info=True)
+                _queue_from_worker(exc)
+            finally:
+                close_batches = getattr(batches, "close", None)
+                if callable(close_batches):
+                    try:
+                        close_batches()
+                    except Exception:
+                        logger.exception("Failed to close async inference generator model_id=%s", self.model_id)
+                _queue_from_worker(_ASYNC_INFER_DONE)
+
+        # Daemon thread so pending async inference doesn't prevent interpreter shutdown
         thread = threading.Thread(target=_worker, name="vibe-infer-async", daemon=True)
         thread.start()
 
-        while True:
-            payload = await queue.get()
-            if payload is _ASYNC_INFER_DONE:
-                break
-            if isinstance(payload, Exception):
-                raise payload
-            yield payload
+        try:
+            while True:
+                payload = await queue.get()
+                if payload is _ASYNC_INFER_DONE:
+                    break
+                if isinstance(payload, Exception):
+                    raise payload
+                assert isinstance(payload, InferenceResult)
+                yield payload
+        finally:
+            # Covers task cancellation, caller exceptions, and early async-generator
+            # closure after an async-for break/return.
+            if self.cancel_current_inference():
+                logger.debug("Async inference cancellation requested model_id=%s", self.model_id)
 
     def cancel_current_inference(self) -> bool:
         """
         Request cooperative cancellation of the currently running inference.
-
-        Returns True if a run was active and cancellation was requested, False
-        if no inference run is currently active.
         """
-        with self._run_state_lock:
-            if not self._run_active:
-                return False
-        self._cancel_event.set()
-        logger.warning("Cancellation requested for model_id=%s", self.model_id)
-        return True
+        return self._state.cancel()
 
     def is_inference_running(self) -> bool:
         """Return whether an inference run is currently active."""
-        with self._run_state_lock:
-            return self._run_active
+        return self._state.is_running
 
     def is_cancellation_requested(self) -> bool:
         """Return whether cancellation has been requested for the active run."""
-        return self._cancel_event.is_set()
-
-    def _start_run(self) -> None:
-        with self._run_state_lock:
-            self._run_active = True
-            self._cancel_event.clear()
-        logger.debug("Run state -> active for model_id=%s", self.model_id)
-
-    def _finish_run(self) -> None:
-        with self._run_state_lock:
-            self._run_active = False
-            self._cancel_event.clear()
-        logger.debug("Run state -> idle for model_id=%s", self.model_id)
-
-    def _check_cancelled(self) -> None:
-        if self._cancel_event.is_set():
-            logger.warning("Inference cancelled before completing current step model_id=%s", self.model_id)
-            raise InferenceCancelled("Inference cancelled by user request.")
+        return self._state.is_cancellation_requested
 
     def _last_memory_record_dict(self, *, operation: str, min_call_index: int) -> dict[str, Any] | None:
         if not self._memory_tracker.enabled:
             return None
         stats = self._memory_tracker.stats()
         record = stats.last_record
-        if record is None:
-            return None
-        if record.operation != operation:
-            return None
-        if record.index <= min_call_index:
+        if record is None or record.operation != operation or record.index <= min_call_index:
             return None
         return record.to_dict()
-
-    def _infer_single(
-        self,
-        image: Any,
-        result_processors: list[ResultProcessor] | None = None,
-    ) -> ModelResult:
-        """Run inference for one image."""
-        # Preprocess: image → tensor/array
-        try:
-            tensor = self._plugin.preprocess(image)
-            logger.debug("Preprocess output shape=%s dtype=%s", _fmt_shape(tensor), _fmt_dtype(tensor))
-        except Exception as exc:
-            raise SessionError(f"Preprocessing failed for model '{self.model_id}': {exc}") from exc
-
-        # Forward pass via runtime backend
-        try:
-            raw_output = self._backend_instance.run(tensor)
-            logger.debug("Raw backend output shape=%s dtype=%s", _fmt_shape(raw_output), _fmt_dtype(raw_output))
-        except Exception as exc:
-            raise SessionError(f"Inference failed for model '{self.model_id}': {exc}") from exc
-
-        # Postprocess: raw output → typed result
-        try:
-            result = self._plugin.postprocess(raw_output)
-        except Exception as exc:
-            raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
-
-        return self._apply_processors(result, result_processors=result_processors)
-
-    def _resolve_batch_method(
-        self,
-        requested: Literal["auto", "true", "sequential"],
-        batch_size: int,
-    ) -> Literal["true", "sequential"]:
-        if batch_size <= 1:
-            return "sequential"
-        supports_true_batching = self._supports_true_batching()
-        if requested == "true":
-            if not supports_true_batching:
-                logger.warning(
-                    "Model_id=%s backend=%s does not support true batching; the run may fail if the export is batch-incompatible",
-                    self.model_id,
-                    self._backend.value,
-                )
-            return "true"
-        if requested == "sequential":
-            return "sequential"
-
-        if supports_true_batching:
-            return "true"
-        return "sequential"
-
-    def _supports_true_batching(self) -> bool:
-        supports_fn = getattr(self._backend_instance, "supports_true_batching", None)
-        if callable(supports_fn):
-            try:
-                return bool(supports_fn())
-            except Exception:
-                logger.exception("Backend supports_true_batching() failed; using conservative fallback.")
-
-        # Legacy fallback for third-party/custom backend instances.
-        if self._backend == Backend.PYTORCH:
-            device = str(getattr(self._backend_instance, "device", "cpu")).lower()
-            return device != "cpu"
-
-        providers = [str(p) for p in getattr(self._backend_instance, "providers", [])]
-        return any(p.strip() and p.strip() != "CPUExecutionProvider" for p in providers)
-
-    def _infer_many_true_batch_chunks(
-        self,
-        images: list[Any],
-        batch_size: int,
-        result_processors: list[ResultProcessor] | None = None,
-        fallback_to_sequential_on_stack_error: bool = False,
-    ) -> Iterator[list[ModelResult]]:
-        for start in range(0, len(images), batch_size):
-            self._check_cancelled()
-            raw_chunk = images[start : start + batch_size]
-            try:
-                chunk = [self._plugin.preprocess(image) for image in raw_chunk]
-            except Exception as exc:
-                raise SessionError(f"Preprocessing failed for model '{self.model_id}': {exc}") from exc
-
-            chunk_results: list[ModelResult] = []
-            try:
-                batch_tensor = self._stack_batch(chunk)
-            except SessionError:
-                if fallback_to_sequential_on_stack_error:
-                    for tensor in chunk:
-                        self._check_cancelled()
-                        try:
-                            raw_output = self._backend_instance.run(tensor)
-                        except Exception as exc:
-                            raise SessionError(f"Inference failed for model '{self.model_id}': {exc}") from exc
-
-                        try:
-                            result = self._plugin.postprocess(raw_output)
-                        except Exception as exc:
-                            raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
-                        chunk_results.append(self._apply_processors(result, result_processors=result_processors))
-                    yield chunk_results
-                    continue
-                raise
-
-            try:
-                raw_output = self._backend_instance.run(batch_tensor)
-            except Exception as exc:
-                raise SessionError(f"Inference failed for model '{self.model_id}': {exc}") from exc
-
-            for sample_output in self._split_batch_output(raw_output, len(chunk)):
-                self._check_cancelled()
-                try:
-                    result = self._plugin.postprocess(sample_output)
-                except Exception as exc:
-                    raise SessionError(f"Postprocessing failed for model '{self.model_id}': {exc}") from exc
-                chunk_results.append(self._apply_processors(result, result_processors=result_processors))
-            yield chunk_results
-
-    def _notify_result_processors_infer_start(self, result_processors: list[ResultProcessor] | None) -> None:
-        if not result_processors:
-            return
-        for result_processor in result_processors:
-            try:
-                result_processor.on_infer_start(context=self._processor_context)
-            except Exception as exc:
-                raise SessionError(
-                    f"Result processor '{result_processor.__class__.__name__}' failed during infer startup "
-                    f"for model '{self.model_id}': {exc}"
-                ) from exc
-
-    def _stack_batch(self, chunk: list[Any]) -> Any:
-        first = chunk[0]
-        if self._is_structured_jtp3_batch(first):
-            try:
-                import torch
-
-                from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
-
-                patches = torch.stack([item.patches for item in chunk], dim=0)
-                sizes = torch.stack([item.sizes for item in chunk], dim=0)
-                logger.debug(
-                    "Stacked JTP-3 / Hydra batch batch_size=%d patches_shape=%s sizes_shape=%s",
-                    len(chunk),
-                    patches.shape,
-                    sizes.shape,
-                )
-                return JTPHydraBatch(patches, sizes)
-            except Exception as exc:
-                logger.error(
-                    "Failed to stack JTP-3 / Hydra batch for model_id=%s sample_descriptions=%s",
-                    self.model_id,
-                    [self._describe_preprocessed_sample(item) for item in chunk],
-                )
-                raise SessionError(
-                    "Could not build a true JTP-3 / Hydra batch. This usually means preprocessed "
-                    "patch tensors have incompatible shapes for stacking. "
-                    f"Details: {exc}"
-                ) from exc
-
-        if isinstance(first, np.ndarray):
-            try:
-                stacked = np.concatenate(chunk, axis=0)
-                logger.debug("Stacked numpy batch shape=%s dtype=%s", stacked.shape, stacked.dtype)
-                return stacked
-            except Exception as exc:
-                logger.error(
-                    "Failed to stack numpy batch for model_id=%s sample_shapes=%s",
-                    self.model_id,
-                    [getattr(item, "shape", None) for item in chunk],
-                )
-                raise SessionError(
-                    "Could not build a true batch tensor. This usually means preprocessed "
-                    "samples have incompatible shapes for concatenation. "
-                    f"Details: {exc}"
-                ) from exc
-
-        # Torch-like tensor handling without hard dependency.
-        try:
-            import torch
-
-            if isinstance(first, torch.Tensor):
-                stacked = torch.cat(chunk, dim=0)
-                logger.debug("Stacked torch batch shape=%s dtype=%s", stacked.shape, stacked.dtype)
-                return stacked
-        except Exception:
-            pass
-
-        logger.error(
-            "Unsupported preprocessed batch type for model_id=%s sample_descriptions=%s",
-            self.model_id,
-            [self._describe_preprocessed_sample(item) for item in chunk],
-        )
-        raise SessionError("Unsupported preprocessed tensor type for true batching. Use batch_method='sequential'.")
-
-    def _describe_preprocessed_sample(self, item: Any) -> dict[str, Any]:
-        shape = getattr(item, "shape", None)
-        if shape is not None:
-            return {
-                "type": type(item).__name__,
-                "shape": tuple(shape) if isinstance(shape, tuple) else shape,
-                "dtype": str(getattr(item, "dtype", None)),
-            }
-
-        parts: dict[str, Any] = {"type": type(item).__name__}
-        for field in ("patches", "sizes"):
-            value = getattr(item, field, None)
-            if value is not None:
-                parts[field] = {
-                    "shape": tuple(getattr(value, "shape", ())) if getattr(value, "shape", None) is not None else None,
-                    "dtype": str(getattr(value, "dtype", None)),
-                }
-        return parts
-
-    def _is_structured_jtp3_batch(self, item: Any) -> bool:
-        try:
-            from vibe.plugins.jtp_hydra.jtp_hydra_modelplugin import JTPHydraBatch
-        except Exception:
-            JTPHydraBatch = None  # ty:ignore[invalid-assignment]
-
-        if JTPHydraBatch is not None and isinstance(item, JTPHydraBatch):
-            return True
-
-        return all(hasattr(item, field) for field in ("patches", "sizes"))
-
-    def _split_batch_output(self, raw_output: Any, expected: int) -> list[Any]:
-        shape = getattr(raw_output, "shape", None)
-        ndim = getattr(raw_output, "ndim", None)
-
-        if ndim == 0:
-            return [raw_output for _ in range(expected)]
-
-        if shape is not None and len(shape) > 0 and shape[0] == expected:
-            return [raw_output[i : i + 1] for i in range(expected)]
-
-        if expected == 1:
-            return [raw_output]
-
-        try:
-            arr = np.asarray(raw_output)
-        except Exception as exc:
-            raise SessionError(
-                f"Backend output batch dimension mismatch: expected {expected}, got unknown output type."
-            ) from exc
-
-        if arr.ndim == 0:
-            return [arr for _ in range(expected)]
-        if arr.shape[0] == expected:
-            return [arr[i : i + 1] for i in range(expected)]
-        logger.error(
-            "Backend output batch mismatch model_id=%s expected=%s actual_shape=%s",
-            self.model_id,
-            expected,
-            arr.shape,
-        )
-        raise SessionError(f"Backend output batch dimension mismatch: expected {expected}, got {arr.shape}.")
-
-    def _apply_processors(
-        self,
-        result: ModelResult,
-        result_processors: list[ResultProcessor] | None = None,
-    ) -> ModelResult:
-        if not result_processors:
-            return result
-
-        # Pull CleanTags to the end if present, regardless of input order.
-        effective_processors: list[ResultProcessor] = []
-        cleanup_processors: list[CleanTags] = []
-
-        for rp in result_processors:
-            if isinstance(rp, CleanTags):
-                cleanup_processors.append(rp)
-            else:
-                effective_processors.append(rp)
-
-        effective_processors.extend(cleanup_processors)
-
-        current = result
-        for result_processor in effective_processors:
-            if not any(isinstance(result_processor, supported) for supported in self._plugin.supported_processors):
-                proc_name = result_processor.__class__.__name__
-                self._processor_context.warn_once(
-                    f"unsupported-processor:{proc_name}",
-                    f"Processor '{proc_name}' is not declared as supported by model '{self.model_id}'; "
-                    "attempting to apply anyway.",
-                )
-
-            try:
-                current = result_processor.process(
-                    current,
-                    context=self._processor_context,
-                )
-            except Exception as exc:
-                raise SessionError(
-                    f"Result processor '{result_processor.__class__.__name__}' failed for model '{self.model_id}': {exc}"
-                ) from exc
-        return current
 
     # endregion Primary Interface
 
@@ -753,7 +418,7 @@ class ModelSession:
 
     @property
     def model_id(self) -> str:
-        return self._plugin.model_id
+        return self._plugin.identity.model_id
 
     @property
     def plugin(self) -> ModelPlugin:
@@ -767,20 +432,18 @@ class ModelSession:
     def source(self) -> str:
         return self._source
 
-    def describe(self) -> dict[str, Any]:
-        # todo: rename this func?
-        """Full description of this session (model_id, display_name, backend, source, output_type)."""
-        return {
-            "model_id": self.model_id,
-            "display_name": self._plugin.display_name,
-            "backend": self._backend.value,
-            "source": self._source,
-            "output_type": self._plugin.output_type.value,
-        }
+    def apply_transforms(self, result: ModelResult, transforms: list[ResultTransform]) -> ModelResult:
+        """
+        Manually apply a list of transforms to an existing result.
+        """
+        if self._closed:
+            raise SessionError("Cannot apply transforms: Session is closed.")
+        self._pipeline.notify_infer_start(transforms)
+        return self._pipeline.apply(result, transforms)
 
     def close(self) -> None:
         """Release runtime resources for this session."""
-        with self._inference_lock:
+        with self._state.lock:
             if self._closed:
                 return
 
@@ -792,12 +455,10 @@ class ModelSession:
                 except Exception:
                     logger.exception("Failed to release pooled backend for model '%s'.", self.model_id)
             else:
-                close_fn = getattr(self._backend_instance, "close", None)
-                if callable(close_fn):
-                    try:
-                        close_fn()
-                    except Exception:
-                        logger.exception("Failed to close backend for model '%s'.", self.model_id)
+                try:
+                    self._backend_instance.close()
+                except Exception:
+                    logger.exception("Failed to close backend for model '%s'.", self.model_id)
 
             self._closed = True
             logger.debug("Session closed model_id=%s backend=%s", self.model_id, self._backend.value)
@@ -822,11 +483,16 @@ class ModelSession:
         """Clear aggregated session memory telemetry counters."""
         self._memory_tracker.reset()
 
-    def __enter__(self) -> ModelSession:
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        del exc_type, exc, tb
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        del exc_type, exc_val, exc_tb
         self.close()
 
     def __del__(self) -> None:
@@ -834,9 +500,9 @@ class ModelSession:
             return
         try:
             self.close()
-        except Exception:
-            # Avoid noisy teardown failures at interpreter shutdown.
-            pass
+        except Exception as exc:
+            # Log teardown failures at debug level to avoid try-except-pass anti-pattern
+            logger.debug("Ignored exception during session teardown in __del__: %s", exc)
 
     def __repr__(self) -> str:
         return f"ModelSession(model_id={self.model_id!r}, backend={self._backend.value!r})"

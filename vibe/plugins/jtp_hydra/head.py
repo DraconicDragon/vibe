@@ -8,7 +8,7 @@ from torch.nested import nested_tensor_from_jagged
 from torch.nn import Module, Parameter, init
 from torch.nn.functional import normalize, silu
 
-__all__ = ("LinearHead", "SwiGLUHead", "SSMPool")
+__all__ = ("ExtremumPool", "LinearHead", "SwiGLUHead")
 
 
 class BatchLinear(Module):

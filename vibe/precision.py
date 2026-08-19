@@ -1,24 +1,62 @@
+"""Runtime precision definitions and parsing."""
+
 from __future__ import annotations
 
-from typing import Final
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 
-_VALID_PRECISIONS: Final[set[str]] = {"auto", "fp32", "fp16", "bf16", "int8_ov"}
+
+class PrecisionPolicy(str, Enum):
+    """Explicit policies for computation and weight precision."""
+
+    AUTO = "auto"
+    PRESERVE = "preserve"
+    FP32 = "fp32"
+    FP16 = "fp16"
+    BF16 = "bf16"
 
 
-def normalize_precision_string(precision: str | None) -> str:
-    """Normalize user precision selector into a canonical value."""
-    value = str("auto" if precision is None else precision).strip().lower()
-    if not value:
-        return "auto"
+@dataclass(frozen=True)
+class PrecisionRequest:
+    """A structured request separating how weights and computation should be handled."""
 
-    aliases = {
-        "float32": "fp32",
-        "float16": "fp16",
-        "bfloat16": "bf16",
-        "ov": "int8_ov",
-    }
-    value = aliases.get(value, value)
+    weight: PrecisionPolicy
+    compute: PrecisionPolicy
+    fallback_allowed: bool = True
 
-    if value not in _VALID_PRECISIONS:
-        raise ValueError(f"Unsupported precision '{precision}'. Choose from: {sorted(_VALID_PRECISIONS)}")
-    return value
+
+@dataclass(frozen=True)
+class ResolvedPrecisionPlan:
+    """The actual precision strategy decided by the backend during load."""
+
+    weight_dtype: str
+    compute_dtype: str
+    autocast_enabled: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "weight_dtype": self.weight_dtype,
+            "compute_dtype": self.compute_dtype,
+            "autocast_enabled": self.autocast_enabled,
+        }
+
+
+def parse_precision(precision: str | PrecisionRequest | None) -> PrecisionRequest:
+    """Normalize user precision selector into a canonical PrecisionRequest."""
+    if isinstance(precision, PrecisionRequest):
+        return precision
+
+    value = str(precision or "auto").strip().lower()
+
+    if not value or value == "auto":
+        # Auto means: do not aggressively cast weights, but use autocast compute if hardware supports it
+        return PrecisionRequest(weight=PrecisionPolicy.PRESERVE, compute=PrecisionPolicy.AUTO)
+
+    try:
+        policy = PrecisionPolicy(value)
+        # Explicit strings like "fp16" mean: cast weights AND use fp16 compute
+        return PrecisionRequest(weight=policy, compute=policy)
+    except ValueError:
+        valid = [p.value for p in PrecisionPolicy if p not in (PrecisionPolicy.AUTO, PrecisionPolicy.PRESERVE)]
+        raise ValueError(f"Unsupported precision '{precision}'. Choose from: auto, {valid}") from None

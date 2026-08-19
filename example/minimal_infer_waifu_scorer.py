@@ -1,7 +1,5 @@
 import logging
 
-from PIL import Image
-
 import vibe
 
 logging.basicConfig(
@@ -11,21 +9,25 @@ logging.basicConfig(
 )
 logging.getLogger("vibe").setLevel(logging.WARNING)
 
-MLP_SOURCE = "/mnt/T7/Projects/GitHub/vibe/models/waifu-scorer-v3"
-CLIP_SOURCE = "/mnt/T7/Projects/GitHub/vibe/models/clip-vit-large-patch14"
+MLP_SOURCE = "/home/drac/dev/models/seperate/waifu-scorer-v3/"
+CLIP_SOURCE = "/home/drac/dev/models/seperate/clip-vit-large-patch14/"
 
 with vibe.load(
     "waifu-scorer-v3",
+    source=MLP_SOURCE,
     source_map={
-        "Eugeoter/waifu-scorer-v3": MLP_SOURCE,
-        "openai/clip-vit-large-patch14": CLIP_SOURCE,
+        "clip_weights": CLIP_SOURCE,
+        "clip_config": CLIP_SOURCE,
+        "clip_preprocessor": CLIP_SOURCE,
     },
     auto_download=False,
 ) as session:
-    inference_result = session.infer(
-        Image.open("example/example.jpg"),
-        result_processors=[vibe.NormalizedScore()],
-    )
+    # vibe can now directly accept file paths (string or Path)
+    inference_result = session.infer("example/example.jpg")
 
-    print(inference_result.items[0].result.score)
-    print("Normalized:", inference_result.items[0].result.normalized_score)
+    # Access the result using the .first() helper
+    result = inference_result.first()
+
+    # ScoreResult includes raw score and normalized_score out of the box
+    print("Raw Score:", result.score)
+    print("Normalized:", result.normalized_score)

@@ -1,64 +1,61 @@
 """
 vibe — vision transformer inference backend.
-
-# todo: change
-
-Quick start
------------
-    import vibe
-
-    # Load a registered model (downloads from HF automatically)
-    session = vibe.load("wd-eva02-large-v3")
-    result = session.infer(image).first()
-    print([entry.tag for entry in result.tags["general"][:5]])
-
-    # Batch processing: infer returns InferenceResult with multiple items
-    results = session.infer([image1, image2, image3])
-    for item in results:
-        print(f"Input {item.index}: {[entry.tag for entry in item.result.tags['general'][:3]]}")
-
-    # Use a local folder instead of HF
-    session = vibe.load("wd-eva02-large-v3", source="local:/path/to/folder")
-
-    # Custom: arbitrary source with a chosen plugin
-    session = vibe.load_custom(
-        source="hf:SmilingWolf/wd-eva02-large-tagger-v3-updated", # doesn't exist, just example
-        plugin="WDEva02Plugin",
-    )
-
-    # Inspect available models
-    vibe.list_models()
-    vibe.describe("wd-eva02-large-v3")
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
-from typing import Mapping
 
-from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin, ModelPluginInfo
-from vibe.devices import list_available_devices
+from vibe.backends.base import (
+    ArtifactMap,
+    ArtifactSpec,
+    Backend,
+    ExecutionPlan,
+    ExecutionPreference,
+    FileRole,
+    HardwareIntent,
+    ModelCapabilities,
+    ModelDescriptor,
+    ModelIdentity,
+    ModelPlugin,
+    ModelVariant,
+)
+from vibe.exceptions import InferenceCancelled, RegistryError, SessionError, TransformError
+from vibe.features import (
+    FeatureSpec,
+    InferenceRequest,
+    OptionScope,
+    OptionSpec,
+    ValueSchema,
+    compile_features,
+    transform_meta,
+)
+from vibe.hardware import list_available_devices
 from vibe.hf_downloader import (
     get_auto_download_default,
     set_auto_download_default,
 )
 from vibe.image_loading import ImageChunk, iter_load_images
+from vibe.loader import (
+    ArtifactAvailability,
+    ModelAvailability,
+    VariantAvailability,
+    inspect_variant_artifacts,
+)
 from vibe.memory_stats import (
     InferenceMemoryRecord,
     MemorySnapshot,
     MemoryTrackerStats,
 )
-from vibe.precision import normalize_precision_string
-from vibe.registry import ModelRegistry, RegistryError, _make_auto_register_hook
-from vibe.result_processors import (
+from vibe.precision import PrecisionPolicy, PrecisionRequest, ResolvedPrecisionPlan, parse_precision
+from vibe.registry import model_registry, transform_registry
+from vibe.result_transforms import (
     CharacterIPMapping,
     CleanTags,
-    MultiScoreToScore,
-    NormalizedScore,
-    ProcessorInfo,
-    ResultProcessor,
+    ResultTransform,
     ScoreThresholds,
     TagLevelThresholds,
 )
@@ -75,7 +72,7 @@ from vibe.results import (
     is_score_result,
     is_tag_result,
 )
-from vibe.session import ModelSession, SessionError
+from vibe.session import ModelSession
 from vibe.session_factory import build_session
 
 logger = logging.getLogger(__name__)
@@ -89,30 +86,73 @@ except PackageNotFoundError:
 __author__ = "Drac"
 __license__ = "MIT"
 
-# region Global Registry
-
-model_registry: ModelRegistry = ModelRegistry()
-
-# Wire up auto-registration: whenever a ModelPlugin subclass is defined
-# (i.e. when a plugin module is imported), it registers itself.
-_auto_register = _make_auto_register_hook(model_registry)
-_original_init_subclass = ModelPlugin.__init_subclass__.__func__
-
-
-def _patched_init_subclass(cls, **kwargs):
-    _original_init_subclass(cls, **kwargs)
-    _auto_register(cls)
-
-
-ModelPlugin.__init_subclass__ = classmethod(_patched_init_subclass)  # type: ignore[assignment]
-
-# Discover and register all built-in plugins
-model_registry.discover_all()
-
-# endregion Global Registry
-
 
 # region API
+
+
+def _load_internal(
+    plugin_cls: type[ModelPlugin],
+    source: str | None,
+    source_map: Mapping[str, str] | None,
+    backend: str | Backend | None,
+    variant: str | None,
+    device: str,
+    precision: str | PrecisionRequest,
+    hf_revision: str | None,
+    hf_cache_dir: str | None,
+    onnx_providers: list[str] | None,
+    hf_token: str | None,
+    auto_download: bool | None,
+    file_name_map: Mapping[str, str] | None,
+    memory_tracking: bool,
+    is_custom: bool,
+) -> ModelSession:
+    effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
+    precision_request = parse_precision(precision)
+    resolved_source = _resolve_source(source, plugin_cls)
+
+    if is_custom:
+        logger.info("Loading custom plugin '%s' from '%s'", plugin_cls.__name__, resolved_source)
+        logger.debug(
+            "Load custom options source=%s backend=%s variant=%s device=%s auto_download=%s memory_tracking=%s",
+            resolved_source,
+            backend.value if isinstance(backend, Backend) else backend or "auto",
+            variant or "(default)",
+            device,
+            effective_auto_download,
+            memory_tracking,
+        )
+    else:
+        logger.info("Loading model '%s' from '%s'", plugin_cls.identity.model_id, resolved_source)
+        logger.debug(
+            "Load options plugin=%s source=%s backend=%s variant=%s device=%s auto_download=%s memory_tracking=%s",
+            plugin_cls.__name__,
+            resolved_source,
+            backend.value if isinstance(backend, Backend) else backend or "auto",
+            variant or "(default)",
+            device,
+            effective_auto_download,
+            memory_tracking,
+        )
+
+    logger.debug("Load precision request=%s", precision_request)
+
+    return build_session(
+        plugin_cls=plugin_cls,
+        source=resolved_source,
+        source_map=source_map,
+        backend=backend,
+        variant=variant,
+        device=device,
+        precision=precision_request,
+        onnx_providers=onnx_providers,
+        hf_token=hf_token,
+        hf_revision=hf_revision,
+        hf_cache_dir=hf_cache_dir,
+        auto_download=effective_auto_download,
+        file_name_map=file_name_map,
+        memory_tracking=memory_tracking,
+    )
 
 
 def load(
@@ -121,11 +161,13 @@ def load(
     source: str | None = None,
     source_map: Mapping[str, str] | None = None,
     backend: str | Backend | None = None,
+    variant: str | None = None,
     device: str = "auto",
-    precision: str = "auto",
+    precision: str | PrecisionRequest = "auto",
+    onnx_providers: list[str] | None = None,
+    hf_token: str | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
-    onnx_providers: list[str] | None = None,
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = False,
@@ -179,40 +221,25 @@ def load(
         RegistryError:  If the model name is not recognised.
         SessionError:   If loading fails (missing files, bad backend, etc.).
     """
+    model_registry.ensure_discovered()
+
     plugin_cls = model_registry.get(model)
-    effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
-    normalized_precision = normalize_precision_string(precision)
-
-    resolved_source = _resolve_source(
-        source,
-        plugin_cls,
-    )
-
-    logger.info("Loading model '%s' from '%s'", model, resolved_source)
-    logger.debug(
-        "Load options plugin=%s source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
-        plugin_cls.__name__,
-        resolved_source,
-        backend.value if isinstance(backend, Backend) else backend or "auto",
-        device,
-        effective_auto_download,
-        memory_tracking,
-    )
-    logger.debug("Load precision request=%s normalized=%s", precision, normalized_precision)
-
-    return build_session(
+    return _load_internal(
         plugin_cls=plugin_cls,
-        source=resolved_source,
+        source=source,
         source_map=source_map,
         backend=backend,
+        variant=variant,
         device=device,
-        precision=normalized_precision,
+        precision=precision,
         onnx_providers=onnx_providers,
+        hf_token=hf_token,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
-        auto_download=effective_auto_download,
+        auto_download=auto_download,
         file_name_map=file_name_map,
         memory_tracking=memory_tracking,
+        is_custom=False,
     )
 
 
@@ -222,11 +249,13 @@ def load_custom(
     source_map: Mapping[str, str] | None = None,
     plugin: str,
     backend: str | Backend | None = None,
+    variant: str | None = None,
     device: str = "auto",
-    precision: str = "auto",
+    precision: str | PrecisionRequest = "auto",
+    onnx_providers: list[str] | None = None,
+    hf_token: str | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
-    onnx_providers: list[str] | None = None,
     auto_download: bool | None = None,
     file_name_map: Mapping[str, str] | None = None,
     memory_tracking: bool = False,
@@ -266,59 +295,123 @@ def load_custom(
             plugin="WDEva02Plugin",
         )
     """
+    model_registry.ensure_discovered()
     plugin_cls = model_registry.get_by_class_name(plugin)
-    effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
-    normalized_precision = normalize_precision_string(precision)
-    resolved_source = _resolve_source(
-        source,
-        plugin_cls,
-    )
-
-    logger.info("Loading custom plugin '%s' from '%s'", plugin_cls.__name__, resolved_source)
-    logger.debug(
-        "Load custom options source=%s backend=%s device=%s auto_download=%s memory_tracking=%s",
-        resolved_source,
-        backend.value if isinstance(backend, Backend) else backend or "auto",
-        device,
-        effective_auto_download,
-        memory_tracking,
-    )
-    logger.debug("Load custom precision request=%s normalized=%s", precision, normalized_precision)
-
-    return build_session(
+    return _load_internal(
         plugin_cls=plugin_cls,
-        source=resolved_source,
+        source=source,
         source_map=source_map,
         backend=backend,
+        variant=variant,
         device=device,
-        precision=normalized_precision,
+        precision=precision,
         onnx_providers=onnx_providers,
+        hf_token=hf_token,
         hf_revision=hf_revision,
         hf_cache_dir=hf_cache_dir,
-        auto_download=effective_auto_download,
+        auto_download=auto_download,
         file_name_map=file_name_map,
         memory_tracking=memory_tracking,
+        is_custom=True,
     )
 
 
 def list_models() -> list[str]:
     """Return a sorted list of all registered model IDs."""
+    model_registry.ensure_discovered()
+
     return model_registry.list_model_ids()
 
 
 def list_plugin_classes() -> list[str]:
     """Return the class names of all registered plugins (for load_custom)."""
+    model_registry.ensure_discovered()
+
     return model_registry.list_plugin_classes()
 
 
-def describe(model: str) -> ModelPluginInfo:
+def describe(model: str) -> ModelDescriptor:
     """Return typed model metadata for a model ID."""
+    model_registry.ensure_discovered()
+
     return model_registry.get(model).describe()
 
 
-def describe_all() -> list[ModelPluginInfo]:
+def describe_all() -> list[ModelDescriptor]:
     """Return typed metadata objects for all registered models."""
+    model_registry.ensure_discovered()
+
     return model_registry.list_all()
+
+
+def check_availability(
+    model: str,
+    *,
+    source: str | None = None,
+    variant: str | None = None,
+    source_map: Mapping[str, str] | None = None,
+    file_name_map: Mapping[str, str] | None = None,
+    hf_revision: str | None = None,
+    hf_cache_dir: str | None = None,
+    hf_token: str | None = None,
+) -> ModelAvailability:
+    """
+    Check if a model's required files are already present on disk or in HF cache without downloading.
+
+    Args:
+        model:         Model ID (e.g. "wd-eva02-large-v3").
+        source:        Source string (e.g. "local:/path", "hf:owner/repo", or None for default repo).
+        variant:       Optional variant ID filter.
+        source_map:    Optional per-artifact source overrides.
+        file_name_map: Optional filename remappings.
+        hf_revision:   HF repo revision.
+        hf_cache_dir:  Override HF cache directory.
+        hf_token:      HF access token.
+
+    Returns:
+        ModelAvailability summary detailing presence/absence of all artifacts per variant.
+    """
+    model_registry.ensure_discovered()
+
+    plugin_cls = model_registry.get(model)
+    resolved_source = _resolve_source(source, plugin_cls)
+
+    variants_to_check = plugin_cls.variants
+    if variant is not None:
+        matched = [v for v in plugin_cls.variants if v.variant_id == variant]
+        if not matched:
+            available = [v.variant_id for v in plugin_cls.variants if v.variant_id]
+            raise RegistryError(f"Model '{model}' has no variant '{variant}'. Available variants: {available}")
+        variants_to_check = tuple(matched)
+
+    variant_statuses: list[VariantAvailability] = []
+
+    for v in variants_to_check:
+        resolved_v = v.resolve(plugin_cls.default_repo_id)
+        artifact_statuses = inspect_variant_artifacts(
+            source=resolved_source,
+            variant=resolved_v,
+            revision=hf_revision,
+            cache_dir=hf_cache_dir,
+            file_name_map=file_name_map,
+            source_map=source_map,
+            token=hf_token,
+        )
+        variant_ok = all(art.is_available for art in artifact_statuses if art.required)
+        variant_statuses.append(
+            VariantAvailability(
+                variant_id=v.variant_id,
+                backend=v.backend,
+                is_available=variant_ok,
+                artifacts=artifact_statuses,
+            )
+        )
+
+    return ModelAvailability(
+        model_id=plugin_cls.identity.model_id,
+        is_available=any(v.is_available for v in variant_statuses),
+        variants=variant_statuses,
+    )
 
 
 # endregion API
@@ -332,13 +425,11 @@ def _resolve_source(
     plugin_cls: type[ModelPlugin],
 ) -> str:
     if source is None:
-        if plugin_cls.default_hf_repo is None:
+        if getattr(plugin_cls, "custom_only", False):
             raise SessionError(
-                f"Model '{plugin_cls.model_id}' has no default HF repo. "
-                f"Provide a source explicitly: "
-                f"vibe.load('{plugin_cls.model_id}', source=...)"
+                f"Model '{plugin_cls.identity.model_id}' has no default source; use load_custom() with an explicit source."
             )
-        return f"hf:{plugin_cls.default_hf_repo}"
+        return f"hf:{plugin_cls.default_repo_id}"
 
     normalized = source.strip()
     if not normalized:
@@ -346,99 +437,89 @@ def _resolve_source(
     return normalized
 
 
-# endregion Helpers
+def list_transforms() -> list[FeatureSpec]:
+    """Return metadata for all registered result transforms as feature specs."""
+    model_registry.ensure_discovered()
+    return transform_registry.list_all()
 
 
-# region Utils
-# todo: move out in future
+def get_transform(transform_id: str) -> type[ResultTransform]:
+    """Return a registered result-transform class by its string ID."""
+    model_registry.ensure_discovered()
+    return transform_registry.get(transform_id)
 
 
-def list_processors() -> list[ProcessorInfo]:
-    "Return metadata in form of ProcessorInfo for all available result processor classes in the library."
-    import vibe.result_processors as rp
+# endregion
 
-    return [
-        cls.describe()
-        for cls in vars(rp).values()
-        if isinstance(cls, type)
-        and issubclass(cls, rp.ResultProcessor)
-        and cls is not rp.ResultProcessor
-        and hasattr(cls, "_processor_info")  # only classes that completed __init_subclass__
-    ]
-
-
-def get_processor(name: str) -> type[ResultProcessor]:
-    """Return a result processor class by its class name in form of a string."""
-    import vibe.result_processors as rp
-
-    cls = getattr(rp, name, None)
-    if cls is None or not (isinstance(cls, type) and issubclass(cls, rp.ResultProcessor)):
-        available = [
-            c.__name__
-            for c in vars(rp).values()
-            if isinstance(c, type) and issubclass(c, rp.ResultProcessor) and c is not rp.ResultProcessor
-        ]
-        raise RegistryError(f"No processor named '{name}'. Available: {available}")
-    return cls
-
-
-# endregion Utils
-
-# region Public re-Exports
-# for users doing from vibe import ...
 
 __all__ = [
-    # Core objects
-    "ModelSession",
-    "ModelPlugin",
-    "FileSpec",
-    "FileRole",
+    "ArtifactAvailability",
+    "ArtifactMap",
+    "ArtifactSpec",
     "Backend",
-    "ModelPluginInfo",
-    "MemorySnapshot",
-    "InferenceMemoryRecord",
-    "MemoryTrackerStats",
-    # Results
-    "TagResult",
-    "TagEntry",
-    "ScoreResult",
-    "MultiScoreResult",
-    "OutputType",
-    "ModelResult",
-    "InferenceResultItem",
-    "InferenceResult",
-    "is_tag_result",
-    "is_score_result",
-    "is_multi_score_result",
-    "ImageChunk",
-    "iter_load_images",
-    # Processors
-    "ResultProcessor",
-    "CleanTags",
     "CharacterIPMapping",
-    "ScoreThresholds",
-    "TagLevelThresholds",
-    "MultiScoreToScore",
-    "NormalizedScore",
-    # Registry
-    "model_registry",
+    "CleanTags",
+    "ExecutionPlan",
+    "ExecutionPreference",
+    "FeatureSpec",
+    "FileRole",
+    "HardwareIntent",
+    "ImageChunk",
+    "InferenceCancelled",
+    "InferenceMemoryRecord",
+    "InferenceRequest",
+    "InferenceResult",
+    "InferenceResultItem",
+    "MemorySnapshot",
+    "MemoryTrackerStats",
+    "ModelAvailability",
+    "ModelCapabilities",
+    "ModelDescriptor",
+    "ModelIdentity",
+    "ModelPlugin",
+    "ModelResult",
+    "ModelSession",
+    "ModelVariant",
+    "MultiScoreResult",
+    "OptionScope",
+    "OptionSpec",
+    "OutputType",
+    "PrecisionPolicy",
+    "PrecisionRequest",
     "RegistryError",
+    "ResolvedPrecisionPlan",
+    "ResultTransform",
+    "ScoreResult",
+    "ScoreThresholds",
     "SessionError",
-    # API
-    "__version__",
+    "TagEntry",
+    "TagLevelThresholds",
+    "TagResult",
+    "TransformError",
+    "ValueSchema",
+    "VariantAvailability",
     "__author__",
     "__license__",
-    "load",
-    "load_custom",
-    "list_models",
-    "list_available_devices",
-    "list_plugin_classes",
+    "__version__",
+    "check_availability",
+    "compile_features",
     "describe",
     "describe_all",
-    "set_auto_download_default",
     "get_auto_download_default",
-    "normalize_precision_string",
+    "get_transform",
+    "is_multi_score_result",
+    "is_score_result",
+    "is_tag_result",
+    "iter_load_images",
+    "list_available_devices",
+    "list_models",
+    "list_plugin_classes",
+    "list_transforms",
+    "load",
+    "load_custom",
+    "model_registry",
+    "parse_precision",
+    "set_auto_download_default",
+    "transform_meta",
+    "transform_registry",
 ]
-
-
-# endregion Public re-Exports

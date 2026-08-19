@@ -5,15 +5,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from vibe.exceptions import HFDownloadError
+
 AUTO_DOWNLOAD_DEFAULT = True
 logger = logging.getLogger(__name__)
 
 
 # region Policy
-
-
-class HFDownloadError(Exception):
-    """Raised when a HuggingFace download/cached lookup cannot be satisfied."""
 
 
 def _response_status_code(exc: Exception) -> int | None:
@@ -72,6 +70,7 @@ def download_or_cached(
     cache_dir: str | None = None,
     allow_download: bool | None = None,
     required: bool = True,
+    token: str | None = None,
 ) -> Path | None:
     """
     Resolve file from HF cache, optionally downloading when permitted.
@@ -89,6 +88,7 @@ def download_or_cached(
         cache_dir=cache_dir,
         allow_download=allow_download,
         required=required,
+        token=token,
     )
     return resolved
 
@@ -101,6 +101,7 @@ def download_or_cached_with_reason(
     cache_dir: str | None = None,
     allow_download: bool | None = None,
     required: bool = True,
+    token: str | None = None,
 ) -> tuple[Path | None, str | None]:
     """Resolve file from HF with optional reason string for unresolved optional files."""
     try:
@@ -149,6 +150,7 @@ def download_or_cached_with_reason(
             filename=filename,
             revision=revision,
             cache_dir=cache_dir,
+            token=token,
         )
         logger.debug("Downloaded HF file repo='%s' file='%s'", repo_id, filename)
         return Path(resolved), None
@@ -163,22 +165,11 @@ def download_or_cached_with_reason(
             raise HFDownloadError(f"File '{filename}' not available in local cache for '{repo_id}'.") from None
         return None, reason
     except RepositoryNotFoundError as exc:
-        status_code = _response_status_code(exc)
-        if status_code in {401, 403}:
-            reason = f"repo '{repo_id}' is private or gated and access was denied"
-            if not required:
-                return None, reason
-            raise HFDownloadError(
-                f"HuggingFace repo '{repo_id}' is private or gated and access was denied. "
-                "Check your token and repo permissions."
-            ) from None
-
-        reason = f"repo '{repo_id}' was not found"
+        reason = _format_hf_access_error(repo_id, filename, exc)
         if not required:
             return None, reason
-        raise HFDownloadError(f"HuggingFace repo '{repo_id}' was not found. Check repo ID and connectivity.") from None
+        raise HFDownloadError(reason) from None
     except HfHubHTTPError as exc:
-        status_code = _response_status_code(exc)
         reason = _format_hf_access_error(repo_id, filename, exc)
         if not required:
             return None, reason

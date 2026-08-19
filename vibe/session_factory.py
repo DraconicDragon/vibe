@@ -4,29 +4,124 @@ from __future__ import annotations
 
 import logging
 import threading
-from pathlib import Path
-from typing import Any, Callable, Mapping
+import time
+from collections.abc import Callable, Mapping
+from typing import Any
 
-from vibe.backends.base import Backend, ModelPlugin
-from vibe.devices import normalize_device_string
+from vibe.backends.base import (
+    ArtifactMap,
+    Backend,
+    ExecutionPlan,
+    ExecutionPreference,
+    HardwareIntent,
+    ModelPlugin,
+    ModelVariant,
+    RuntimeExecutor,
+)
+from vibe.exceptions import LoaderError, SessionError
 from vibe.hf_downloader import get_auto_download_default
-from vibe.loader import FileMap, resolve_from_sources
-from vibe.precision import normalize_precision_string
-from vibe.session import ModelSession, SessionError
+from vibe.loader import resolve_variant_artifacts
+from vibe.precision import PrecisionPolicy, PrecisionRequest, parse_precision
+from vibe.session import ModelSession
 
 logger = logging.getLogger(__name__)
 
-_BACKEND_POOL_LOCK = threading.RLock()
-_BACKEND_POOL: dict[tuple[Any, ...], tuple[Any, int]] = {}
+_RUNTIME_POOL_LOCK = threading.RLock()
+_RUNTIME_POOL: dict[tuple[Any, ...], tuple[RuntimeExecutor, int]] = {}
+_LOADING_LOCKS: dict[tuple[Any, ...], threading.Lock] = {}
+
+
+def _resolve_backend_candidates(
+    plugin_cls: type[ModelPlugin],
+    requested_backend: Backend | str | None,
+    preference: ExecutionPreference,
+) -> list[Backend]:
+    """Returns a prioritized list of backends to try."""
+    supported = [v.backend for v in plugin_cls.variants]
+
+    if requested_backend is not None:
+        if isinstance(requested_backend, str):
+            try:
+                selected = Backend(requested_backend.lower())
+            except ValueError:
+                valid = [b.value for b in supported]
+                raise SessionError(f"Unknown backend '{requested_backend}'. Choose from: {valid}") from None
+        else:
+            selected = requested_backend
+
+        if selected not in supported:
+            raise SessionError(
+                f"Model '{plugin_cls.identity.model_id}' does not support backend '{selected.value}'. "
+                f"Supported: {[b.value for b in supported]}"
+            )
+        return [selected]
+
+    onnx_ok, onnx_accel = _onnx_runtime_capabilities()
+    torch_ok, torch_accel = _pytorch_runtime_capabilities()
+
+    # Map available backends to whether they have GPU/accelerator support
+    available: dict[Backend, bool] = {}
+    if Backend.PYTORCH in supported and torch_ok:
+        available[Backend.PYTORCH] = torch_accel
+    if Backend.ONNX in supported and onnx_ok:
+        available[Backend.ONNX] = onnx_accel
+
+    if not available:
+        raise SessionError(
+            f"No supported backend available for model '{plugin_cls.identity.model_id}'. "
+            f"Checked PyTorch (installed={torch_ok}), ONNX Runtime (installed={onnx_ok})."
+        )
+
+    # Fail hard if an accelerator was explicitly requested but no GPU acceleration is active in any runtime
+    if preference.intent == HardwareIntent.ACCELERATOR and not any(available.values()):
+        device_str = preference.hint or "accelerator"
+        diag = [
+            f"PyTorch (installed={torch_ok}, accelerator={torch_accel})",
+            f"ONNX Runtime (installed={onnx_ok}, accelerator={onnx_accel})",
+        ]
+        logger.error(
+            "Accelerator device '%s' requested for model '%s', but no backend has accelerator support: %s",
+            device_str,
+            plugin_cls.identity.model_id,
+            ", ".join(diag),
+        )
+        raise SessionError(
+            f"Accelerator device '{device_str}' explicitly requested, but no active GPU/accelerator support was found. "
+            f"Backend capabilities: {', '.join(diag)}."
+        )
+
+    if len(available) == 1:
+        return list(available.keys())
+
+    # Framework-specific hints force a preferred ordering
+    if preference.hint in {"mps", "xpu"}:
+        return [Backend.PYTORCH, Backend.ONNX]
+    if preference.hint in {"rocm", "dml", "openvino"}:
+        return [Backend.ONNX, Backend.PYTORCH]
+
+    # If accelerator requested, prefer the backend that actually has GPU acceleration available
+    if preference.intent == HardwareIntent.ACCELERATOR:
+        pytorch_accel = available[Backend.PYTORCH]
+        onnx_accel = available[Backend.ONNX]
+
+        if pytorch_accel and not onnx_accel:
+            return [Backend.PYTORCH, Backend.ONNX]
+        if onnx_accel and not pytorch_accel:
+            return [Backend.ONNX, Backend.PYTORCH]
+
+    # Default preference when capabilities are equivalent (PyTorch preferred)
+    return [Backend.PYTORCH, Backend.ONNX]
 
 
 def build_session(
     plugin_cls: type[ModelPlugin],
     source: str,
     backend: Backend | str | None = None,
+    variant: str | None = None,
     device: str = "auto",
-    precision: str = "auto",
+    precision: str | PrecisionRequest = "auto",
     onnx_providers: list[str] | None = None,
+    hf_token: str | None = None,
     hf_revision: str | None = None,
     hf_cache_dir: str | None = None,
     auto_download: bool | None = None,
@@ -34,420 +129,219 @@ def build_session(
     source_map: Mapping[str, str] | None = None,
     memory_tracking: bool = False,
 ) -> ModelSession:
-    """
-    Build a ModelSession from a plugin class and a file source.
+    """Build a ModelSession from a plugin class and a file source."""
+    started_at = time.perf_counter()
+    model_id = plugin_cls.identity.model_id
 
-    This is called by vibe.load() - you don't usually call this directly.
-    """
-    from vibe.backends.runtime.onnx import ONNXBackend
-    from vibe.backends.runtime.pytorch import PyTorchBackend
-
-    logger.debug(
-        "Building session model_id=%s requested_backend=%s requested_device=%s requested_precision=%s source=%s",
-        plugin_cls.model_id,
-        backend.value if isinstance(backend, Backend) else backend or "auto",
-        device,
-        precision,
-        source,
-    )
-
-    backend_was_explicit = backend is not None
-    if backend is None:
-        selected_backend = _auto_select_backend(plugin_cls, requested_device=device)
-    elif isinstance(backend, str):
-        try:
-            selected_backend = Backend(backend.lower())
-        except ValueError:
-            raise SessionError(f"Unknown backend '{backend}'. Choose from: {[b.value for b in Backend]}")
-    else:
-        selected_backend = backend
-
-    if selected_backend not in plugin_cls.supported_backends:
-        raise SessionError(
-            f"Model '{plugin_cls.model_id}' does not support backend '{selected_backend.value}'. "
-            f"Supported: {[b.value for b in plugin_cls.supported_backends]}"
-        )
-
-    backend_candidates = [selected_backend]
-    if not backend_was_explicit:
-        backend_candidates.extend([b for b in plugin_cls.supported_backends if b != selected_backend])
+    try:
+        preference = ExecutionPreference.parse(device)
+        precision_req = parse_precision(precision)
+    except ValueError as exc:
+        raise SessionError(str(exc)) from exc
 
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
-    logger.debug("Session auto_download=%s", effective_auto_download)
-    source_is_unprefixed_local_dir = _is_unprefixed_local_dir_source(source)
 
-    auto_resolution_failures: list[tuple[Backend, str]] = []
+    # 1. Resolve which variants to try
+    variants_to_try: list[ModelVariant] = []
+    if variant is not None:
+        target_variant = next((v for v in plugin_cls.variants if v.variant_id == variant), None)
+        if not target_variant:
+            available = [v.variant_id for v in plugin_cls.variants if v.variant_id]
+            raise SessionError(f"Model '{model_id}' has no variant '{variant}'. Available variants: {available}")
 
-    resolve_plan: list[tuple[bool, bool]] = []
-    if not backend_was_explicit and source_is_unprefixed_local_dir:
-        # Phase 1: try local files only across backends, no HF fallback.
-        resolve_plan.append((False, False))
-        # Phase 2: if neither backend resolved locally, allow normal fallback/download behavior.
-        resolve_plan.append((effective_auto_download, True))
-        logger.info(
-            "Auto backend source is local directory; trying local files across supported backends before HuggingFace fallback."
-        )
+        # Check for explicit backend conflict
+        if backend is not None:
+            req_b = Backend(backend.lower()) if isinstance(backend, str) else backend
+            if req_b != target_variant.backend:
+                raise SessionError(
+                    f"Variant '{variant}' requires backend '{target_variant.backend.value}', "
+                    f"but backend '{req_b.value}' was requested."
+                )
+        variants_to_try = [target_variant]
     else:
-        resolve_plan.append((effective_auto_download, True))
+        candidates = _resolve_backend_candidates(plugin_cls, backend, preference)
+        # Add all variants matching the candidate backends, preserving order of declaration
+        for cand in candidates:
+            variants_to_try.extend(v for v in plugin_cls.variants if v.backend == cand)
 
-    for allow_download_for_attempt, allow_hf_fallback in resolve_plan:
-        for backend in backend_candidates:
-            try:
-                normalized_device = normalize_device_string(
-                    device,
-                    backend="pytorch" if backend == Backend.PYTORCH else "onnx",
-                )
-            except ValueError as exc:
-                raise SessionError(str(exc)) from exc
+    failures = []
 
-            if backend == Backend.PYTORCH and normalized_device == "auto":
-                normalized_device = _auto_select_pytorch_device()
-                logger.info("PyTorch device auto-selected: %s", normalized_device)
-
-            try:
-                normalized_precision = normalize_precision_string(precision)
-            except ValueError as exc:
-                raise SessionError(str(exc)) from exc
-
-            if backend == Backend.PYTORCH and normalized_precision == "int8_ov":
-                logger.warning(
-                    "Precision 'int8_ov'/'ov' is ONNX/OpenVINO-oriented and is not supported by PyTorch backend; falling back to auto.",
-                )
-                normalized_precision = "auto"
-
-            if not backend_was_explicit and backend != selected_backend:
-                logger.info(
-                    "Auto backend selected %s for model_id=%s after %s was unavailable.",
-                    backend.value,
-                    plugin_cls.model_id,
-                    selected_backend.value,
-                )
-
-            logger.debug(
-                "Session backend selected model_id=%s backend=%s device=%s precision=%s",
-                plugin_cls.model_id,
-                backend.value,
-                normalized_device,
-                normalized_precision,
+    # 2. Try loading variants until one succeeds
+    for selected_variant in variants_to_try:
+        resolved_variant = selected_variant.resolve(plugin_cls.default_repo_id)
+        candidate_backend = resolved_variant.backend
+        try:
+            file_map = resolve_variant_artifacts(
+                source=source,
+                variant=resolved_variant,
+                revision=hf_revision,
+                cache_dir=hf_cache_dir,
+                allow_download=effective_auto_download,
+                file_name_map=file_name_map,
+                source_map=source_map,
+                token=hf_token,
             )
-
-            try:
-                file_map = resolve_from_sources(
-                    source,
-                    plugin_cls.required_files,
-                    backend,
-                    revision=hf_revision,
-                    cache_dir=hf_cache_dir,
-                    allow_download=allow_download_for_attempt,
-                    file_name_map=file_name_map,
-                    fallback_hf_repo_id=plugin_cls.default_hf_repo if allow_hf_fallback else None,
-                    source_map=source_map,
-                )
-            except Exception as exc:
-                if backend_was_explicit or len(backend_candidates) == 1:
-                    raise SessionError(str(exc)) from exc
-
-                next_backend = _next_backend_candidate(backend_candidates, backend)
-                if next_backend is None:
-                    continue
-                if allow_hf_fallback:
-                    logger.info(
-                        "Auto backend '%s' unavailable for model_id=%s; trying %s next.",
-                        backend.value,
-                        plugin_cls.model_id,
-                        next_backend.value,
-                    )
-                else:
-                    logger.info(
-                        "Auto backend '%s' unavailable locally for model_id=%s; trying %s next.",
-                        backend.value,
-                        plugin_cls.model_id,
-                        next_backend.value,
-                    )
-                auto_resolution_failures.append((backend, str(exc)))
-                continue
-
-            _warn_local_subdir_mismatch(plugin_cls, source, file_map)
-
-            weights_path = _find_weights(plugin_cls, file_map, backend)
-            logger.debug("Resolved model weights for model_id=%s path=%s", plugin_cls.model_id, weights_path)
-
-            pool_key = _make_backend_pool_key(
-                backend=backend,
-                weights_path=weights_path,
-                device=normalized_device,
-                providers=onnx_providers,
-                precision=normalized_precision,
-            )
-            rt, release_backend = _acquire_backend(
-                key=pool_key,
-                backend=backend,
-                weights_path=weights_path,
-                device=normalized_device,
-                providers=onnx_providers,
-                precision=normalized_precision,
-                pytorch_cls=PyTorchBackend,
-                onnx_cls=ONNXBackend,
-            )
-
-            try:
-                plugin = plugin_cls()
-                plugin.configure(
-                    auto_download=effective_auto_download,
-                    backend=backend,
-                    backend_instance=rt,
-                    device=normalized_device,
-                    precision=normalized_precision,
-                    source=source,
-                    optional_missing_files=file_map.optional_missing_reasons(),
-                )
-                plugin.load_ancillary(file_map.as_path_dict())
-                if backend == Backend.ONNX and normalized_precision in {"fp16", "bf16"}:
-                    logger.warning(
-                        "Precision '%s' requested while running ONNX backend; runtime casting is provider/model dependent. "
-                        "The model's graph precision will generally be used.",
-                        normalized_precision,
-                    )
-                logger.debug("Session ready model_id=%s", plugin_cls.model_id)
-                return ModelSession(
-                    plugin=plugin,
-                    backend_instance=rt,
-                    backend=backend,
-                    file_map=file_map,
-                    source=source,
-                    auto_download=effective_auto_download,
-                    memory_tracking=memory_tracking,
-                    backend_release=release_backend,
-                )
-            except SessionError:
-                release_backend()
-                raise
-            except Exception as exc:
-                release_backend()
-                raise SessionError(f"Plugin '{plugin_cls.model_id}' failed to load ancillary files: {exc}") from exc
-
-        if source_is_unprefixed_local_dir and not allow_hf_fallback:
+        except LoaderError as exc:
+            # Artifact resolution failed. If we have more variants to try, continue seamlessly.
+            vid_str = f" (variant: {selected_variant.variant_id})" if selected_variant.variant_id else ""
+            failures.append((candidate_backend, f"Artifact missing{vid_str}: {exc}"))
             logger.info(
-                "No local backend files resolved for model_id=%s; trying HuggingFace fallback for auto backend mode.",
-                plugin_cls.model_id,
+                "Artifacts unavailable for %s backend %s%s: %s", model_id, candidate_backend.value, vid_str, exc
             )
+            continue
+        except Exception as exc:
+            failures.append((candidate_backend, f"Resolution error: {exc}"))
+            logger.warning("Unexpected error resolving artifacts for %s: %s", model_id, exc)
+            continue
 
-    if auto_resolution_failures:
-        attempts = "; ".join([f"{candidate.value}: {reason}" for candidate, reason in auto_resolution_failures])
-        raise SessionError(
-            f"Could not resolve files for model '{plugin_cls.model_id}' in auto backend mode. Attempts: {attempts}"
+        plan = ExecutionPlan(
+            backend=candidate_backend,
+            preference=preference,
+            precision=precision_req,
+            variant_id=selected_variant.variant_id,
+            onnx_providers=tuple(onnx_providers) if onnx_providers is not None else None,
+            hf_token=hf_token,
         )
 
-    raise SessionError(f"Failed to build session for model '{plugin_cls.model_id}'.")
+        try:
+            plugin = plugin_cls()
+            plugin.load_ancillary(file_map)
+
+            pool_key = (plugin_cls, file_map.cache_key, plan)
+            runtime, release_fn = _acquire_runtime(
+                key=pool_key,
+                model_id=model_id,
+                build=lambda p=plugin, fm=file_map, ep=plan: p.build_runtime(fm, ep),
+            )
+        except Exception as exc:
+            if len(variants_to_try) == 1 or backend is not None:
+                raise SessionError(f"Failed to build runtime for '{model_id}': {exc}") from exc
+            failures.append((candidate_backend, str(exc)))
+            continue
+
+        if candidate_backend == Backend.ONNX and precision_req.compute in {PrecisionPolicy.FP16, PrecisionPolicy.BF16}:
+            logger.warning(
+                "Precision '%s' requested while running ONNX backend; runtime casting is provider/model dependent.",
+                precision_req.compute.value,
+            )
+
+        runtime_info = runtime.execution_info()
+        variant_str = selected_variant.variant_id or "default"
+        load_seconds = time.perf_counter() - started_at
+
+        if candidate_backend == Backend.PYTORCH:
+            prec = runtime_info.get("precision") or {}
+            logger.info(
+                "Session ready model_id=%s | variant=%s | backend=pytorch | device=%s | weights=%s | compute=%s | autocast=%s | time=%.2fs",
+                model_id,
+                variant_str,
+                runtime_info.get("device"),
+                prec.get("weight_dtype"),
+                prec.get("compute_dtype"),
+                prec.get("autocast_enabled"),
+                load_seconds,
+            )
+        else:  # ONNX
+            providers = runtime_info.get("providers") or []
+            primary_ep = providers[0] if providers else "unknown"
+            logger.info(
+                "Session ready model_id=%s | variant=%s | backend=onnx | provider=%s | graph_precision=%s | time=%.2fs",
+                model_id,
+                variant_str,
+                primary_ep,
+                runtime_info.get("graph_precision", "unknown"),
+                load_seconds,
+            )
+
+        return ModelSession(
+            plugin=plugin,
+            backend_instance=runtime,
+            plan=plan,
+            file_map=file_map,
+            source=source,
+            auto_download=effective_auto_download,
+            memory_tracking=memory_tracking,
+            backend_release=release_fn,
+        )
+
+    attempts = "; ".join(f"{b.value}: {reason}" for b, reason in failures)
+    raise SessionError(f"Failed to resolve files or build runtime for '{model_id}'. Attempts: {attempts}")
 
 
-def _is_unprefixed_local_dir_source(source: str) -> bool:
-    normalized = str(source).strip()
-    if normalized.startswith("local:") or normalized.startswith("hf:"):
-        return False
-    return Path(normalized).expanduser().is_dir()
-
-
-def _local_source_path(source: str) -> Path | None:
-    normalized = str(source).strip()
-    if normalized.startswith("local:"):
-        candidate = Path(normalized[6:]).expanduser()
-        return candidate if candidate.is_dir() else None
-    if normalized.startswith("hf:"):
-        return None
-    candidate = Path(normalized).expanduser()
-    return candidate if candidate.is_dir() else None
-
-
-def _warn_local_subdir_mismatch(
-    plugin_cls: type[ModelPlugin],
-    source: str,
-    file_map: FileMap,
-) -> None:
-    hf_subdir = getattr(plugin_cls, "hf_subdir", None)
-    if not hf_subdir:
-        return
-
-    source_path = _local_source_path(source)
-    if source_path is None:
-        return
-
-    try:
-        source_resolved = source_path.resolve()
-    except OSError:
-        return
-
-    if source_resolved.name == hf_subdir:
-        return
-
-    paths = file_map.values()
-    if not paths:
-        return
-
-    try:
-        all_in_root = all(path.parent.resolve() == source_resolved for path in paths)
-    except OSError:
-        return
-
-    if not all_in_root:
-        return
-
-    logger.warning(
-        "Local source '%s' matched files in the folder root, but '%s' also supports HF-style subfolder layouts. "
-        "This is a warning because the folder may contain another model with the same filenames, and the loader can "
-        "otherwise pick the wrong one without noticing. HF would use subfolder '%s'.",
-        source_resolved,
-        plugin_cls.model_id,
-        hf_subdir,
-    )
-
-
-def _next_backend_candidate(candidates: list[Backend], current: Backend) -> Backend | None:
-    try:
-        index = candidates.index(current)
-    except ValueError:
-        return None
-    if index + 1 >= len(candidates):
-        return None
-    return candidates[index + 1]
-
-
-def _make_backend_pool_key(
-    *,
-    backend: Backend,
-    weights_path: Path,
-    device: str,
-    providers: list[str] | None,
-    precision: str,
-) -> tuple[Any, ...]:
-    resolved_path = str(weights_path.resolve())
-    if backend == Backend.PYTORCH:
-        return (backend.value, resolved_path, device, precision)
-    provider_key = tuple(providers) if providers is not None else ("AUTO",)
-    return (backend.value, resolved_path, provider_key, device, precision)
-
-
-def _acquire_backend(
+def _acquire_runtime(
     *,
     key: tuple[Any, ...],
-    backend: Backend,
-    weights_path: Path,
-    device: str,
-    providers: list[str] | None,
-    precision: str,
-    pytorch_cls: Any,
-    onnx_cls: Any,
+    model_id: str,
+    build: Callable[[], Any],
 ) -> tuple[Any, Callable[[], None]]:
-    with _BACKEND_POOL_LOCK:
-        cached = _BACKEND_POOL.get(key)
-        if cached is not None:
-            instance, refcount = cached
-            _BACKEND_POOL[key] = (instance, refcount + 1)
-            logger.debug("Reusing pooled backend instance backend=%s refcount=%s", backend.value, refcount + 1)
-            logger.debug("Reusing pooled backend key=%s", key)
-            return instance, lambda: _release_backend(key)
+    with _RUNTIME_POOL_LOCK:
+        if key in _RUNTIME_POOL:
+            instance, refcount = _RUNTIME_POOL[key]
+            _RUNTIME_POOL[key] = (instance, refcount + 1)
+            logger.debug("Reusing pooled runtime model_id=%s refcount=%s", model_id, refcount + 1)
+            return instance, lambda: _release_runtime(key)
 
-        logger.debug("Loading backend backend=%s", backend.value)
-        logger.debug(
-            "Backend load options backend=%s device=%s precision=%s weights_path=%s",
-            backend.value,
-            device,
-            precision,
-            weights_path,
-        )
-        if backend == Backend.PYTORCH:
-            instance = pytorch_cls()
-            instance.load(weights_path, device=device, precision=precision)
-        else:
-            instance = onnx_cls()
-            instance.load(weights_path, providers=providers, device=device, precision=precision)
+        if key not in _LOADING_LOCKS:
+            _LOADING_LOCKS[key] = threading.Lock()
+        model_lock = _LOADING_LOCKS[key]
 
-        _BACKEND_POOL[key] = (instance, 1)
-        logger.info("Backend ready backend=%s device=%s", backend.value, device)
-        logger.debug("Created pooled backend key=%s refcount=1", key)
-        return instance, lambda: _release_backend(key)
+    with model_lock:
+        with _RUNTIME_POOL_LOCK:
+            if key in _RUNTIME_POOL:
+                instance, refcount = _RUNTIME_POOL[key]
+                _RUNTIME_POOL[key] = (instance, refcount + 1)
+                return instance, lambda: _release_runtime(key)
+
+        try:
+            instance = build()
+
+            with _RUNTIME_POOL_LOCK:
+                _RUNTIME_POOL[key] = (instance, 1)
+
+            logger.debug("Runtime ready model_id=%s", model_id)
+            return instance, lambda: _release_runtime(key)
+
+        finally:
+            with _RUNTIME_POOL_LOCK:
+                _LOADING_LOCKS.pop(key, None)
 
 
-def _release_backend(key: tuple[Any, ...]) -> None:
-    instance: Any | None = None
-    with _BACKEND_POOL_LOCK:
-        cached = _BACKEND_POOL.get(key)
+def _release_runtime(key: tuple[Any, ...]) -> None:
+    with _RUNTIME_POOL_LOCK:
+        cached = _RUNTIME_POOL.get(key)
         if cached is None:
             return
 
-        instance, refcount = cached
-        if refcount > 1:
-            _BACKEND_POOL[key] = (instance, refcount - 1)
-            logger.debug("Released pooled backend key=%s refcount=%s", key, refcount - 1)
+        if cached[1] > 1:
+            _RUNTIME_POOL[key] = (cached[0], cached[1] - 1)
+            logger.debug("Released pooled runtime refcount=%s", cached[1] - 1)
             return
 
-        popped = _BACKEND_POOL.pop(key, None)
-        if popped is not None:
-            instance, _ = popped
-        else:
-            instance = None
+        popped = _RUNTIME_POOL.pop(key, None)
+        instance = popped[0] if popped else None
 
     if instance is None:
         return
 
-    close_fn = getattr(instance, "close", None)
-    if callable(close_fn):
-        close_fn()
-    logger.debug("Closed pooled backend key=%s", key)
+    try:
+        instance.close()
+    except Exception:
+        logger.exception("Failed to close pooled runtime during release.")
 
-
-def _auto_select_backend(plugin_cls: type[ModelPlugin], *, requested_device: str = "auto") -> Backend:
-    """Select backend using runtime availability + accelerator preference."""
-    supported = plugin_cls.supported_backends
-
-    onnx_runtime_ok, onnx_has_accel = _onnx_runtime_capabilities()
-    torch_runtime_ok, torch_has_accel = _pytorch_runtime_capabilities()
-
-    onnx_candidate = Backend.ONNX in supported and onnx_runtime_ok
-    torch_candidate = Backend.PYTORCH in supported and torch_runtime_ok
-
-    if onnx_candidate and torch_candidate:
-        requested = str(requested_device or "auto").strip().lower()
-        # Backend-specific selectors should be respected early.
-        if requested in {"mps"}:
-            logger.info("Backend auto-selection chose PyTorch due to requested device '%s'.", requested)
-            return Backend.PYTORCH
-        if requested in {"rocm", "dml"} or requested.startswith(("rocm:", "dml:")):
-            logger.info("Backend auto-selection chose ONNX due to requested device '%s'.", requested)
-            return Backend.ONNX
-
-        if onnx_has_accel and not torch_has_accel:
-            logger.info("Backend auto-selection chose ONNX (accelerator available, PyTorch accelerator unavailable).")
-            return Backend.ONNX
-        if torch_has_accel and not onnx_has_accel:
-            logger.info("Backend auto-selection chose PyTorch (accelerator available, ONNX accelerator unavailable).")
-            return Backend.PYTORCH
-
-        logger.info("Backend auto-selection chose ONNX (default preference when capabilities are equivalent).")
-        return Backend.ONNX
-
-    if onnx_candidate:
-        logger.info("Backend auto-selection chose ONNX (runtime available).")
-        return Backend.ONNX
-    if torch_candidate:
-        logger.info("Backend auto-selection chose PyTorch (runtime available).")
-        return Backend.PYTORCH
-
-    raise SessionError(f"No supported backend available for '{plugin_cls.model_id}'. Install onnxruntime or torch.")
+    logger.debug("Closed pooled runtime")
 
 
 def _onnx_runtime_capabilities() -> tuple[bool, bool]:
     try:
-        import onnxruntime as ort
+        import onnxruntime as ort  # ty:ignore[unresolved-import, unused-ignore-comment]
     except ImportError:
         return False, False
-
     try:
-        available = {str(provider) for provider in ort.get_available_providers()}
+        get_providers = getattr(ort, "get_available_providers", None)
+        available = {str(provider) for provider in get_providers()} if callable(get_providers) else set()
     except Exception:
         available = set()
-    has_accelerator = any(provider != "CPUExecutionProvider" for provider in available)
-    return True, has_accelerator
+    return True, any(provider != "CPUExecutionProvider" for provider in available)
 
 
 def _pytorch_runtime_capabilities() -> tuple[bool, bool]:
@@ -457,48 +351,9 @@ def _pytorch_runtime_capabilities() -> tuple[bool, bool]:
         return False, False
 
     has_cuda = bool(torch.cuda.is_available())
+    xpu_mod = getattr(torch, "xpu", None)
+    has_xpu = bool(xpu_mod and callable(getattr(xpu_mod, "is_available", None)) and xpu_mod.is_available())
     mps_backend = getattr(torch.backends, "mps", None)
-    has_mps = False
-    if mps_backend is not None and callable(getattr(mps_backend, "is_available", None)):
-        has_mps = bool(mps_backend.is_available())
+    has_mps = bool(mps_backend and callable(getattr(mps_backend, "is_available", None)) and mps_backend.is_available())
 
-    return True, (has_cuda or has_mps)
-
-
-def _auto_select_pytorch_device() -> str:
-    try:
-        import torch
-    except ImportError:
-        return "cpu"
-
-    if bool(torch.cuda.is_available()):
-        return "cuda"
-
-    mps_backend = getattr(torch.backends, "mps", None)
-    if mps_backend is not None and callable(getattr(mps_backend, "is_available", None)):
-        if bool(mps_backend.is_available()):
-            return "mps"
-
-    return "cpu"
-
-
-def _find_weights(
-    plugin_cls: type[ModelPlugin],
-    file_map: FileMap,
-    backend: Backend,
-) -> Path:
-    """Find the weights file from the resolved file map for the selected backend."""
-    from vibe.backends.base import FileRole
-
-    for spec in plugin_cls.required_files:
-        if spec.role == FileRole.WEIGHTS and spec.needed_for(backend):
-            spec_key = spec.key or spec.name
-            path = file_map.get(spec_key)
-            if path is not None:
-                return path
-
-    raise SessionError(
-        f"No weights file found for model '{plugin_cls.model_id}' "
-        f"with backend '{backend.value}'. "
-        f"Check the plugin's required_files declaration."
-    )
+    return True, (has_cuda or has_xpu or has_mps)

@@ -1,10 +1,19 @@
 import vibe
 
-model_id = "wd-eva02-large-v3"
+model_id = "taggerine"
 info = vibe.describe(model_id)
+
 print(info)
-print(f"Files for {model_id}:")
-for f in info.required_files:
-    # Show backends in brackets, or [all] if empty
-    backends = f"[{', '.join(b.value for b in f.backends)}]" if f.backends else "[any]"
-    print(f"  • {f.name:<20} {backends:<15} ({f.role.value})")
+print(f"\nFiles & Variants for {model_id} (Family: {info.family_name}):")
+
+# Iterate through model variants (each variant represents a backend target)
+for variant in info.variants:
+    variant_label = f"[{variant.backend.value}]"
+    if variant.variant_id:
+        variant_label += f" (variant: {variant.variant_id})"
+    
+    print(f"\nBackend Variant: {variant_label}")
+    for artifact in variant.artifacts:
+        req_str = "required" if artifact.required else "optional"
+        subdir_str = f" | dir: {artifact.hf_subdir}" if artifact.hf_subdir else ""
+        print(f"  • {artifact.name:<25} ({artifact.role.value}, {req_str}{subdir_str})")
