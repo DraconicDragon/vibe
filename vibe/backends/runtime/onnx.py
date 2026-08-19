@@ -23,24 +23,16 @@ from vibe.precision import PrecisionPolicy
 
 logger = logging.getLogger(__name__)
 
-# Auto-priority excludes TensorRT on purpose to keep behavior predictable.
+# Standard auto priority for device="auto"
 ONNX_AUTO_PROVIDER_PRIORITY: tuple[str, ...] = (
     "CUDAExecutionProvider",
+    # "TensorRTExecutionProvider",
     "ROCMExecutionProvider",
     "MIGraphXExecutionProvider",
     "OpenVINOExecutionProvider",
     "DmlExecutionProvider",
     "CoreMLExecutionProvider",
     "CPUExecutionProvider",
-)
-
-_GPU_CLASS_PROVIDERS: frozenset[str] = frozenset(
-    {
-        "CUDAExecutionProvider",
-        "ROCMExecutionProvider",
-        "MIGraphXExecutionProvider",
-        "OpenVINOExecutionProvider",
-    }
 )
 
 
@@ -90,59 +82,47 @@ def resolve_onnx_provider_chain(
     """Resolve providers and provider options from request/device state."""
     available_set = set(_available_onnx_providers(ort_module))
 
-    explicit = requested_providers
+    # 1. User explicitly passed onnx_providers -> pass directly so ONNX Runtime surfaces any errors
+    if requested_providers is not None:
+        providers = _normalize_provider_list([str(p) for p in requested_providers])
 
-    wants_accelerator = preference.intent in (HardwareIntent.ACCELERATOR, HardwareIntent.AUTO)
-    must_accelerator = preference.intent == HardwareIntent.ACCELERATOR
-
-    # If user explicitly specified openvino hint
-    if preference.hint == "openvino" and explicit is None and "OpenVINOExecutionProvider" in available_set:
-        explicit = ["OpenVINOExecutionProvider", "CPUExecutionProvider"]
-
-    if explicit is not None:
-        providers = [p for p in _normalize_provider_list([str(p) for p in explicit]) if p in available_set]
-        if not providers and "CPUExecutionProvider" in available_set:
-            logger.warning(
-                "Requested ONNX providers %s are unavailable. Available providers: %s. Falling back to CPUExecutionProvider.",
-                explicit,
-                sorted(available_set),
-            )
-            providers = ["CPUExecutionProvider"]
-    else:
-        if wants_accelerator:
-            preferred = [p for p in ONNX_AUTO_PROVIDER_PRIORITY if p != "CPUExecutionProvider"]
-            providers = [p for p in preferred if p in available_set]
-
-            if not providers:
-                if must_accelerator:
-                    device_str = preference.hint or "accelerator"
-                    raise RuntimeError(
-                        f"Device '{device_str}' requested, but no ONNX accelerator providers are available. "
-                        f"(Available providers: {sorted(available_set)}). "
-                        "If using NVIDIA GPU, verify 'onnxruntime-gpu' is installed instead of 'onnxruntime'."
-                    )
-                if "CPUExecutionProvider" in available_set:
-                    providers.append("CPUExecutionProvider")
-            elif "CPUExecutionProvider" in available_set:
+    # 2. User explicitly requested a device class (e.g. device="cuda", device="rocm", device="openvino")
+    elif preference.intent == HardwareIntent.ACCELERATOR:
+        hint = (preference.hint or "cuda").lower()
+        matched = [p for p in available_set if hint in p.lower()]
+        if matched:
+            providers = matched
+            if "CPUExecutionProvider" in available_set and "CPUExecutionProvider" not in providers:
                 providers.append("CPUExecutionProvider")
         else:
-            providers = ["CPUExecutionProvider"] if "CPUExecutionProvider" in available_set else []
+            # Pass the canonical EP directly so ORT attempts loading it and raises its native error
+            target_ep = f"{preference.hint.upper()}ExecutionProvider" if preference.hint else "CUDAExecutionProvider"
+            providers = [target_ep]
+
+    # 3. User requested device="cpu"
+    elif preference.intent == HardwareIntent.CPU:
+        providers = ["CPUExecutionProvider"]
+
+    # 4. device="auto" -> pick highest priority provider available in the installed runtime
+    else:
+        preferred = [p for p in ONNX_AUTO_PROVIDER_PRIORITY if p in available_set]
+        providers = preferred if preferred else ["CPUExecutionProvider"]
 
     if not providers:
         providers = ["CPUExecutionProvider"]
 
+    # Configure ordinal/device_id if specified (e.g. device="cuda:1")
     provider_options: list[dict[str, Any]] = []
     for provider in providers:
-        if provider == "OpenVINOExecutionProvider":
-            # OpenVINO EP configuration options
-            device_type = f"GPU.{preference.ordinal}" if preference.ordinal is not None else "GPU"
-            provider_options.append({"device_type": device_type})
-        elif provider in _GPU_CLASS_PROVIDERS and preference.ordinal is not None:
-            provider_options.append({"device_id": str(preference.ordinal)})
+        if preference.ordinal is not None and provider != "CPUExecutionProvider":
+            if provider == "OpenVINOExecutionProvider":
+                provider_options.append({"device_type": f"GPU.{preference.ordinal}"})
+            else:
+                provider_options.append({"device_id": str(preference.ordinal)})
         else:
             provider_options.append({})
 
-    has_non_empty_options = any(bool(options) for options in provider_options)
+    has_non_empty_options = any(bool(opt) for opt in provider_options)
     logger.debug("ONNX providers resolved preference=%s providers=%s", preference, providers)
     return providers, provider_options if has_non_empty_options else None
 
@@ -309,18 +289,18 @@ class ONNXBackend:
         self._providers = session_providers
         primary_provider = self._providers[0] if self._providers else "CPUExecutionProvider"
 
-        # Fallback diagnostics
-        wants_accel = plan.preference.intent in (HardwareIntent.ACCELERATOR, HardwareIntent.AUTO)
-        has_accel = any(p != "CPUExecutionProvider" for p in session_providers)
-
-        if plan.preference.intent == HardwareIntent.ACCELERATOR and not has_accel:
+        # 1. If accelerator was explicitly requested, ensure it didn't silently fall back to CPU
+        if plan.preference.intent == HardwareIntent.ACCELERATOR and primary_provider == "CPUExecutionProvider":
             raise RuntimeError(
-                f"Accelerator requested, but ONNX runtime loaded with CPU fallback only: {session_providers}."
+                f"Accelerator requested, but ONNX runtime loaded on {primary_provider}. "
+                f"Active session providers: {session_providers}."
             )
 
-        if wants_accel and not has_accel and plan.preference.intent == HardwareIntent.AUTO:
+        # 2. In auto mode, warn if no GPU/accelerator was picked up and it defaulted to CPU
+        if plan.preference.intent == HardwareIntent.AUTO and primary_provider == "CPUExecutionProvider":
             fallback_message = (
-                f"ONNX backend fell back to {primary_provider} (no accelerator execution provider available)."
+                f"ONNX backend fell back to {primary_provider} (no accelerator execution provider available). "
+                "If using an NVIDIA GPU, ensure 'onnxruntime-gpu' is installed."
             )
             logger.warning(fallback_message)
             import warnings
@@ -398,20 +378,25 @@ class ONNXBackend:
         """Release runtime cache/resources if applicable (no-op for standard ONNX sessions)."""
 
     def supports_true_batching(self) -> bool:
-        """True batching is supported when a non-CPU provider is active and graph input batch dimension is dynamic."""
-        if not any(provider != "CPUExecutionProvider" for provider in self._providers):
+        """True batching is preferred when running on an accelerator and the graph batch dimension is dynamic."""
+        # default to sequential on CPU to avoid thread contention/memory spikes
+        if not self._providers or self._providers[0] == "CPUExecutionProvider":
             return False
+
         if self._session is None:
             return False
+
+        # On accelerators, verify the model graph supports dynamic batch dimensions
         try:
             inputs = self._session.get_inputs()
             if inputs and len(inputs[0].shape) > 0:
                 batch_dim = inputs[0].shape[0]
-                # If batch_dim is a fixed integer == 1, batching is impossible
+                # If batch_dim is a fixed integer == 1, graph cannot accept batches
                 if isinstance(batch_dim, int) and batch_dim == 1:
                     return False
         except Exception as exc:
             logger.warning("Failed to query ONNX session inputs for dynamic batch support: %s", exc)
+
         return True
 
     def close(self) -> None:

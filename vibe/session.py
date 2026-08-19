@@ -215,8 +215,8 @@ class ModelSession:
                 prefetch_images = should_prefetch_image_loading(path_inputs=path_inputs)
 
                 if batch_size > 1 and method == "sequential" and batch_method != "sequential":
-                    logger.warning(
-                        "Batching disabled for model_id=%s backend=%s; using sequential processing",
+                    logger.info(
+                        "Auto-batching using sequential mode for model_id=%s backend=%s (accelerator not active or graph has fixed batch dimension)",
                         self.model_id,
                         self._backend.value,
                     )
