@@ -30,18 +30,6 @@ def load_samples_file(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return x, y
 
 
-def interp_percentile(value: float, x: np.ndarray, y: np.ndarray) -> float:
-    """Interpolate a value against a loaded percentile curve."""
-    value = float(np.clip(value, x[0], x[-1]))
-    idx = np.searchsorted(x, value)
-    if idx >= len(x) - 1:
-        return float(y[-1])
-
-    x0, y0 = x[idx], y[idx]
-    x1, y1 = x[idx + 1], y[idx + 1]
-    return float(y0) if x1 == x0 else float((value - x0) / (x1 - x0) * (y1 - y0) + y0)
-
-
 def get_weighted_mean(entries: list[ScoreEntry]) -> float:
     """
     Calculate the weighted mean of a list of ScoreEntries.
@@ -67,7 +55,7 @@ def normalize_multiscore(
 
     if percentiles is not None:
         x, y = percentiles
-        return interp_percentile(weighted_mean, x, y)
+        return float(np.interp(weighted_mean, x, y))
 
     max_v = float(max(len(entries) - 1, 1))
     return float(np.clip((weighted_mean - 0.0) / max_v, 0.0, 1.0)) if max_v > 0.0 else 0.0

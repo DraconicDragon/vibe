@@ -26,7 +26,6 @@ from vibe.backends.runtime.pytorch import PyTorchBackend
 from vibe.features import InferenceRequest
 from vibe.plugins.shared.scores_utils import (
     get_weighted_mean,
-    interp_percentile,
     load_samples_file,
     normalize_multiscore,
     normalize_scalar,
@@ -175,7 +174,7 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
         if self._mark_table is not None:
             weighted_mean = get_weighted_mean(entries)
             x, y = self._mark_table
-            extras["percentile"] = interp_percentile(weighted_mean, x, y)
+            extras["percentile"] = float(np.interp(weighted_mean, x, y))
 
         return MultiScoreResult(entries=entries, normalized_score=generic_normalized, extras=extras)
 
