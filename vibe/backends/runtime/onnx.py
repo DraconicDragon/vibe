@@ -82,36 +82,46 @@ def resolve_onnx_provider_chain(
     """Resolve providers and provider options from request/device state."""
     available_set = set(_available_onnx_providers(ort_module))
 
-    # 1. User explicitly passed onnx_providers -> pass directly so ONNX Runtime surfaces any errors
+    must_accelerator = preference.intent == HardwareIntent.ACCELERATOR
+
+    # 1. Explicit providers requested: Pass them directly, appending CPUExecutionProvider
+    # so ORT can route shape/dimension ops to CPU without triggering node assignment warnings.
     if requested_providers is not None:
         providers = _normalize_provider_list([str(p) for p in requested_providers])
+        if "CPUExecutionProvider" not in providers:
+            providers.append("CPUExecutionProvider")
 
-    # 2. User explicitly requested a device class (e.g. device="cuda", device="rocm", device="openvino")
-    elif preference.intent == HardwareIntent.ACCELERATOR:
+    # 2. Strict accelerator requested (e.g. device="cuda" or device="cuda:0"):
+    # Target accelerator primary + CPUExecutionProvider for shape ops
+    elif must_accelerator:
         hint = (preference.hint or "cuda").lower()
-        matched = [p for p in available_set if hint in p.lower()]
+        matched = [p for p in available_set if hint in p.lower() and p != "CPUExecutionProvider"]
         if matched:
-            providers = matched
-            if "CPUExecutionProvider" in available_set and "CPUExecutionProvider" not in providers:
-                providers.append("CPUExecutionProvider")
+            providers = matched + ["CPUExecutionProvider"]
         else:
-            # Pass the canonical EP directly so ORT attempts loading it and raises its native error
-            target_ep = f"{preference.hint.upper()}ExecutionProvider" if preference.hint else "CUDAExecutionProvider"
-            providers = [target_ep]
+            target_ep = (
+                f"{preference.hint.upper()}ExecutionProvider"
+                if preference.hint and preference.hint not in ("gpu", "cuda")
+                else "CUDAExecutionProvider"
+            )
+            providers = [target_ep, "CPUExecutionProvider"]
 
-    # 3. User requested device="cpu"
+    # 3. device="cpu" requested
     elif preference.intent == HardwareIntent.CPU:
         providers = ["CPUExecutionProvider"]
 
-    # 4. device="auto" -> pick highest priority provider available in the installed runtime
+    # 4. device="auto": Try best available accelerator with graceful CPU fallback
     else:
-        preferred = [p for p in ONNX_AUTO_PROVIDER_PRIORITY if p in available_set]
-        providers = preferred if preferred else ["CPUExecutionProvider"]
+        if preference.hint == "openvino" and "OpenVINOExecutionProvider" in available_set:
+            providers = ["OpenVINOExecutionProvider", "CPUExecutionProvider"]
+        else:
+            preferred = [p for p in ONNX_AUTO_PROVIDER_PRIORITY if p != "CPUExecutionProvider" and p in available_set]
+            providers = preferred + (["CPUExecutionProvider"] if "CPUExecutionProvider" in available_set else [])
 
     if not providers:
         providers = ["CPUExecutionProvider"]
 
-    # Configure ordinal/device_id if specified (e.g. device="cuda:1")
+    # Configure provider options (e.g. device_id for GPU)
     provider_options: list[dict[str, Any]] = []
     for provider in providers:
         if preference.ordinal is not None and provider != "CPUExecutionProvider":
