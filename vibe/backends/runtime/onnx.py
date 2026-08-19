@@ -299,8 +299,7 @@ class ONNXBackend:
         # 2. In auto mode, warn if no GPU/accelerator was picked up and it defaulted to CPU
         if plan.preference.intent == HardwareIntent.AUTO and primary_provider == "CPUExecutionProvider":
             fallback_message = (
-                f"ONNX backend fell back to {primary_provider} (no accelerator execution provider available). "
-                "If using an NVIDIA GPU, ensure 'onnxruntime-gpu' is installed."
+                f"ONNX backend fell back to {primary_provider} (no accelerator execution provider available)."
             )
             logger.warning(fallback_message)
             import warnings
