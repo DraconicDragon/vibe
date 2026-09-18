@@ -18,7 +18,7 @@ from vibe.backends.base import (
     ModelVariant,
 )
 from vibe.contracts import LabelCatalogProvider, ThresholdProvider
-from vibe.metadata import LabelCatalog, TagFilterRecommendation, ThresholdTable
+from vibe.metadata import LabelCatalog, ModelProfile, TagFilterRecommendation, ThresholdTable
 from vibe.model_profiles import build_tagger_profile
 from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.tagger_shared import (
@@ -44,6 +44,16 @@ _ANIMETIMM_ARTIST_CATEGORIES = (
 )
 
 
+def _build_animetimm_profile(
+    recommended_filter: TagFilterRecommendation,
+    categories: tuple[TagCategory, ...] = _ANIMETIMM_CATEGORIES,
+) -> ModelProfile:
+    return build_tagger_profile(
+        categories=categories,
+        recommended_filter=recommended_filter,
+    )
+
+
 class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
     """Shared implementation for AnimeTimm dbv4-full taggers."""
 
@@ -51,7 +61,6 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
     profile = build_tagger_profile(
         categories=_ANIMETIMM_CATEGORIES,
-        recommended_filter=TagFilterRecommendation(global_threshold=0.35),
     )
     implements = (LabelCatalogProvider, ThresholdProvider)
 
@@ -126,6 +135,15 @@ class ATConvNextV2HugePlugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm ConvNeXtV2 Huge architecture.",
     )
     default_repo_id = "animetimm/convnextv2_huge.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.38,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.51,
+                TagCategory.RATING: 0.24,
+            },
+        )
+    )
 
     # ConvNeXtV2 Huge repository only provides PyTorch safetensors
     variants = (
@@ -148,6 +166,12 @@ class ATCaformerB36Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm CaFormer B36 architecture.",
     )
     default_repo_id = "animetimm/caformer_b36.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.39,
+            category_thresholds={TagCategory.CHARACTER: 0.47},
+        )
+    )
 
 
 class ATCaformerM36Plugin(AnimeTimmBasePlugin):
@@ -157,6 +181,15 @@ class ATCaformerM36Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm CaFormer M36 architecture.",
     )
     default_repo_id = "animetimm/caformer_m36.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.37,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.45,
+                TagCategory.RATING: 0.40,
+            },
+        )
+    )
 
 
 class ATCaformerS36Plugin(AnimeTimmBasePlugin):
@@ -166,6 +199,15 @@ class ATCaformerS36Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm CaFormer S36 architecture.",
     )
     default_repo_id = "animetimm/caformer_s36.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.37,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.49,
+                TagCategory.RATING: 0.39,
+            },
+        )
+    )
 
 
 class ATCaformerS18Plugin(AnimeTimmBasePlugin):
@@ -175,6 +217,15 @@ class ATCaformerS18Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm CaFormer S18 architecture.",
     )
     default_repo_id = "animetimm/caformer_s18.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.35,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.43,
+                TagCategory.RATING: 0.38,
+            },
+        )
+    )
 
 
 class ATConvNextBasePlugin(AnimeTimmBasePlugin):
@@ -184,6 +235,12 @@ class ATConvNextBasePlugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm ConvNeXt Base architecture.",
     )
     default_repo_id = "animetimm/convnext_base.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.40,
+            category_thresholds={TagCategory.CHARACTER: 0.66},
+        )
+    )
 
 
 class ATEva02LargePatch14448Plugin(AnimeTimmBasePlugin):
@@ -193,6 +250,15 @@ class ATEva02LargePatch14448Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm Eva02 Large Patch14 448 architecture.",
     )
     default_repo_id = "animetimm/eva02_large_patch14_448.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.39,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.61,
+                TagCategory.RATING: 0.38,
+            },
+        )
+    )
 
 
 class ATMobileNetV3Large100Plugin(AnimeTimmBasePlugin):
@@ -202,6 +268,15 @@ class ATMobileNetV3Large100Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 100 architecture.",
     )
     default_repo_id = "animetimm/mobilenetv3_large_100.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.27,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.33,
+                TagCategory.RATING: 0.37,
+            },
+        )
+    )
 
 
 class ATMobileNetV3Large150dPlugin(AnimeTimmBasePlugin):
@@ -211,6 +286,15 @@ class ATMobileNetV3Large150dPlugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 150d architecture.",
     )
     default_repo_id = "animetimm/mobilenetv3_large_150d.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.31,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.37,
+                TagCategory.RATING: 0.37,
+            },
+        )
+    )
 
 
 class ATMobileNetV4ConvAaLargePlugin(AnimeTimmBasePlugin):
@@ -220,6 +304,15 @@ class ATMobileNetV4ConvAaLargePlugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv AA Large architecture.",
     )
     default_repo_id = "animetimm/mobilenetv4_conv_aa_large.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.33,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.42,
+                TagCategory.RATING: 0.38,
+            },
+        )
+    )
 
 
 class ATMobileNetV4ConvSmallPlugin(AnimeTimmBasePlugin):
@@ -229,6 +322,15 @@ class ATMobileNetV4ConvSmallPlugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small architecture.",
     )
     default_repo_id = "animetimm/mobilenetv4_conv_small.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.28,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.32,
+                TagCategory.RATING: 0.37,
+            },
+        )
+    )
 
 
 class ATMobileNetV4ConvSmall050Plugin(AnimeTimmBasePlugin):
@@ -238,6 +340,15 @@ class ATMobileNetV4ConvSmall050Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small 050 architecture.",
     )
     default_repo_id = "animetimm/mobilenetv4_conv_small_050.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.16,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.14,
+                TagCategory.RATING: 0.34,
+            },
+        )
+    )
 
 
 class ATResNet101Plugin(AnimeTimmBasePlugin):
@@ -247,6 +358,15 @@ class ATResNet101Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm ResNet101 architecture.",
     )
     default_repo_id = "animetimm/resnet101.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.33,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.49,
+                TagCategory.RATING: 0.40,
+            },
+        )
+    )
 
 
 class ATResNet152Plugin(AnimeTimmBasePlugin):
@@ -256,6 +376,15 @@ class ATResNet152Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm ResNet152 architecture.",
     )
     default_repo_id = "animetimm/resnet152.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.35,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.48,
+                TagCategory.RATING: 0.38,
+            },
+        )
+    )
 
 
 class ATResNet18Plugin(AnimeTimmBasePlugin):
@@ -265,6 +394,15 @@ class ATResNet18Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm ResNet18 architecture.",
     )
     default_repo_id = "animetimm/resnet18.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.30,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.48,
+                TagCategory.RATING: 0.38,
+            },
+        )
+    )
 
 
 class ATResNet34Plugin(AnimeTimmBasePlugin):
@@ -274,6 +412,15 @@ class ATResNet34Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm ResNet34 architecture.",
     )
     default_repo_id = "animetimm/resnet34.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.32,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.48,
+                TagCategory.RATING: 0.37,
+            },
+        )
+    )
 
 
 class ATResNet50Plugin(AnimeTimmBasePlugin):
@@ -283,6 +430,15 @@ class ATResNet50Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm ResNet50 architecture.",
     )
     default_repo_id = "animetimm/resnet50.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.34,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.53,
+                TagCategory.RATING: 0.37,
+            },
+        )
+    )
 
 
 class ATSwinV2BaseWindow8256Plugin(AnimeTimmBasePlugin):
@@ -292,6 +448,12 @@ class ATSwinV2BaseWindow8256Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm SwinV2 Base Window8 256 architecture.",
     )
     default_repo_id = "animetimm/swinv2_base_window8_256.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.41,
+            category_thresholds={TagCategory.CHARACTER: 0.59},
+        )
+    )
 
 
 class ATSwinV2BaseWindow8256Dbv4aPlugin(AnimeTimmBasePlugin):
@@ -301,9 +463,9 @@ class ATSwinV2BaseWindow8256Dbv4aPlugin(AnimeTimmBasePlugin):
         description="Danbooru tagger using the AnimeTimm SwinV2 Base Window8 256 architecture. Trained with artist tags.",
     )
     default_repo_id = "animetimm/swinv2_base_window8_256.dbv4a-full"
-    profile = build_tagger_profile(
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(global_threshold=0.67),
         categories=_ANIMETIMM_ARTIST_CATEGORIES,
-        recommended_filter=TagFilterRecommendation(global_threshold=0.67),
     )
 
 
@@ -314,6 +476,15 @@ class ATVitBasePatch16224Plugin(AnimeTimmBasePlugin):
         description="Danbooru v4-full tagger using the AnimeTimm ViT Base Patch16 224 architecture.",
     )
     default_repo_id = "animetimm/vit_base_patch16_224.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.38,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.57,
+                TagCategory.RATING: 0.39,
+            },
+        )
+    )
 
 
 # endregion Model Variants

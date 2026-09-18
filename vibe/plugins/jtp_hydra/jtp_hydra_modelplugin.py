@@ -330,9 +330,9 @@ class Hydra35Plugin(JTPHydraBasePlugin):
             category_thresholds={
                 TagCategory.CHARACTER: 0.65,  # 0.6496
                 TagCategory.COPYRIGHT: 0.71,  # 0.7098
-                TagCategory.GENERAL: 0.72,  # 0.7202
+                #TagCategory.GENERAL: 0.72,  # 0.7202 # commented in since already exists in form of global threshold
                 TagCategory.LORE: 0.59,  # 0.5898
-                TagCategory.META: 0.72,  # 0.7202
+                #TagCategory.META: 0.72,  # 0.7202
                 TagCategory.SPECIES: 0.74,  # 0.7402
             },
         ),
