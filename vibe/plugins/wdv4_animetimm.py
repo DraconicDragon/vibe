@@ -6,328 +6,482 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
-import numpy as np
-
-from vibe.backends.base import Backend, FileRole, FileSpec, ModelPlugin
+from vibe.backends.base import (
+    ArtifactMap,
+    ArtifactSpec,
+    Backend,
+    FileRole,
+    ModelIdentity,
+    ModelPlugin,
+    ModelVariant,
+)
+from vibe.contracts import LabelCatalogProvider, ThresholdProvider
+from vibe.metadata import LabelCatalog, ModelProfile, TagFilterRecommendation, ThresholdTable
+from vibe.model_profiles import build_tagger_profile
 from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.tagger_shared import (
-    build_entries_for_indices,
+    ParsedTagData,
+    build_categorized_tag_result,
     load_tag_metadata,
     normalize_output_scores,
 )
-from vibe.result_processors import CharacterIPMapping, CleanTags, ScoreThresholds, TagLevelThresholds
-from vibe.results import OutputType, TagEntry, TagResult
-from vibe.tag_categories import DanbooruTagCategory
+from vibe.results import TagResult
+from vibe.tag_categories import DANBOORU_CATEGORY_LABELS, TagCategory
 
 logger = logging.getLogger(__name__)
+
+_ANIMETIMM_CATEGORIES = (
+    TagCategory.RATING,
+    TagCategory.GENERAL,
+    TagCategory.CHARACTER,
+)
+
+
+def _build_animetimm_profile(
+    recommended_filter: TagFilterRecommendation,
+    categories: tuple[TagCategory, ...] = _ANIMETIMM_CATEGORIES,
+) -> ModelProfile:
+    return build_tagger_profile(
+        categories=categories,
+        recommended_filter=recommended_filter,
+    )
 
 
 class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
     """Shared implementation for AnimeTimm dbv4-full taggers."""
 
-    _abstract = True
     family_name = "AnimeTimm Taggers (dbv4-full)"
 
-    output_type = OutputType.TAGS
-    supported_backends = (
-        Backend.ONNX,
-        Backend.PYTORCH,
+    profile = build_tagger_profile(
+        categories=_ANIMETIMM_CATEGORIES,
     )
-    supported_processors = (
-        CleanTags,
-        CharacterIPMapping,
-        ScoreThresholds,
-        TagLevelThresholds,
-    )
+    implements = (LabelCatalogProvider, ThresholdProvider)
 
-    required_files = (
-        FileSpec(
-            name="model.onnx",
-            role=FileRole.WEIGHTS,
-            backends=(Backend.ONNX,),
+    variants = (
+        ModelVariant(
+            backend=Backend.ONNX,
+            artifacts=(
+                ArtifactSpec(id="model_onnx", name="model.onnx", role=FileRole.WEIGHTS),
+                ArtifactSpec(id="config", name="config.json", role=FileRole.CONFIG),
+                ArtifactSpec(id="preprocess", name="preprocess.json", role=FileRole.CONFIG, required=False),
+                ArtifactSpec(id="tag_list", name="selected_tags.csv", role=FileRole.TAG_LIST),
+            ),
         ),
-        FileSpec(
-            name="model.safetensors",
-            role=FileRole.WEIGHTS,
-            backends=(Backend.PYTORCH,),
-        ),
-        FileSpec(
-            name="config.json",
-            role=FileRole.CONFIG,
-        ),
-        FileSpec(
-            name="preprocess.json",
-            role=FileRole.CONFIG,
-        ),
-        FileSpec(
-            name="selected_tags.csv",
-            role=FileRole.TAG_LIST,
+        ModelVariant(
+            backend=Backend.PYTORCH,
+            artifacts=(
+                ArtifactSpec(id="model_pt", name="model.safetensors", role=FileRole.WEIGHTS),
+                ArtifactSpec(id="config", name="config.json", role=FileRole.CONFIG),
+                ArtifactSpec(id="preprocess", name="preprocess.json", role=FileRole.CONFIG, required=False),
+                ArtifactSpec(id="tag_list", name="selected_tags.csv", role=FileRole.TAG_LIST),
+            ),
         ),
     )
 
-    FALLBACK_TIMM_MODEL_ARGS: dict[str, Any] = {}
+    catalog: LabelCatalog
+    thresholds: ThresholdTable
+    _tag_data: ParsedTagData
 
-    _raw_tag_names: list[str]
-    _rating_indices: list[int]
-    _general_indices: list[int]
-    _character_indices: list[int]
-    _artist_indices: list[int]
-    _backend: Backend | None = None
-    _backend_instance: Any | None = None
-    _runtime_preprocess_steps: list[dict[str, Any]]
-
-    # region Session Lifecycle
-
-    def load_ancillary(self, file_map: dict[str, Path]) -> None:
-        csv_path = file_map["selected_tags.csv"]
+    def load_ancillary(self, artifacts: ArtifactMap) -> None:
+        csv_path = artifacts.get("tag_list")
         logger.info("Loading AnimeTimm tag list from %s", csv_path)
 
-        metadata = load_tag_metadata(csv_path)
-
-        self._raw_tag_names = metadata.raw_tag_names
-        self._rating_indices = metadata.indices_for(int(DanbooruTagCategory.RATING))
-        self._general_indices = metadata.indices_for(int(DanbooruTagCategory.GENERAL))
-        self._character_indices = metadata.indices_for(int(DanbooruTagCategory.CHARACTER))
-        self._artist_indices = metadata.indices_for(int(DanbooruTagCategory.ARTIST))
-
-        config = self.read_timm_config_json(file_map["config.json"])
-        self._runtime_preprocess_steps = self.resolve_timm_preprocess_steps(
-            config,
-            file_map.get("preprocess.json"),
+        self._tag_data = load_tag_metadata(
+            csv_path,
+            category_labels=DANBOORU_CATEGORY_LABELS,
+            namespace="danbooru",
         )
+        self.catalog = self._tag_data.catalog
+        self._num_classes = len(self._tag_data.raw_tag_names)
 
-        self.maybe_prepare_timm_pytorch_model(config=config, num_classes=len(self._raw_tag_names))
+        # AnimeTimm models define best_threshold in CSV, but default fallback provided for safety
+        if self._tag_data.thresholds is not None:
+            self.thresholds = self._tag_data.thresholds
+        else:
+            self.thresholds = ThresholdTable(values={}, source="empty")
+
+        config_path = artifacts.get_optional("config")
+        preprocess_path = artifacts.get_optional("preprocess")
+        if config_path:
+            config = self.read_timm_config_json(config_path)
+            self.prepare_timm_runtime_preprocess(config, preprocess_path)
 
         logger.info(
-            # todo: update log message to be more model specific maybe
-            "Loaded AnimeTimm tags: total=%d general=%d artist=%d character=%d rating=%d",
-            len(self._raw_tag_names),
-            len(self._general_indices),
-            len(self._artist_indices),
-            len(self._character_indices),
-            len(self._rating_indices),
+            "Loaded AnimeTimm tags for %s: total=%d thresholds=%d",
+            self.identity.model_id,
+            len(self._tag_data.raw_tag_names),
+            len(self.thresholds.values),
         )
-
-    # endregion Session Lifecycle
-
-    def resolve_timm_model_args(self, config: dict[str, Any] | None) -> dict[str, Any]:
-        if config is not None and isinstance(config.get("model_args"), dict):
-            logger.debug(
-                "Ignoring config.json model_args for model_id=%s to preserve stable PyTorch reconstruction behavior.",
-                self.model_id,
-            )
-        return dict(self.FALLBACK_TIMM_MODEL_ARGS)
-
-    # region Preprocess & Out Mapping
 
     def postprocess(self, raw_output: Any) -> TagResult:
-        """Return full scored output grouped by AnimeTimm categories."""
-        scores = normalize_output_scores(raw_output)
-
-        usable_count = min(len(scores), len(self._raw_tag_names))
-        if usable_count != len(self._raw_tag_names):
-            logger.error(
-                "Score length mismatch: got %d scores for %d tags.",
-                len(scores),
-                len(self._raw_tag_names),
-            )
-
-        rating = self._entries_for_indices(self._rating_indices, scores, usable_count)
-        general = self._entries_for_indices(self._general_indices, scores, usable_count)
-        character = self._entries_for_indices(self._character_indices, scores, usable_count)
-        artist = self._entries_for_indices(self._artist_indices, scores, usable_count)
-
-        return TagResult(
-            tags={
-                "rating": rating,
-                "general": general,
-                "character": character,
-                "artist": artist,
-            }
-        )
-
-    def _entries_for_indices(
-        self,
-        indices: list[int],
-        scores: np.ndarray,
-        usable_count: int,
-    ) -> list[TagEntry]:
-        return build_entries_for_indices(
-            tag_names=self._raw_tag_names,
-            indices=indices,
-            scores=scores,
-            usable_count=usable_count,
-        )
-
-    # endregion Preprocess & Out Mapping
+        scores = normalize_output_scores(raw_output, is_logits=True, expected_count=len(self._tag_data.raw_tag_names))
+        return build_categorized_tag_result(self._tag_data.raw_tag_names, scores, self._tag_data.category_indices)
 
 
 # region Model Variants
 
 
 class ATConvNextV2HugePlugin(AnimeTimmBasePlugin):
-    model_id = "at-convnextv2-huge-dbv4-full"
-    display_name = "AnimeTimm ConvNeXtV2 Huge"
-    description = "Danbooru v4-full tagger using the AnimeTimm ConvNeXtV2 Huge architecture."
-    default_hf_repo = "animetimm/convnextv2_huge.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-convnextv2-huge-dbv4-full",
+        display_name="AnimeTimm ConvNeXtV2 Huge",
+        description="Danbooru v4-full tagger using the AnimeTimm ConvNeXtV2 Huge architecture.",
+    )
+    default_repo_id = "animetimm/convnextv2_huge.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.38,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.51,
+                TagCategory.RATING: 0.24,
+            },
+        )
+    )
 
-    supported_backends = (Backend.PYTORCH,)
-
-    required_files = (
-        FileSpec(
-            name="model.safetensors",
-            role=FileRole.WEIGHTS,
-            backends=(Backend.PYTORCH,),
-        ),
-        FileSpec(
-            name="config.json",
-            role=FileRole.CONFIG,
-        ),
-        FileSpec(
-            name="preprocess.json",
-            role=FileRole.CONFIG,
-        ),
-        FileSpec(
-            name="selected_tags.csv",
-            role=FileRole.TAG_LIST,
+    # ConvNeXtV2 Huge repository only provides PyTorch safetensors
+    variants = (
+        ModelVariant(
+            backend=Backend.PYTORCH,
+            artifacts=(
+                ArtifactSpec(id="model_pt", name="model.safetensors", role=FileRole.WEIGHTS),
+                ArtifactSpec(id="config", name="config.json", role=FileRole.CONFIG),
+                ArtifactSpec(id="preprocess", name="preprocess.json", role=FileRole.CONFIG, required=False),
+                ArtifactSpec(id="tag_list", name="selected_tags.csv", role=FileRole.TAG_LIST),
+            ),
         ),
     )
 
 
 class ATCaformerB36Plugin(AnimeTimmBasePlugin):
-    model_id = "at-caformer-b36-dbv4-full"
-    display_name = "AnimeTimm CaFormer B36"
-    description = "Danbooru v4-full tagger using the AnimeTimm CaFormer B36 architecture."
-    default_hf_repo = "animetimm/caformer_b36.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-caformer-b36-dbv4-full",
+        display_name="AnimeTimm CaFormer B36",
+        description="Danbooru v4-full tagger using the AnimeTimm CaFormer B36 architecture.",
+    )
+    default_repo_id = "animetimm/caformer_b36.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.39,
+            category_thresholds={TagCategory.CHARACTER: 0.47},
+        )
+    )
 
 
 class ATCaformerM36Plugin(AnimeTimmBasePlugin):
-    model_id = "at-caformer-m36-dbv4-full"
-    display_name = "AnimeTimm CaFormer M36"
-    description = "Danbooru v4-full tagger using the AnimeTimm CaFormer M36 architecture."
-    default_hf_repo = "animetimm/caformer_m36.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-caformer-m36-dbv4-full",
+        display_name="AnimeTimm CaFormer M36",
+        description="Danbooru v4-full tagger using the AnimeTimm CaFormer M36 architecture.",
+    )
+    default_repo_id = "animetimm/caformer_m36.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.37,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.45,
+                TagCategory.RATING: 0.40,
+            },
+        )
+    )
 
 
 class ATCaformerS36Plugin(AnimeTimmBasePlugin):
-    model_id = "at-caformer-s36-dbv4-full"
-    display_name = "AnimeTimm CaFormer S36"
-    description = "Danbooru v4-full tagger using the AnimeTimm CaFormer S36 architecture."
-    default_hf_repo = "animetimm/caformer_s36.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-caformer-s36-dbv4-full",
+        display_name="AnimeTimm CaFormer S36",
+        description="Danbooru v4-full tagger using the AnimeTimm CaFormer S36 architecture.",
+    )
+    default_repo_id = "animetimm/caformer_s36.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.37,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.49,
+                TagCategory.RATING: 0.39,
+            },
+        )
+    )
 
 
 class ATCaformerS18Plugin(AnimeTimmBasePlugin):
-    model_id = "at-caformer-s18-dbv4-full"
-    display_name = "AnimeTimm CaFormer S18"
-    description = "Danbooru v4-full tagger using the AnimeTimm CaFormer S18 architecture."
-    default_hf_repo = "animetimm/caformer_s18.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-caformer-s18-dbv4-full",
+        display_name="AnimeTimm CaFormer S18",
+        description="Danbooru v4-full tagger using the AnimeTimm CaFormer S18 architecture.",
+    )
+    default_repo_id = "animetimm/caformer_s18.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.35,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.43,
+                TagCategory.RATING: 0.38,
+            },
+        )
+    )
 
 
 class ATConvNextBasePlugin(AnimeTimmBasePlugin):
-    model_id = "at-convnext-base-dbv4-full"
-    display_name = "AnimeTimm ConvNeXt Base"
-    description = "Danbooru v4-full tagger using the AnimeTimm ConvNeXt Base architecture."
-    default_hf_repo = "animetimm/convnext_base.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-convnext-base-dbv4-full",
+        display_name="AnimeTimm ConvNeXt Base",
+        description="Danbooru v4-full tagger using the AnimeTimm ConvNeXt Base architecture.",
+    )
+    default_repo_id = "animetimm/convnext_base.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.40,
+            category_thresholds={TagCategory.CHARACTER: 0.66},
+        )
+    )
 
 
 class ATEva02LargePatch14448Plugin(AnimeTimmBasePlugin):
-    model_id = "at-eva02-large-patch14-448-dbv4-full"
-    display_name = "AnimeTimm Eva02 Large Patch14 448"
-    description = "Danbooru v4-full tagger using the AnimeTimm Eva02 Large Patch14 448 architecture."
-    default_hf_repo = "animetimm/eva02_large_patch14_448.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-eva02-large-patch14-448-dbv4-full",
+        display_name="AnimeTimm Eva02 Large Patch14 448",
+        description="Danbooru v4-full tagger using the AnimeTimm Eva02 Large Patch14 448 architecture.",
+    )
+    default_repo_id = "animetimm/eva02_large_patch14_448.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.39,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.61,
+                TagCategory.RATING: 0.38,
+            },
+        )
+    )
 
 
 class ATMobileNetV3Large100Plugin(AnimeTimmBasePlugin):
-    model_id = "at-mobilenetv3-large-100-dbv4-full"
-    display_name = "AnimeTimm MobileNetV3 Large 100"
-    description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 100 architecture."
-    default_hf_repo = "animetimm/mobilenetv3_large_100.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-mobilenetv3-large-100-dbv4-full",
+        display_name="AnimeTimm MobileNetV3 Large 100",
+        description="Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 100 architecture.",
+    )
+    default_repo_id = "animetimm/mobilenetv3_large_100.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.27,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.33,
+                TagCategory.RATING: 0.37,
+            },
+        )
+    )
 
 
 class ATMobileNetV3Large150dPlugin(AnimeTimmBasePlugin):
-    model_id = "at-mobilenetv3-large-150d-dbv4-full"
-    display_name = "AnimeTimm MobileNetV3 Large 150d"
-    description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 150d architecture."
-    default_hf_repo = "animetimm/mobilenetv3_large_150d.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-mobilenetv3-large-150d-dbv4-full",
+        display_name="AnimeTimm MobileNetV3 Large 150d",
+        description="Danbooru v4-full tagger using the AnimeTimm MobileNetV3 Large 150d architecture.",
+    )
+    default_repo_id = "animetimm/mobilenetv3_large_150d.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.31,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.37,
+                TagCategory.RATING: 0.37,
+            },
+        )
+    )
 
 
 class ATMobileNetV4ConvAaLargePlugin(AnimeTimmBasePlugin):
-    model_id = "at-mobilenetv4-conv-aa-large-dbv4-full"
-    display_name = "AnimeTimm MobileNetV4 Conv AA Large"
-    description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv AA Large architecture."
-    default_hf_repo = "animetimm/mobilenetv4_conv_aa_large.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-mobilenetv4-conv-aa-large-dbv4-full",
+        display_name="AnimeTimm MobileNetV4 Conv AA Large",
+        description="Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv AA Large architecture.",
+    )
+    default_repo_id = "animetimm/mobilenetv4_conv_aa_large.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.33,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.42,
+                TagCategory.RATING: 0.38,
+            },
+        )
+    )
 
 
 class ATMobileNetV4ConvSmallPlugin(AnimeTimmBasePlugin):
-    model_id = "at-mobilenetv4-conv-small-dbv4-full"
-    display_name = "AnimeTimm MobileNetV4 Conv Small"
-    description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small architecture."
-    default_hf_repo = "animetimm/mobilenetv4_conv_small.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-mobilenetv4-conv-small-dbv4-full",
+        display_name="AnimeTimm MobileNetV4 Conv Small",
+        description="Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small architecture.",
+    )
+    default_repo_id = "animetimm/mobilenetv4_conv_small.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.28,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.32,
+                TagCategory.RATING: 0.37,
+            },
+        )
+    )
 
 
 class ATMobileNetV4ConvSmall050Plugin(AnimeTimmBasePlugin):
-    model_id = "at-mobilenetv4-conv-small-050-dbv4-full"
-    display_name = "AnimeTimm MobileNetV4 Conv Small 050"
-    description = "Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small 050 architecture."
-    default_hf_repo = "animetimm/mobilenetv4_conv_small_050.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-mobilenetv4-conv-small-050-dbv4-full",
+        display_name="AnimeTimm MobileNetV4 Conv Small 050",
+        description="Danbooru v4-full tagger using the AnimeTimm MobileNetV4 Conv Small 050 architecture.",
+    )
+    default_repo_id = "animetimm/mobilenetv4_conv_small_050.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.16,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.14,
+                TagCategory.RATING: 0.34,
+            },
+        )
+    )
 
 
 class ATResNet101Plugin(AnimeTimmBasePlugin):
-    model_id = "at-resnet101-dbv4-full"
-    display_name = "AnimeTimm ResNet101"
-    description = "Danbooru v4-full tagger using the AnimeTimm ResNet101 architecture."
-    default_hf_repo = "animetimm/resnet101.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-resnet101-dbv4-full",
+        display_name="AnimeTimm ResNet101",
+        description="Danbooru v4-full tagger using the AnimeTimm ResNet101 architecture.",
+    )
+    default_repo_id = "animetimm/resnet101.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.33,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.49,
+                TagCategory.RATING: 0.40,
+            },
+        )
+    )
 
 
 class ATResNet152Plugin(AnimeTimmBasePlugin):
-    model_id = "at-resnet152-dbv4-full"
-    display_name = "AnimeTimm ResNet152"
-    description = "Danbooru v4-full tagger using the AnimeTimm ResNet152 architecture."
-    default_hf_repo = "animetimm/resnet152.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-resnet152-dbv4-full",
+        display_name="AnimeTimm ResNet152",
+        description="Danbooru v4-full tagger using the AnimeTimm ResNet152 architecture.",
+    )
+    default_repo_id = "animetimm/resnet152.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.35,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.48,
+                TagCategory.RATING: 0.38,
+            },
+        )
+    )
 
 
 class ATResNet18Plugin(AnimeTimmBasePlugin):
-    model_id = "at-resnet18-dbv4-full"
-    display_name = "AnimeTimm ResNet18"
-    description = "Danbooru v4-full tagger using the AnimeTimm ResNet18 architecture."
-    default_hf_repo = "animetimm/resnet18.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-resnet18-dbv4-full",
+        display_name="AnimeTimm ResNet18",
+        description="Danbooru v4-full tagger using the AnimeTimm ResNet18 architecture.",
+    )
+    default_repo_id = "animetimm/resnet18.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.30,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.48,
+                TagCategory.RATING: 0.38,
+            },
+        )
+    )
 
 
 class ATResNet34Plugin(AnimeTimmBasePlugin):
-    model_id = "at-resnet34-dbv4-full"
-    display_name = "AnimeTimm ResNet34"
-    description = "Danbooru v4-full tagger using the AnimeTimm ResNet34 architecture."
-    default_hf_repo = "animetimm/resnet34.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-resnet34-dbv4-full",
+        display_name="AnimeTimm ResNet34",
+        description="Danbooru v4-full tagger using the AnimeTimm ResNet34 architecture.",
+    )
+    default_repo_id = "animetimm/resnet34.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.32,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.48,
+                TagCategory.RATING: 0.37,
+            },
+        )
+    )
 
 
 class ATResNet50Plugin(AnimeTimmBasePlugin):
-    model_id = "at-resnet50-dbv4-full"
-    display_name = "AnimeTimm ResNet50"
-    description = "Danbooru v4-full tagger using the AnimeTimm ResNet50 architecture."
-    default_hf_repo = "animetimm/resnet50.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-resnet50-dbv4-full",
+        display_name="AnimeTimm ResNet50",
+        description="Danbooru v4-full tagger using the AnimeTimm ResNet50 architecture.",
+    )
+    default_repo_id = "animetimm/resnet50.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.34,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.53,
+                TagCategory.RATING: 0.37,
+            },
+        )
+    )
 
 
 class ATSwinV2BaseWindow8256Plugin(AnimeTimmBasePlugin):
-    model_id = "at-swinv2-base-window8-256-dbv4-full"
-    display_name = "AnimeTimm SwinV2 Base Window8 256"
-    description = "Danbooru v4-full tagger using the AnimeTimm SwinV2 Base Window8 256 architecture."
-    default_hf_repo = "animetimm/swinv2_base_window8_256.dbv4-full"
-
-
-class ATSwinV2BaseWindow8256Dbv4aPlugin(AnimeTimmBasePlugin):
-    model_id = "at-swinv2-base-window8-256-dbv4a-full"
-    display_name = "AnimeTimm SwinV2 Base Window8 256 (with artist tags)"
-    description = "Danbooru tagger using the AnimeTimm SwinV2 Base Window8 256 architecture. Trained with artist tags."
-    default_hf_repo = "animetimm/swinv2_base_window8_256.dbv4a-full"
+    identity = ModelIdentity(
+        model_id="at-swinv2-base-window8-256-dbv4-full",
+        display_name="AnimeTimm SwinV2 Base Window8 256",
+        description="Danbooru v4-full tagger using the AnimeTimm SwinV2 Base Window8 256 architecture.",
+    )
+    default_repo_id = "animetimm/swinv2_base_window8_256.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.41,
+            category_thresholds={TagCategory.CHARACTER: 0.59},
+        )
+    )
 
 
 class ATVitBasePatch16224Plugin(AnimeTimmBasePlugin):
-    model_id = "at-vit-base-patch16-224-dbv4-full"
-    display_name = "AnimeTimm ViT Base Patch16 224"
-    description = "Danbooru v4-full tagger using the AnimeTimm ViT Base Patch16 224 architecture."
-    default_hf_repo = "animetimm/vit_base_patch16_224.dbv4-full"
+    identity = ModelIdentity(
+        model_id="at-vit-base-patch16-224-dbv4-full",
+        display_name="AnimeTimm ViT Base Patch16 224",
+        description="Danbooru v4-full tagger using the AnimeTimm ViT Base Patch16 224 architecture.",
+    )
+    default_repo_id = "animetimm/vit_base_patch16_224.dbv4-full"
+    profile = _build_animetimm_profile(
+        TagFilterRecommendation(
+            global_threshold=0.38,
+            category_thresholds={
+                TagCategory.CHARACTER: 0.57,
+                TagCategory.RATING: 0.39,
+            },
+        )
+    )
+
+
+class ATSwinV2BaseWindow8256Dbv4aPlugin(AnimeTimmBasePlugin):
+    identity = ModelIdentity(
+        model_id="at-swinv2-base-window8-256-dbv4a-full",
+        display_name="AnimeTimm SwinV2 Base Window8 256 (artist tags only)",
+        description="Danbooru tagger using the AnimeTimm SwinV2 Base Window8 256 architecture. Trained with artist tags only.",
+    )
+    default_repo_id = "animetimm/swinv2_base_window8_256.dbv4a-full"
+    profile = build_tagger_profile(
+        categories=TagCategory.ARTIST,
+        recommended_filter=TagFilterRecommendation(
+            global_threshold=0.67,
+        ),
+    )
 
 
 # endregion Model Variants

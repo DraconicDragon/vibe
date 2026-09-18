@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import atexit
 import importlib
+import logging
 import os
 import sys
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, cast
+
+logger = logging.getLogger(__name__)
 
 _NVML_LOCK = threading.Lock()
 _NVML_MODULE: Any | None = None
@@ -36,8 +39,8 @@ def _shutdown_nvml() -> None:
             return
         try:
             _NVML_MODULE.nvmlShutdown()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to shutdown NVML during atexit cleanup: %s", exc)
         _NVML_INITIALIZED = False
 
 
@@ -85,7 +88,7 @@ def _read_process_rss_bytes() -> int | None:
                     parts = line.split()
                     if len(parts) >= 2:
                         return int(parts[1]) * 1024
-    except Exception:
+    except (OSError, ValueError):
         pass
 
     # Fallback using resource where available.
@@ -97,7 +100,7 @@ def _read_process_rss_bytes() -> int | None:
         if os.name == "posix" and "darwin" in sys.platform:
             return ru_maxrss
         return ru_maxrss * 1024
-    except Exception:
+    except (ImportError, AttributeError, OSError):
         return None
 
 
@@ -120,7 +123,7 @@ def _read_torch_cuda_stats() -> dict[str, int | None]:
             "max_allocated": _safe_int(cuda.max_memory_allocated()),
             "max_reserved": _safe_int(cuda.max_memory_reserved()),
         }
-    except Exception:
+    except (AttributeError, RuntimeError):
         return _empty_torch_cuda_stats()
 
 
@@ -310,21 +313,19 @@ class MemoryTracker:
         )
         self._last_record = record
 
-        if after.process_rss_bytes is not None:
-            if self._peak_rss is None or after.process_rss_bytes > self._peak_rss:
-                self._peak_rss = after.process_rss_bytes
+        if after.process_rss_bytes is not None and (self._peak_rss is None or after.process_rss_bytes > self._peak_rss):
+            self._peak_rss = after.process_rss_bytes
 
-        if after.gpu_process_used_bytes is not None:
-            if self._peak_gpu is None or after.gpu_process_used_bytes > self._peak_gpu:
-                self._peak_gpu = after.gpu_process_used_bytes
+        if after.gpu_process_used_bytes is not None and (
+            self._peak_gpu is None or after.gpu_process_used_bytes > self._peak_gpu
+        ):
+            self._peak_gpu = after.gpu_process_used_bytes
 
-        if rss_delta is not None:
-            if self._max_rss_delta is None or rss_delta > self._max_rss_delta:
-                self._max_rss_delta = rss_delta
+        if rss_delta is not None and (self._max_rss_delta is None or rss_delta > self._max_rss_delta):
+            self._max_rss_delta = rss_delta
 
-        if gpu_delta is not None:
-            if self._max_gpu_delta is None or gpu_delta > self._max_gpu_delta:
-                self._max_gpu_delta = gpu_delta
+        if gpu_delta is not None and (self._max_gpu_delta is None or gpu_delta > self._max_gpu_delta):
+            self._max_gpu_delta = gpu_delta
 
         return record
 

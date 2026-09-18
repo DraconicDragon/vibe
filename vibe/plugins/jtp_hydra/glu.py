@@ -5,7 +5,7 @@ from torch import Tensor
 from torch.nn import Module, Parameter
 from torch.nn.functional import dropout, silu, softplus
 
-__all__ = ("GLU", "SwiGLU", "SpGLU")
+__all__ = ("GLU", "SpGLU", "SwiGLU")
 
 
 class GLU(Module):
@@ -52,10 +52,8 @@ class GLU(Module):
 
 
 class SwiGLU(GLU):
-    def _activation(self, x: Tensor) -> Tensor:
-        return silu(x)
+    _activation = staticmethod(silu)
 
 
 class SpGLU(GLU):
-    def _activation(self, x: Tensor) -> Tensor:
-        return softplus(x)
+    _activation = staticmethod(softplus)

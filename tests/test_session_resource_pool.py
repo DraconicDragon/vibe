@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import vibe
@@ -77,6 +78,50 @@ def test_build_session_reuses_pooled_backend_until_last_close(
 
     session2.close()
     assert _DummyONNXBackend.close_calls == 1
+
+
+def test_build_session_binds_backend_state_on_pooled_reuse(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("vibe.backends.runtime.onnx.ONNXBackend", _DummyONNXBackend)
+
+    _DummyONNXBackend.load_calls = 0
+    _DummyONNXBackend.close_calls = 0
+
+    model_path = tmp_path / "model.onnx"
+    model_path.write_bytes(b"fake")
+    _write_selected_tags_csv(tmp_path / "selected_tags.csv")
+
+    plugin_cls = vibe.model_registry.get("wd-eva02-large-v3")
+    source = f"local:{tmp_path}"
+
+    session1 = build_session(
+        plugin_cls=plugin_cls,
+        source=source,
+        backend="onnx",
+        auto_download=False,
+    )
+    session2 = build_session(
+        plugin_cls=plugin_cls,
+        source=source,
+        backend="onnx",
+        auto_download=False,
+    )
+
+    assert session1.plugin.active_backend == session1.plan.backend
+    assert session2.plugin.active_backend == session2.plan.backend
+
+    sample = np.zeros((16, 16, 3), dtype=np.uint8)
+    arr1 = session1.plugin.preprocess(sample)
+    arr2 = session2.plugin.preprocess(sample)
+
+    assert arr1.shape[0] == 1
+    assert arr1.shape[-1] == 3
+    assert arr2.shape == arr1.shape
+
+    session1.close()
+    session2.close()
 
 
 def test_build_session_releases_pooled_backend_on_ancillary_failure(
