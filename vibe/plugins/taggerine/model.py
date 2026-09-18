@@ -238,7 +238,7 @@ class DINOv3Tagger(nn.Module):
 
         if is_auto:
             if is_cpu:
-                backbone_dtype = torch.bfloat16
+                backbone_dtype = torch.bfloat16 # todo: needs better solution, possibly a way to set precision for each model weight file, precision_map like source_map maybe?
                 logger.info(
                     "Running Taggerine on CPU with precision='auto': backbone set to bfloat16 to save some memory. "
                     "For slightly faster, maximum CPU execution speed, pass precision='fp32'."

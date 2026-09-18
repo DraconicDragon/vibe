@@ -23,7 +23,7 @@ from vibe.precision import PrecisionPolicy
 
 logger = logging.getLogger(__name__)
 
-# Standard auto priority for device="auto"
+# Standard auto priority for device="auto" or device="gpu"
 ONNX_AUTO_PROVIDER_PRIORITY: tuple[str, ...] = (
     "CUDAExecutionProvider",
     # "TensorRTExecutionProvider",
@@ -34,6 +34,18 @@ ONNX_AUTO_PROVIDER_PRIORITY: tuple[str, ...] = (
     "CoreMLExecutionProvider",
     "CPUExecutionProvider",
 )
+
+EP_NAME_MAP: dict[str, str] = {
+    "cuda": "CUDAExecutionProvider",
+    "rocm": "ROCMExecutionProvider",
+    "migraphx": "MIGraphXExecutionProvider",
+    "openvino": "OpenVINOExecutionProvider",
+    "dml": "DmlExecutionProvider",
+    "directml": "DmlExecutionProvider",
+    "coreml": "CoreMLExecutionProvider",
+    "tensorrt": "TensorRTExecutionProvider",
+    "cpu": "CPUExecutionProvider",
+}
 
 
 # region Provider Setup
@@ -91,20 +103,29 @@ def resolve_onnx_provider_chain(
         if "CPUExecutionProvider" not in providers:
             providers.append("CPUExecutionProvider")
 
-    # 2. Strict accelerator requested (e.g. device="cuda" or device="cuda:0"):
-    # Target accelerator primary + CPUExecutionProvider for shape ops
+    # 2. Strict accelerator requested (device="gpu", "accelerator", "cuda", "dml", etc.)
     elif must_accelerator:
-        hint = (preference.hint or "cuda").lower()
-        matched = [p for p in available_set if hint in p.lower() and p != "CPUExecutionProvider"]
-        if matched:
-            providers = matched + ["CPUExecutionProvider"]
+        if preference.hint is None:
+            # Generic accelerator requested (device="gpu" or "accelerator"):
+            # Select the highest-priority non-CPU accelerator available on this machine
+            preferred = [p for p in ONNX_AUTO_PROVIDER_PRIORITY if p != "CPUExecutionProvider" and p in available_set]
+            if preferred:
+                providers = preferred + ["CPUExecutionProvider"]
+            else:
+                # No accelerator available; request CUDA so the downstream check raises a clear failure
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
         else:
-            target_ep = (
-                f"{preference.hint.upper()}ExecutionProvider"
-                if preference.hint and preference.hint not in ("gpu", "cuda")
-                else "CUDAExecutionProvider"
-            )
-            providers = [target_ep, "CPUExecutionProvider"]
+            hint = preference.hint.lower()
+            canonical_ep = EP_NAME_MAP.get(hint)
+            if canonical_ep and canonical_ep in available_set:
+                providers = [canonical_ep, "CPUExecutionProvider"]
+            else:
+                matched = [p for p in available_set if hint in p.lower() and p != "CPUExecutionProvider"]
+                if matched:
+                    providers = matched + ["CPUExecutionProvider"]
+                else:
+                    target_ep = canonical_ep or f"{preference.hint}ExecutionProvider"
+                    providers = [target_ep, "CPUExecutionProvider"]
 
     # 3. device="cpu" requested
     elif preference.intent == HardwareIntent.CPU:
@@ -121,7 +142,7 @@ def resolve_onnx_provider_chain(
     if not providers:
         providers = ["CPUExecutionProvider"]
 
-    # Configure provider options (e.g. device_id for GPU)
+    # Configure provider options (device_id or device_type)
     provider_options: list[dict[str, Any]] = []
     for provider in providers:
         if preference.ordinal is not None and provider != "CPUExecutionProvider":
@@ -225,10 +246,6 @@ def prepare_onnxruntime_environment() -> list[str]:
 # endregion Provider Setup
 
 
-# Best-effort early bootstrap so any later onnxruntime imports in this process
-# see the NVIDIA wheel runtime directories.
-prepare_onnxruntime_environment()
-
 # region ONNXBackend
 
 
@@ -248,7 +265,6 @@ class ONNXBackend:
         self._providers: list[str] = []
         self._requested_providers: list[str] = []
         self._provider_options: list[dict[str, Any]] = []
-        self._requested_precision: str = "auto"
         self._run_lock = threading.RLock()
         self._model_precision: str = "unknown"
 
@@ -260,6 +276,9 @@ class ONNXBackend:
         """Load a plugin-selected ONNX graph for execution."""
         started_at = time.perf_counter()
         logger.debug("Loading ONNX model from %s", model_path)
+
+        # Best-effort early bootstrap so any later onnxruntime imports in this process
+        # see the NVIDIA wheel runtime directories.
         prepare_onnxruntime_environment()
 
         try:
@@ -380,7 +399,6 @@ class ONNXBackend:
             logger.error("ONNX inference failed input_keys=%s", list(input_feed.keys()))
             raise
 
-        # Plugin owns output selection. Return the full list of output arrays.
         return outputs if outputs else []
 
     def clear_cache(self) -> None:
@@ -400,11 +418,20 @@ class ONNXBackend:
             inputs = self._session.get_inputs()
             if inputs and len(inputs[0].shape) > 0:
                 batch_dim = inputs[0].shape[0]
-                # If batch_dim is a fixed integer == 1, graph cannot accept batches
-                if isinstance(batch_dim, int) and batch_dim == 1:
+
+                # If batch_dim is ANY integer, the batch dimension was statically fixed at export time
+                if isinstance(batch_dim, (int, np.integer)):
+                    if batch_dim > 1:
+                        logger.warning(
+                            "ONNX model input '%s' has a fixed static batch size of %d. "
+                            "Arbitrary batching is unsupported; dynamic batch axes should be configured during export.",
+                            inputs[0].name,
+                            batch_dim,
+                        )
                     return False
         except Exception as exc:
             logger.warning("Failed to query ONNX session inputs for dynamic batch support: %s", exc)
+            return False
 
         return True
 
@@ -423,7 +450,7 @@ class ONNXBackend:
             return []
         return [o.name for o in self._session.get_outputs()]
 
-    def input_shape(self) -> list[int]:
+    def input_shape(self) -> list[int | str | None]:
         """Expected input shape (from the model graph)."""
         if self._session is None:
             return []

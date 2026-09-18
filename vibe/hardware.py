@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def list_available_devices() -> list[str]:
-    """Return available hardware accelerators in a user-facing format (e.g., 'cpu', 'cuda:0', 'xpu:0', 'mps')."""
+    """Return available hardware accelerators in a canonical user-facing format (e.g., 'cpu', 'cuda:0', 'xpu:0', 'mps')."""
     candidates: set[str] = {"cpu"}
 
     try:
@@ -12,9 +12,9 @@ def list_available_devices() -> list[str]:
 
         # CUDA and ROCm (AMD HIP) share torch.cuda
         if torch.cuda.is_available():
-            candidates.update({"cuda", "gpu"})
+            candidates.add("cuda")
             for i in range(int(torch.cuda.device_count())):
-                candidates.update({f"cuda:{i}", f"gpu:{i}"})
+                candidates.add(f"cuda:{i}")
 
         # Intel GPU (XPU)
         xpu_backend = getattr(torch, "xpu", None)
@@ -32,15 +32,19 @@ def list_available_devices() -> list[str]:
 
     # ONNX Runtime Execution Provider Discovery
     try:
-        import onnxruntime as ort  # ty:ignore[unresolved-import, unused-ignore-comment]
+        import onnxruntime as ort
 
         available = set(ort.get_available_providers())
+        if "CUDAExecutionProvider" in available or "TensorrtExecutionProvider" in available:
+            candidates.add("cuda")
         if "ROCMExecutionProvider" in available or "MIGraphXExecutionProvider" in available:
             candidates.add("rocm")
         if "OpenVINOExecutionProvider" in available:
             candidates.add("openvino")
         if "DmlExecutionProvider" in available:
             candidates.add("dml")
+        if "CoreMLExecutionProvider" in available:
+            candidates.add("coreml")
     except (ImportError, AttributeError):
         pass
 

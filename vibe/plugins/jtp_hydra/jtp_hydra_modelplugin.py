@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import csv
 import logging
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
+from pydantic import BaseModel, Field
 
 from vibe.backends.base import (
     ArtifactMap,
@@ -20,29 +20,23 @@ from vibe.backends.base import (
     Backend,
     ExecutionPlan,
     FileRole,
-    ModelCapabilities,
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
     RuntimeExecutor,
 )
 from vibe.backends.runtime.pytorch import PyTorchBackend
-from vibe.features import FeatureSpec, InferenceRequest, ValueSchema, transform_meta
+from vibe.contracts import LabelCatalogProvider, ThresholdProvider
+from vibe.metadata import LabelCatalog, LabelInfo, TagFilterRecommendation, ThresholdTable
+from vibe.model_profiles import build_tagger_profile
 from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
     normalize_output_scores,
     resolve_category_name,
 )
-from vibe.result_transforms import (
-    CharacterIPMapping,
-    CleanTags,
-    PluginData,
-    ScoreThresholds,
-    TagLevelThresholds,
-    TagThresholds,
-)
-from vibe.results import OutputType, TagResult
-from vibe.tag_categories import E621_CATEGORY_LABELS, TagCategory
+from vibe.results import TagResult
+from vibe.settings import InferenceRequest, SettingGroupSpec
+from vibe.tag_categories import E621_CATEGORY_LABELS
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -50,30 +44,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class JTPHydraSettings:
-    """Per-call visual token budget configuration."""
+class JTPHydraSettings(BaseModel):
+    """Visual token budget configuration for JTP / Hydra models."""
 
-    feature_id: ClassVar[str] = "jtp_hydra"
-
-    seqlen: int = field(
+    seqlen: int = Field(
         default=1024,
-        metadata=transform_meta(
-            display_name="Sequence Length",
-            description="Maximum visual tokens used to represent an image. Higher values preserve fine detail but use more VRAM.",
-            min_val=64,
-            max_val=2048,
-            step=64,
-            schema=ValueSchema(kind="int"),
-        ),
+        ge=64,
+        le=2048,
+        multiple_of=64,
+        title="Sequence Length",
+        description="Maximum visual tokens used to represent an image. Higher values preserve fine detail but use more VRAM.",
+        json_schema_extra={"scope": "infer"},
     )
 
 
 class JTPHydraBatch(NamedTuple):
     """Preprocessed image data ready for JTP-3 Hydra inference."""
 
-    patches: Tensor  # uint8; shape (max_seq, patch_size*patch_size*3)
-    sizes: Tensor  # uint16; shape (2,)
+    patches: Tensor  # uint8; shape (batch_size, max_seq, patch_size*patch_size*3)
+    sizes: Tensor  # uint16; shape (batch_size, 2)
 
 
 def _preprocess_image_jtp3(image: Any, seqlen: int) -> JTPHydraBatch:
@@ -93,10 +82,10 @@ def _preprocess_image_jtp3(image: Any, seqlen: int) -> JTPHydraBatch:
     # Load sRGB image as HWC PyTorch tensor [H, W, 3] and ensure writable copy
     img_tensor = torch.from_numpy(np.asarray(open_image(image, config)).copy())
 
-    # Slice image to patches
+    # Slice image to patches (returns batched [1, S, D] and [1, 2])
     patches, sizes = stack([img_tensor], 16, seqlen)
 
-    return JTPHydraBatch(patches.squeeze(0), sizes.squeeze(0))
+    return JTPHydraBatch(patches, sizes)
 
 
 def _parse_jtp_val_csv(csv_path: Path) -> dict[str, float]:
@@ -116,7 +105,8 @@ def _parse_jtp_val_csv(csv_path: Path) -> dict[str, float]:
             fn = float(row.get("fn", 0.0))
 
             f1 = (2 * tp) / (2 * tp + fp + fn + 1e-9)
-            if tag not in tag_best_f1 or f1 > tag_best_f1[tag]:
+            # Only record thresholds if the tag achieves a positive F1 score
+            if f1 > 0.0 and (tag not in tag_best_f1 or f1 > tag_best_f1[tag]):
                 tag_best_f1[tag] = f1
                 tag_best_thresh[tag] = thresh
 
@@ -128,37 +118,25 @@ class JTPHydraBasePlugin(ModelPlugin):
 
     family_name = "RedRocket JTP Hydra Taggers"
 
-    capabilities = ModelCapabilities(
-        output_type=OutputType.TAGS,
-        output_categories=(
-            TagCategory.GENERAL,
-            TagCategory.ARTIST,
-            TagCategory.CONTRIBUTOR,
-            TagCategory.COPYRIGHT,
-            TagCategory.CHARACTER,
-            TagCategory.SPECIES,
-            TagCategory.META,
-            TagCategory.LORE,
-        ),
-        features=(
-            FeatureSpec.from_transform(CleanTags),
-            FeatureSpec.from_transform(CharacterIPMapping),
-            FeatureSpec.from_transform(ScoreThresholds, recommended=ScoreThresholds(threshold=0.35)),
-            FeatureSpec.from_transform(TagLevelThresholds),
-            FeatureSpec.from_config(
-                JTPHydraSettings,
-                stage="preprocess",
-                binding="plugin",
-                display_name="Sequence Length",
-                description="Visual token sequence budget for NaFlex patch stacker.",
-                recommended=JTPHydraSettings(seqlen=1024),
-            ),
+    profile = build_tagger_profile(
+        recommended_filter=TagFilterRecommendation(global_threshold=0.35),
+    )
+    implements = (LabelCatalogProvider, ThresholdProvider)
+
+    settings = (
+        SettingGroupSpec.from_model(
+            JTPHydraSettings,
+            id="jtp_hydra",
+            display_name="Sequence Length",
+            description="Visual token sequence budget for NaFlex patch stacker.",
+            recommended=JTPHydraSettings(seqlen=1024),
         ),
     )
 
+    catalog: LabelCatalog
+    thresholds: ThresholdTable
     _raw_tag_names: list[str]
     _category_indices: dict[str, list[int]]
-    _tag_thresholds: dict[str, float]
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         """Parse tag labels, category indices, and optimal thresholds directly from safetensors metadata or validation CSV."""
@@ -167,9 +145,13 @@ class JTPHydraBasePlugin(ModelPlugin):
 
         self._raw_tag_names = []
         self._category_indices = {}
-        self._tag_thresholds = {}
+        raw_tag_categories: list[str] = []
+        tag_thresholds_map: dict[str, float] = {}
+        thresholds_source = "empty"
+        label_infos: list[LabelInfo] = []
+        seen_categories: set[str] = set()
 
-        # 1. Parse tag labels and embedded validation tensor directly via safe_open (0 MB RAM load)
+        # Parse tag labels and embedded validation tensor directly via safe_open (0 MB RAM load)
         try:
             from safetensors import safe_open
 
@@ -180,18 +162,19 @@ class JTPHydraBasePlugin(ModelPlugin):
                     for idx, line in enumerate(meta["classifier.labels"].splitlines()):
                         line = line.strip()
                         if not line:
-                            continue
-
-                        # Split into at most 3 parts: [tag, category, implications]
-                        parts = line.split(maxsplit=2)
-                        tag = parts[0]
-                        cat_raw = parts[1] if len(parts) > 1 else "general"
-                        # implications = parts[2] if len(parts) > 2 else ""  # Ready for future use
-
-                        cat_name = resolve_category_name(cat_raw, E621_CATEGORY_LABELS, namespace="e621")
+                            tag = f"unknown_{idx}"
+                            cat_name = "unknown"
+                        else:
+                            # Split into at most 3 parts: [tag, category, implications]
+                            parts = line.split(maxsplit=2)
+                            tag = parts[0]
+                            cat_raw = parts[1] if len(parts) > 1 else "general"
+                            cat_name = resolve_category_name(cat_raw, E621_CATEGORY_LABELS, namespace="e621")
 
                         self._raw_tag_names.append(tag)
+                        raw_tag_categories.append(cat_name)
                         self._category_indices.setdefault(cat_name, []).append(idx)
+                        seen_categories.add(cat_name)
 
                 # Extract embedded 'validation' tensor (Hydra 3.5 format)
                 keys = f.keys()
@@ -202,30 +185,47 @@ class JTPHydraBasePlugin(ModelPlugin):
                     fn = val_data[:, :, 3]
 
                     f1 = (2 * tp) / (2 * tp + fp + fn + 1e-9)
+
+                    # Guard against argmax(zeros) trap on rare tags with zero true positives
+                    max_f1 = np.max(f1, axis=1)
+                    valid_mask = max_f1 > 0.0
+
                     best_bins = np.argmax(f1, axis=1)
                     steps = np.linspace(0.01, 0.99, 99)
                     best_thresholds = steps[best_bins]
 
                     if self._raw_tag_names:
-                        self._tag_thresholds = {
+                        tag_thresholds_map = {
                             tag: float(thresh)
-                            for tag, thresh in zip(self._raw_tag_names, best_thresholds, strict=False)
+                            for tag, thresh, is_valid in zip(
+                                self._raw_tag_names, best_thresholds, valid_mask, strict=False
+                            )
+                            if is_valid
                         }
+                    thresholds_source = "embedded"
                     logger.info(
-                        "Extracted optimal thresholds from embedded validation tensor for %s", self.identity.model_id
+                        "Extracted %d calibrated thresholds from embedded validation tensor for %s (omitted %d untrainable tags)",
+                        len(tag_thresholds_map),
+                        self.identity.model_id,
+                        len(self._raw_tag_names) - len(tag_thresholds_map),
                     )
+
         except Exception as exc:
             logger.debug("Failed to extract metadata/tensors directly via safe_open: %s", exc)
 
-        # 3. Fall back to parsing optional val_csv if no embedded threshold tensor was present
-        if not self._tag_thresholds and val_csv_path is not None:
-            self._tag_thresholds = _parse_jtp_val_csv(val_csv_path)
+        # Fallback to validation CSV if embedded tensor is not present (JTP-3 format)
+        if not tag_thresholds_map and val_csv_path is not None:
+            tag_thresholds_map = _parse_jtp_val_csv(val_csv_path)
+            thresholds_source = "val_csv"
             logger.info("Parsed optimal thresholds from val_csv for %s", self.identity.model_id)
 
-    def provide_transform_data(self) -> tuple[PluginData, ...]:
-        if self._tag_thresholds:
-            return (TagThresholds(values=self._tag_thresholds),)
-        return ()
+        for idx, tag in enumerate(self._raw_tag_names):
+            cat_name = raw_tag_categories[idx] if idx < len(raw_tag_categories) else "unknown"
+            thresh = tag_thresholds_map.get(tag)
+            label_infos.append(LabelInfo(index=idx, name=tag, category=cat_name, threshold=thresh))
+
+        self.catalog = LabelCatalog(labels=tuple(label_infos), categories=tuple(seen_categories))
+        self.thresholds = ThresholdTable(values=tag_thresholds_map, source=thresholds_source)
 
     def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
         """Build the native JTP-3 / Hydra model graph."""
@@ -252,8 +252,8 @@ class JTPHydraBasePlugin(ModelPlugin):
         import torch
 
         try:
-            patches = torch.stack([item.patches for item in samples], dim=0)
-            sizes = torch.stack([item.sizes for item in samples], dim=0)
+            patches = torch.cat([item.patches for item in samples], dim=0)
+            sizes = torch.cat([item.sizes for item in samples], dim=0)
             return JTPHydraBatch(patches, sizes)
         except Exception as exc:
             raise ValueError(f"Failed to collate JTPHydraBatch: {exc}") from exc

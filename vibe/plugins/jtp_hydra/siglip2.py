@@ -1,6 +1,7 @@
 from collections import defaultdict
+from collections.abc import Collection, Iterable
 from itertools import product
-from typing import Collection, Iterable, NotRequired, TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 import torch
 from torch import Tensor
@@ -264,7 +265,7 @@ class NaFlexVit(Module):
         super().__init__()
 
         self.embeds = NaFlexEmbeds(device=device, dtype=dtype)
-        self.blocks = ModuleList(NaFlexBlock(device=device, dtype=dtype) for _ in range(0, 27))
+        self.blocks = ModuleList(NaFlexBlock(device=device, dtype=dtype) for _ in range(27))
         self.norm = LayerNorm(1152, device=device, dtype=dtype)
 
         self.attn_pool: Module = Identity()

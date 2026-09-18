@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image
 
 from vibe.backends.base import (
     ArtifactMap,
@@ -15,7 +16,6 @@ from vibe.backends.base import (
     Backend,
     ExecutionPlan,
     FileRole,
-    ModelCapabilities,
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
@@ -23,19 +23,42 @@ from vibe.backends.base import (
 )
 from vibe.backends.runtime.onnx import ONNXBackend
 from vibe.backends.runtime.pytorch import PyTorchBackend
-from vibe.features import InferenceRequest
+from vibe.contracts import CalibrationProvider, LabelCatalogProvider
+from vibe.metadata import CalibrationTable, LabelCatalog, LabelInfo
+from vibe.model_profiles import build_multi_scorer_profile
 from vibe.plugins.shared.scores_utils import (
-    get_weighted_mean,
     load_samples_file,
-    normalize_multiscore,
     normalize_scalar,
+    softmax,
 )
-from vibe.results import MultiScoreResult, OutputType, ScoreEntry
+from vibe.plugins.shared.tagger_shared import _to_rgb_with_background
+from vibe.results import MultiScoreResult, ScoreEntry
+from vibe.settings import InferenceRequest
 
 logger = logging.getLogger(__name__)
 
 
 # region Helpers
+
+
+def _calculate_aesthetic_rank_score(entries: list[ScoreEntry]) -> float:
+    """
+    Calculate the expected ranking score over DeepGHS categorical aesthetic labels.
+    DeepGHS meta.json labels run in descending order: masterpiece (weight 6) down to worst (weight 0).
+    """
+    total = len(entries)
+    if total == 0:
+        return 0.0
+    return float(sum((total - 1 - i) * entry.normalized_score for i, entry in enumerate(entries)))
+
+
+def _normalize_aesthetic_score(entries: list[ScoreEntry]) -> float:
+    """Normalize categorical aesthetic expectations to a [0, 1] range."""
+    if not entries:
+        return 0.0
+    rank_score = _calculate_aesthetic_rank_score(entries)
+    max_v = float(max(len(entries) - 1, 1))
+    return float(np.clip(rank_score / max_v, 0.0, 1.0))
 
 
 def _build_variants(hf_subdir: str | None = None) -> tuple[ModelVariant, ...]:
@@ -76,13 +99,14 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
     SCORE_MIN = 0.0
     SCORE_MAX = 1.0
 
-    capabilities = ModelCapabilities(
-        output_type=OutputType.MULTI_SCORE,
-        output_extras={"percentile": "Score percentile calibrated against training dataset samples."},
+    profile = build_multi_scorer_profile(
+        output_extras={"percentile": "Score percentile calibrated against training dataset samples."}
     )
+    implements = (LabelCatalogProvider, CalibrationProvider)
 
+    catalog: LabelCatalog
+    calibration: CalibrationTable
     _labels: list[str]
-    _mark_table: tuple[np.ndarray, np.ndarray] | None = None
     _image_size: int
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
@@ -94,10 +118,14 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
             raise RuntimeError("meta.json must contain a list of label strings.")
         self._labels = [str(label) for label in labels]
 
+        label_infos = [LabelInfo(index=idx, name=label, category="general") for idx, label in enumerate(self._labels)]
+        self.catalog = LabelCatalog(labels=tuple(label_infos), categories=("general",))
+
         self._image_size = self._resolve_image_size(meta)
 
         samples_path = artifacts.get("samples")
-        self._mark_table = load_samples_file(samples_path)
+        x, y = load_samples_file(samples_path)
+        self.calibration = CalibrationTable(x=x, y=y, source="samples.npz")
 
     def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
         if plan.backend == Backend.ONNX:
@@ -126,55 +154,58 @@ class DeepGHSAnimeAesPlugin(ModelPlugin):
         raise ValueError(f"Unsupported backend '{plan.backend}'.")
 
     def preprocess(self, image: Any, request: InferenceRequest | None = None) -> np.ndarray:
-        from PIL import Image
-
         if not isinstance(image, Image.Image):
             image = Image.fromarray(np.asarray(image))
 
-        image = image.convert("RGBA")
-        background = Image.new("RGBA", image.size, (255, 255, 255))
-        image = Image.alpha_composite(background, image).convert("RGB")
+        image = _to_rgb_with_background(image)
         image = image.resize((self._image_size, self._image_size), Image.Resampling.BICUBIC)
 
         image_array = np.asarray(image, dtype=np.float32)
-        image_array = np.transpose(image_array, (2, 0, 1))
-        image_array = (image_array / 255.0).astype(np.float32)
-        mean = np.asarray([0.5], dtype=np.float32).reshape((-1, 1, 1))
-        std = np.asarray([0.5], dtype=np.float32).reshape((-1, 1, 1))
-        image_array = (image_array - mean) / std
+        image_array = (image_array / 127.5) - 1.0
+        image_array = np.ascontiguousarray(np.transpose(image_array, (2, 0, 1)))
         return np.expand_dims(image_array, axis=0)
 
     def postprocess(self, raw_output: Any) -> MultiScoreResult:
-        scores = self._flatten_scores(raw_output)
+        raw_scores = self._flatten_scores(raw_output)
 
-        if len(scores) != len(self._labels):
+        if len(raw_scores) != len(self._labels):
             logger.warning(
                 "Score length mismatch for model '%s': expected %d scores for labels %s, got %d.",
                 self.identity.model_id,
                 len(self._labels),
                 self._labels,
-                len(scores),
+                len(raw_scores),
             )
+
+        # PyTorch TorchScript models output raw logits; ONNX exports may or may not embed Softmax.
+        # If values fall outside [0, 1] or their sum deviates from 1.0, convert logits via Softmax.
+        is_logits = (
+            self.active_backend == Backend.PYTORCH
+            or np.any(raw_scores < -1e-4)
+            or np.any(raw_scores > 1.0 + 1e-4)
+            or abs(float(np.sum(raw_scores)) - 1.0) > 0.05
+        )
+
+        probabilities = softmax(raw_scores) if is_logits else np.clip(raw_scores, 0.0, 1.0)
 
         entries = [
             ScoreEntry(
                 label=label,
-                score=float(score),
+                score=float(prob),
                 score_min=self.SCORE_MIN,
                 score_max=self.SCORE_MAX,
-                normalized_score=normalize_scalar(float(score), self.SCORE_MIN, self.SCORE_MAX),
+                normalized_score=normalize_scalar(float(prob), self.SCORE_MIN, self.SCORE_MAX),
             )
-            for label, score in zip(self._labels, scores, strict=False)
+            for label, prob in zip(self._labels, probabilities, strict=False)
         ]
 
-        generic_normalized = normalize_multiscore(entries)
+        generic_normalized = _normalize_aesthetic_score(entries)
 
-        # Calculate special dataset percentile
+        # Calculate calibrated dataset percentile
         extras = {}
-        if self._mark_table is not None:
-            weighted_mean = get_weighted_mean(entries)
-            x, y = self._mark_table
-            extras["percentile"] = float(np.interp(weighted_mean, x, y))
+        if self.calibration is not None:
+            rank_score = _calculate_aesthetic_rank_score(entries)
+            extras["percentile"] = float(np.interp(rank_score, self.calibration.x, self.calibration.y))
 
         return MultiScoreResult(entries=entries, normalized_score=generic_normalized, extras=extras)
 

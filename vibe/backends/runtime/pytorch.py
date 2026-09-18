@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_pytorch_device(preference: ExecutionPreference, torch_module: Any) -> str:
+    # 1. Explicit CPU requested
     if preference.intent == HardwareIntent.CPU:
         return "cpu"
 
@@ -30,7 +31,20 @@ def _resolve_pytorch_device(preference: ExecutionPreference, torch_module: Any) 
     mps_backend = getattr(torch_module.backends, "mps", None)
     has_mps = bool(mps_backend and callable(getattr(mps_backend, "is_available", None)) and mps_backend.is_available())
 
-    # User explicitly hinted a device class
+    # 2. Specific device family explicitly hinted (e.g. device="cuda", "rocm", "mps", "xpu")
+    if preference.hint in ("cuda", "rocm"):
+        if not has_cuda:
+            raise RuntimeError(
+                "CUDA/ROCm device requested, but torch.cuda is not available. "
+                "Verify PyTorch was installed with CUDA or ROCm support."
+            )
+        return f"cuda:{preference.ordinal}" if preference.ordinal is not None else "cuda"
+
+    if preference.hint == "mps":
+        if not has_mps:
+            raise RuntimeError("Apple Silicon GPU (mps) requested, but torch.backends.mps is not available.")
+        return "mps"
+
     if preference.hint == "xpu":
         if not has_xpu:
             raise RuntimeError(
@@ -39,16 +53,17 @@ def _resolve_pytorch_device(preference: ExecutionPreference, torch_module: Any) 
             )
         return f"xpu:{preference.ordinal}" if preference.ordinal is not None else "xpu"
 
+    # 3. AUTO: Pick best available accelerator with fallback to CPU (preserving requested ordinal)
     if preference.intent == HardwareIntent.AUTO:
         if has_cuda:
-            return "cuda"
+            return f"cuda:{preference.ordinal}" if preference.ordinal is not None else "cuda"
         if has_xpu:
-            return "xpu"
+            return f"xpu:{preference.ordinal}" if preference.ordinal is not None else "xpu"
         if has_mps:
             return "mps"
         return "cpu"
 
-    # Explicit ACCELERATOR requested (general or "cuda"/"gpu")
+    # 4. Generic ACCELERATOR requested (e.g. device="gpu" or device="accelerator")
     if has_cuda:
         return f"cuda:{preference.ordinal}" if preference.ordinal is not None else "cuda"
     if has_xpu:
@@ -58,7 +73,7 @@ def _resolve_pytorch_device(preference: ExecutionPreference, torch_module: Any) 
 
     device_str = preference.hint or "accelerator"
     raise RuntimeError(
-        f"Device '{device_str}' requested, but no CUDA, XPU, or MPS acceleration is available in PyTorch. "
+        f"Device '{device_str}' requested, but no CUDA, ROCm, XPU, or MPS acceleration is available in PyTorch. "
         "If using NVIDIA GPU, verify PyTorch was installed with CUDA support "
     )
 
@@ -163,14 +178,22 @@ class PyTorchBackend:
                 if not val.flags.c_contiguous:
                     val = np.ascontiguousarray(val)
                 val = torch_module.from_numpy(val)
+
             if isinstance(val, torch_module.Tensor):
                 if val.dtype.is_floating_point:
-                    # If autocast is off, inputs must match weight dtype
+                    # 1. If autocast is OFF, inputs must match explicit weight dtype (e.g. fp16 or fp32)
                     if not plan.autocast_enabled and self._weight_dtype is not None:
                         return val.to(device=self._device, dtype=self._weight_dtype)
-                    # If autocast is on, leave as float32 on the device
+
+                    # 2. If autocast is ON, downcast float64 (NumPy default) to float32
+                    # so torch.autocast can downcast to fp16/bf16 without crashing
+                    if val.dtype == torch_module.float64:
+                        return val.to(device=self._device, dtype=torch_module.float32)
+
                     return val.to(device=self._device)
+
                 return val.to(device=self._device)
+
             return val
 
         if isinstance(inputs, dict):
@@ -188,6 +211,10 @@ class PyTorchBackend:
         return (_to_dev(inputs),), {}
 
     def _tensor_to_numpy(self, output: Any, torch_module: Any) -> Any:
+        # Preserve None values cleanly without casting to 0-d object arrays
+        if output is None:
+            return None
+
         if isinstance(output, torch_module.Tensor):
             out = output.detach().cpu()
             if out.dtype in (torch_module.bfloat16, torch_module.float16):
@@ -261,8 +288,10 @@ class PyTorchBackend:
         # 1. Resolve Compute Policy
         compute_policy = request.compute
         if compute_policy == PrecisionPolicy.AUTO:
-            if self._autocast_device_type == "cuda":
+            if self._autocast_device_type in ("cuda", "xpu"):
                 compute_policy = PrecisionPolicy.BF16 if bf16_supported else PrecisionPolicy.FP16
+            elif self._autocast_device_type == "mps":
+                compute_policy = PrecisionPolicy.FP16
             else:
                 compute_policy = PrecisionPolicy.FP32
 
@@ -271,7 +300,9 @@ class PyTorchBackend:
             if request.fallback_allowed:
                 # CPU should fall back to fp32. GPUs fall back to fp16.
                 fallback_target = (
-                    PrecisionPolicy.FP16 if self._autocast_device_type in ("cuda", "mps") else PrecisionPolicy.FP32
+                    PrecisionPolicy.FP16
+                    if self._autocast_device_type in ("cuda", "mps", "xpu")
+                    else PrecisionPolicy.FP32
                 )
                 logger.warning(
                     "Device '%s' does not support bfloat16 natively. Falling back compute to %s.",
@@ -317,7 +348,7 @@ class PyTorchBackend:
         else:
             self._model.to(device=self._device)
 
-        # 5. Lock in the plan
+        # 4. Lock in the resolved plan
         self._plan = ResolvedPrecisionPlan(
             weight_dtype=str(self._weight_dtype) if self._weight_dtype else "preserve",
             compute_dtype=str(self._compute_dtype),

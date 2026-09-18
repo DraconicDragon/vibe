@@ -5,7 +5,7 @@ from torch import Tensor
 from torch.nn import Module, Parameter
 from torch.nn.functional import dropout, silu, softplus
 
-__all__ = ("GLU", "SwiGLU", "SpGLU")
+__all__ = ("GLU", "SpGLU", "SwiGLU")
 
 
 class GLU(Module):

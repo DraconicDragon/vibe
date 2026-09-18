@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from enum import Enum, IntEnum
+from enum import IntEnum, StrEnum
 
 # region Canonical Category Taxonomy
 
 
-class TagCategory(str, Enum):
+class TagCategory(StrEnum):
     """Canonical category names output by vibe tagger models."""
 
     GENERAL = "general"
@@ -20,9 +20,6 @@ class TagCategory(str, Enum):
     INVALID = "invalid"
     RATING = "rating"
     LORE = "lore"
-
-    def __str__(self) -> str:
-        return self.value
 
 
 # endregion
@@ -46,8 +43,6 @@ class DanbooruTagCategory(IntEnum):
 class E621TagCategory(IntEnum):
     """Integer category IDs used in e621 tag metadata."""
 
-    # NOTE: e621 based models likely use META category for rating tags
-
     GENERAL = 0
     ARTIST = 1
     CONTRIBUTOR = 2
@@ -58,17 +53,6 @@ class E621TagCategory(IntEnum):
     META = 7
     LORE = 8
 
-
-# todo: implement model
-# class AestheticBucketSKAR(StrEnum):
-#     """Named buckets used by Shio-Koube's aesthetic models.
-#         - ConvNext-aesthetic-rater
-#         - Anime-rater-2
-#     """
-
-#     GOOD = "good"
-#     NORMAL = "normal"
-#     BAD = "bad"
 
 # Mappings from dataset integer IDs to canonical TagCategory enums
 DANBOORU_CATEGORY_LABELS: dict[int, TagCategory] = {

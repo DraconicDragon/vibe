@@ -13,10 +13,10 @@ from PIL import Image
 from vibe.backends.base import ArtifactMap, Backend, ExecutionPlan, RuntimeExecutor
 from vibe.backends.runtime.onnx import ONNXBackend
 from vibe.backends.runtime.pytorch import PyTorchBackend
-from vibe.features import InferenceRequest
+from vibe.settings import InferenceRequest
 
 if TYPE_CHECKING:
-    from vibe.backends.base import ModelIdentity
+    from vibe.metadata import ModelIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,14 @@ class TimmPipelineMixin:
 
     # region Runtime Builder
 
+    def bind_execution_state(self, plan: ExecutionPlan) -> None:
+        """Bind the execution context for this plugin instance for the current session."""
+        self.active_backend = plan.backend
+        self._active_backend = plan.backend
+
     def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
         """Build an ONNX or PyTorch runtime executor for a timm model."""
-        self._active_backend = plan.backend
+        self.bind_execution_state(plan)
 
         if plan.backend == Backend.ONNX:
             onnx_path = artifacts.get("model_onnx")
@@ -273,6 +278,14 @@ class TimmPipelineMixin:
                 if isinstance(value, str) and value.strip():
                     return value.strip()
 
+            for cfg_key in ("pretrained_cfg", "pretrained_cfg_overlay"):
+                sub_cfg = config.get(cfg_key)
+                if isinstance(sub_cfg, dict):
+                    for key in ("architecture", "model_type", "model_name", "arch"):
+                        value = sub_cfg.get(key)
+                        if isinstance(value, str) and value.strip():
+                            return value.strip()
+
         repo = self.default_repo_id or ""
         suffix = repo.split("/", 1)[-1]
         if ".dbv" in suffix:
@@ -298,6 +311,13 @@ class TimmPipelineMixin:
     # region Preprocess
 
     def preprocess(self, image: Any, request: InferenceRequest | None = None) -> np.ndarray:
+        backend = self.active_backend if self.active_backend is not None else self._active_backend
+        if backend is None:
+            raise RuntimeError(
+                f"Plugin '{self.identity.model_id}' has no active backend bound to this session. "
+                "This usually means the execution state was not initialized before reuse of a pooled runtime."
+            )
+
         if self._runtime_timm_transform is not None:
             return self.preprocess_with_native_timm(image, self._runtime_timm_transform)
         return self.preprocess_with_timm_steps(image, self._runtime_preprocess_steps)

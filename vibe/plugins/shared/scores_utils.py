@@ -6,14 +6,19 @@ from pathlib import Path
 
 import numpy as np
 
-from vibe.results import ScoreEntry
-
 
 def normalize_scalar(score: float, score_min: float, score_max: float) -> float:
     """Normalize a scalar score to a strict [0, 1] range."""
     if score_max <= score_min:
         return 0.0
     return float(np.clip((score - score_min) / (score_max - score_min), 0.0, 1.0))
+
+
+def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
+    """Compute softmax along specified axis with numerical stability."""
+    shifted = x - np.max(x, axis=axis, keepdims=True)
+    exp = np.exp(shifted)
+    return exp / np.sum(exp, axis=axis, keepdims=True)
 
 
 def load_samples_file(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -28,34 +33,3 @@ def load_samples_file(path: Path) -> tuple[np.ndarray, np.ndarray]:
     x = np.concatenate(([min_x], x, [x[-1] + 1e-6])).astype(np.float32, copy=False)
     y = np.concatenate(([0.0], y, [1.0])).astype(np.float32, copy=False)
     return x, y
-
-
-def get_weighted_mean(entries: list[ScoreEntry]) -> float:
-    """
-    Calculate the weighted mean of a list of ScoreEntries.
-    Assumes entries are ordered by concept weight (e.g. [good, normal, bad] -> weights [2, 1, 0]).
-    Uses the normalized_score of each entry to safely handle mixed bounds.
-    """
-    total = len(entries)
-    weighted_mean = 0.0
-    for i, entry in enumerate(entries):
-        weighted_mean += (total - 1 - i) * entry.normalized_score
-    return weighted_mean
-
-
-def normalize_multiscore(
-    entries: list[ScoreEntry],
-    percentiles: tuple[np.ndarray, np.ndarray] | None = None,
-) -> float:
-    """Extract a [0, 1] normalized summary score from a list of ScoreEntries."""
-    if not entries:
-        return 0.0
-
-    weighted_mean = get_weighted_mean(entries)
-
-    if percentiles is not None:
-        x, y = percentiles
-        return float(np.interp(weighted_mean, x, y))
-
-    max_v = float(max(len(entries) - 1, 1))
-    return float(np.clip((weighted_mean - 0.0) / max_v, 0.0, 1.0)) if max_v > 0.0 else 0.0

@@ -6,6 +6,7 @@ _reference/
 thing_scripts/
 example/images/
 example/_*
+ta/
 
 # temp
 #pyproject.toml

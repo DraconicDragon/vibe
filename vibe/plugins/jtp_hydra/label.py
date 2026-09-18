@@ -1,9 +1,10 @@
 import random
 from collections import defaultdict
+from collections.abc import Callable, Iterable
 from functools import cache
 from itertools import chain
 from sys import intern
-from typing import Callable, Iterable, TextIO
+from typing import TextIO
 
 from torch import Tensor
 

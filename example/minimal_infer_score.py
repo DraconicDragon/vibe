@@ -14,8 +14,9 @@ MODEL_SOURCE = "/home/drac/dev/models/seperate/anime_aesthetic/swinv2pv3_v0_448_
 with vibe.load(
     "dghs-aes-swinv2pv3-ls0.2-x",
     source=MODEL_SOURCE,
+    # device="cpu",
 ) as session:
-    result = session.infer("/mnt/P5P/Hydrus/hydrus-source/db/client_files/f9d/c/9dcd513602d7b162e5778c40889a1ca32092954b266ec604aaf6a8a8fc69063b.png").first()
+    result = session.infer("example/example.jpg").first()
 
     if is_multi_score_result(result):
         print("Aesthetic Scores:")

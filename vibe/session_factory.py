@@ -9,7 +9,6 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from vibe.backends.base import (
-    ArtifactMap,
     Backend,
     ExecutionPlan,
     ExecutionPreference,
@@ -18,7 +17,8 @@ from vibe.backends.base import (
     ModelVariant,
     RuntimeExecutor,
 )
-from vibe.exceptions import LoaderError, SessionError
+from vibe.contracts import verify_plugin_contract
+from vibe.exceptions import LoaderError, PluginContractError, SessionError
 from vibe.hf_downloader import get_auto_download_default
 from vibe.loader import resolve_variant_artifacts
 from vibe.precision import PrecisionPolicy, PrecisionRequest, parse_precision
@@ -35,10 +35,11 @@ def _resolve_backend_candidates(
     plugin_cls: type[ModelPlugin],
     requested_backend: Backend | str | None,
     preference: ExecutionPreference,
-) -> list[Backend]:
-    """Returns a prioritized list of backends to try."""
-    supported = [v.backend for v in plugin_cls.variants]
+) -> set[Backend]:
+    """Returns the set of backends to try based on hardware preference and availability."""
+    supported = {v.backend for v in plugin_cls.variants}
 
+    # Explicit backend requested by user
     if requested_backend is not None:
         if isinstance(requested_backend, str):
             try:
@@ -54,12 +55,12 @@ def _resolve_backend_candidates(
                 f"Model '{plugin_cls.identity.model_id}' does not support backend '{selected.value}'. "
                 f"Supported: {[b.value for b in supported]}"
             )
-        return [selected]
+        return {selected}
 
     onnx_ok, onnx_accel = _onnx_runtime_capabilities()
     torch_ok, torch_accel = _pytorch_runtime_capabilities()
 
-    # Map available backends to whether they have GPU/accelerator support
+    # Map available backends to whether they have active accelerator support
     available: dict[Backend, bool] = {}
     if Backend.PYTORCH in supported and torch_ok:
         available[Backend.PYTORCH] = torch_accel
@@ -72,7 +73,7 @@ def _resolve_backend_candidates(
             f"Checked PyTorch (installed={torch_ok}), ONNX Runtime (installed={onnx_ok})."
         )
 
-    # Fail hard if an accelerator was explicitly requested but no GPU acceleration is active in any runtime
+    # Fail hard if an accelerator was explicitly requested but no GPU acceleration is active
     if preference.intent == HardwareIntent.ACCELERATOR and not any(available.values()):
         device_str = preference.hint or "accelerator"
         diag = [
@@ -90,32 +91,18 @@ def _resolve_backend_candidates(
             f"Backend capabilities: {', '.join(diag)}."
         )
 
-    if len(available) == 1:
-        return list(available.keys())
-
-    # Framework-specific hints force a preferred ordering
-    if preference.hint in {"mps", "xpu"}:
-        return [Backend.PYTORCH, Backend.ONNX]
-    if preference.hint in {"rocm", "dml", "openvino"}:
-        return [Backend.ONNX, Backend.PYTORCH]
-
-    # If accelerator requested, prefer the backend that actually has GPU acceleration available
+    # If accelerator was requested, prioritize backends that actually provide acceleration
     if preference.intent == HardwareIntent.ACCELERATOR:
-        pytorch_accel = available[Backend.PYTORCH]
-        onnx_accel = available[Backend.ONNX]
+        accel_backends = {b for b, has_accel in available.items() if has_accel}
+        if accel_backends:
+            return accel_backends
 
-        if pytorch_accel and not onnx_accel:
-            return [Backend.PYTORCH, Backend.ONNX]
-        if onnx_accel and not pytorch_accel:
-            return [Backend.ONNX, Backend.PYTORCH]
-
-    # Default preference when capabilities are equivalent (PyTorch preferred)
-    return [Backend.PYTORCH, Backend.ONNX]
+    return set(available.keys())
 
 
 def build_session(
     plugin_cls: type[ModelPlugin],
-    source: str,
+    source: str | None = None,
     backend: Backend | str | None = None,
     variant: str | None = None,
     device: str = "auto",
@@ -146,8 +133,8 @@ def build_session(
     if variant is not None:
         target_variant = next((v for v in plugin_cls.variants if v.variant_id == variant), None)
         if not target_variant:
-            available = [v.variant_id for v in plugin_cls.variants if v.variant_id]
-            raise SessionError(f"Model '{model_id}' has no variant '{variant}'. Available variants: {available}")
+            available_vars = [v.variant_id for v in plugin_cls.variants if v.variant_id]
+            raise SessionError(f"Model '{model_id}' has no variant '{variant}'. Available variants: {available_vars}")
 
         # Check for explicit backend conflict
         if backend is not None:
@@ -159,21 +146,33 @@ def build_session(
                 )
         variants_to_try = [target_variant]
     else:
-        candidates = _resolve_backend_candidates(plugin_cls, backend, preference)
-        # Add all variants matching the candidate backends, preserving order of declaration
-        for cand in candidates:
-            variants_to_try.extend(v for v in plugin_cls.variants if v.backend == cand)
+        candidate_backends = _resolve_backend_candidates(plugin_cls, backend, preference)
+        # Preserve the plugin's declared variant order among valid candidate backends
+        variants_to_try = [v for v in plugin_cls.variants if v.backend in candidate_backends]
 
     failures = []
 
-    # 2. Try loading variants until one succeeds
+    # 2. Try loading variants in declared priority order until one succeeds
     for selected_variant in variants_to_try:
-        resolved_variant = selected_variant.resolve(plugin_cls.default_repo_id)
-        candidate_backend = resolved_variant.backend
+        candidate_backend = selected_variant.backend
+
+        # Resolve effective source for this variant:
+        # User explicit source takes priority; otherwise use variant.repo_id or default_repo_id.
+        if source is not None and source.strip():
+            effective_source = source.strip()
+        else:
+            default_repo = selected_variant.repo_id or getattr(plugin_cls, "default_repo_id", "")
+            if not default_repo:
+                raise SessionError(
+                    f"Model '{model_id}' variant '{selected_variant.variant_id}' has no default repository. "
+                    "Provide source explicitly via source=..."
+                )
+            effective_source = f"hf:{default_repo}"
+
         try:
             file_map = resolve_variant_artifacts(
-                source=source,
-                variant=resolved_variant,
+                source=effective_source,
+                variant=selected_variant,
                 revision=hf_revision,
                 cache_dir=hf_cache_dir,
                 allow_download=effective_auto_download,
@@ -206,6 +205,10 @@ def build_session(
         try:
             plugin = plugin_cls()
             plugin.load_ancillary(file_map)
+            plugin.bind_execution_state(plan)
+
+            # FAIL-FAST: Verify plugin contract immediately after loading attributes
+            verify_plugin_contract(plugin)
 
             pool_key = (plugin_cls, file_map.cache_key, plan)
             runtime, release_fn = _acquire_runtime(
@@ -213,6 +216,9 @@ def build_session(
                 model_id=model_id,
                 build=lambda p=plugin, fm=file_map, ep=plan: p.build_runtime(fm, ep),
             )
+        except PluginContractError:
+            # Do not swallow contract errors during fallback iterations
+            raise
         except Exception as exc:
             if len(variants_to_try) == 1 or backend is not None:
                 raise SessionError(f"Failed to build runtime for '{model_id}': {exc}") from exc
@@ -258,7 +264,7 @@ def build_session(
             backend_instance=runtime,
             plan=plan,
             file_map=file_map,
-            source=source,
+            source=effective_source,
             auto_download=effective_auto_download,
             memory_tracking=memory_tracking,
             backend_release=release_fn,

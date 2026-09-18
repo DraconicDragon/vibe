@@ -1,8 +1,9 @@
 import re
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from functools import cache
 from itertools import islice
-from typing import Callable, Iterable, Sequence, TextIO, TypeAlias
+from typing import TextIO, TypeAlias
 
 import torch
 from torch import Tensor
@@ -10,23 +11,23 @@ from torch import Tensor
 from .label import Label
 
 __all__ = (
-    "IMPLICATION_MODES",
     "DEFAULT_METRIC",
-    "Metric",
-    "MetricLike",
-    "Operator",
+    "IMPLICATION_MODES",
     "Calibration",
+    "ConstrainImplications",
     "ExclusiveGroup",
     "FilterLabels",
     "FilterResults",
-    "QualifyResults",
-    "SortResults",
     "InheritImplications",
-    "ConstrainImplications",
+    "Metric",
+    "MetricLike",
+    "Operator",
+    "QualifyResults",
     "RemoveImplications",
-    "min_pr",
-    "f_score",
+    "SortResults",
     "csi",
+    "f_score",
+    "min_pr",
     "parse_metric",
 )
 

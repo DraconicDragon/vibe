@@ -1,5 +1,6 @@
 import re
-from typing import Any, MutableSequence, Self, cast
+from collections.abc import MutableSequence
+from typing import Any, Self, cast
 
 import torch
 from torch import Tensor

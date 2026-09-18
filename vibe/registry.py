@@ -15,9 +15,8 @@ from typing import TYPE_CHECKING
 from vibe.exceptions import RegistryError
 
 if TYPE_CHECKING:
-    from vibe.backends.base import ModelDescriptor, ModelPlugin
-    from vibe.features import FeatureSpec
-    from vibe.result_transforms import ResultTransform
+    from vibe.backends.base import ModelPlugin
+    from vibe.metadata import ModelDescriptor
 
 
 class ModelRegistry:
@@ -51,7 +50,7 @@ class ModelRegistry:
         if inspect.isabstract(plugin_cls):
             return
 
-        identity = plugin_cls.identity
+        identity = getattr(plugin_cls, "identity", None)
         if not identity or not identity.model_id:
             raise ValueError(f"Cannot register plugin {plugin_cls.__name__}: identity is missing or model_id is empty.")
 
@@ -153,30 +152,5 @@ class ModelRegistry:
         return [n for n in all_names if name_lower in n.lower() or n.lower() in name_lower][:max_suggestions]
 
 
-class TransformRegistry:
-    """Registry for result-transform classes.
-
-    This module intentionally does not import `result_transforms` at module
-    load time. Transform subclasses import this already-created registry while
-    they are defined, avoiding the former import cycle.
-    """
-
-    def __init__(self) -> None:
-        self._transforms: dict[str, type[ResultTransform]] = {}
-
-    def register(self, transform_cls: type[ResultTransform]) -> None:
-        transform_id = transform_cls.transform_id
-        if transform_id:
-            self._transforms[transform_id] = transform_cls
-
-    def get(self, transform_id: str) -> type[ResultTransform]:
-        if transform_id not in self._transforms:
-            raise RegistryError(f"No transform found for '{transform_id}'. Known: {list(self._transforms)}")
-        return self._transforms[transform_id]
-
-    def list_all(self) -> list[FeatureSpec]:
-        return [transform_cls.describe() for transform_cls in self._transforms.values()]
-
-
+# Singleton instance
 model_registry = ModelRegistry()
-transform_registry = TransformRegistry()

@@ -13,31 +13,35 @@ from vibe.backends.base import (
     ArtifactSpec,
     Backend,
     FileRole,
-    ModelCapabilities,
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
 )
-from vibe.features import FeatureSpec
+from vibe.contracts import LabelCatalogProvider, ThresholdProvider
+from vibe.metadata import LabelCatalog, TagFilterRecommendation, ThresholdTable
+from vibe.model_profiles import build_tagger_profile
 from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.tagger_shared import (
+    ParsedTagData,
     build_categorized_tag_result,
     load_tag_metadata,
     normalize_output_scores,
-    resolve_category_indices,
 )
-from vibe.result_transforms import (
-    CharacterIPMapping,
-    CleanTags,
-    PluginData,
-    ScoreThresholds,
-    TagLevelThresholds,
-    TagThresholds,
-)
-from vibe.results import OutputType, TagResult
+from vibe.results import TagResult
 from vibe.tag_categories import DANBOORU_CATEGORY_LABELS, TagCategory
 
 logger = logging.getLogger(__name__)
+
+_ANIMETIMM_CATEGORIES = (
+    TagCategory.RATING,
+    TagCategory.GENERAL,
+    TagCategory.CHARACTER,
+)
+
+_ANIMETIMM_ARTIST_CATEGORIES = (
+    *_ANIMETIMM_CATEGORIES,
+    TagCategory.ARTIST,
+)
 
 
 class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
@@ -45,21 +49,11 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
 
     family_name = "AnimeTimm Taggers (dbv4-full)"
 
-    capabilities = ModelCapabilities(
-        output_type=OutputType.TAGS,
-        output_categories=(
-            TagCategory.RATING,
-            TagCategory.GENERAL,
-            TagCategory.CHARACTER,
-            TagCategory.ARTIST,
-        ),
-        features=(
-            FeatureSpec.from_transform(CleanTags),
-            FeatureSpec.from_transform(ScoreThresholds, recommended=ScoreThresholds(threshold=0.35)),
-            FeatureSpec.from_transform(CharacterIPMapping),
-            FeatureSpec.from_transform(TagLevelThresholds),
-        ),
+    profile = build_tagger_profile(
+        categories=_ANIMETIMM_CATEGORIES,
+        recommended_filter=TagFilterRecommendation(global_threshold=0.35),
     )
+    implements = (LabelCatalogProvider, ThresholdProvider)
 
     variants = (
         ModelVariant(
@@ -82,34 +76,27 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
         ),
     )
 
-    _raw_tag_names: list[str]
-    _num_classes: int
-    _category_indices: dict[str, list[int]]
-    _tag_thresholds: dict[str, float]
-
-    # region Session Lifecycle
+    catalog: LabelCatalog
+    thresholds: ThresholdTable
+    _tag_data: ParsedTagData
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
         csv_path = artifacts.get("tag_list")
         logger.info("Loading AnimeTimm tag list from %s", csv_path)
 
-        metadata = load_tag_metadata(csv_path)
-
-        self._raw_tag_names = metadata.raw_tag_names
-        self._num_classes = len(self._raw_tag_names)
-
-        self._category_indices = resolve_category_indices(
-            metadata.category_indices,
-            DANBOORU_CATEGORY_LABELS,
+        self._tag_data = load_tag_metadata(
+            csv_path,
+            category_labels=DANBOORU_CATEGORY_LABELS,
             namespace="danbooru",
         )
+        self.catalog = self._tag_data.catalog
+        self._num_classes = len(self._tag_data.raw_tag_names)
 
-        # Parse per-tag thresholds from selected_tags.csv
-        self._tag_thresholds = {
-            tag: thr
-            for tag, thr in zip(metadata.raw_tag_names, metadata.per_tag_thresholds, strict=False)
-            if thr is not None
-        }
+        # AnimeTimm models define best_threshold in CSV, but default fallback provided for safety
+        if self._tag_data.thresholds is not None:
+            self.thresholds = self._tag_data.thresholds
+        else:
+            self.thresholds = ThresholdTable(values={}, source="empty")
 
         config_path = artifacts.get_optional("config")
         preprocess_path = artifacts.get_optional("preprocess")
@@ -118,34 +105,15 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             self.prepare_timm_runtime_preprocess(config, preprocess_path)
 
         logger.info(
-            "Loaded AnimeTimm tags for %s: total=%d general=%d artist=%d character=%d rating=%d thresholds=%d",
+            "Loaded AnimeTimm tags for %s: total=%d thresholds=%d",
             self.identity.model_id,
-            self._num_classes,
-            len(self._category_indices.get(TagCategory.GENERAL.value, [])),
-            len(self._category_indices.get(TagCategory.ARTIST.value, [])),
-            len(self._category_indices.get(TagCategory.CHARACTER.value, [])),
-            len(self._category_indices.get(TagCategory.RATING.value, [])),
-            len(self._tag_thresholds),
+            len(self._tag_data.raw_tag_names),
+            len(self.thresholds.values),
         )
 
-    def provide_transform_data(self) -> tuple[PluginData, ...]:
-        if self._tag_thresholds:
-            return (TagThresholds(values=self._tag_thresholds),)
-        return ()
-
-    # endregion Session Lifecycle
-
-    # region Postprocess
-
     def postprocess(self, raw_output: Any) -> TagResult:
-        """Return full scored output grouped by AnimeTimm categories."""
-        scores = normalize_output_scores(raw_output, is_logits=True, expected_count=self._num_classes)
-        return build_categorized_tag_result(self._raw_tag_names, scores, self._category_indices)
-
-    # endregion Postprocess
-
-
-# endregion Base Plugin
+        scores = normalize_output_scores(raw_output, is_logits=True, expected_count=len(self._tag_data.raw_tag_names))
+        return build_categorized_tag_result(self._tag_data.raw_tag_names, scores, self._tag_data.category_indices)
 
 
 # region Model Variants
@@ -333,6 +301,10 @@ class ATSwinV2BaseWindow8256Dbv4aPlugin(AnimeTimmBasePlugin):
         description="Danbooru tagger using the AnimeTimm SwinV2 Base Window8 256 architecture. Trained with artist tags.",
     )
     default_repo_id = "animetimm/swinv2_base_window8_256.dbv4a-full"
+    profile = build_tagger_profile(
+        categories=_ANIMETIMM_ARTIST_CATEGORIES,
+        recommended_filter=TagFilterRecommendation(global_threshold=0.67),
+    )
 
 
 class ATVitBasePatch16224Plugin(AnimeTimmBasePlugin):

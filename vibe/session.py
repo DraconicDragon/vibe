@@ -1,39 +1,43 @@
 """
 ModelSession — a loaded model, ready to run inference.
 
-This is the object users interact with after calling vibe.load().
-It holds the resolved plugin instance, the active runtime backend,
-and optional result transforms. Calling .infer() is the one thing you do with it.
+This is the primary object users interact with after calling vibe.load().
+It holds the resolved plugin instance and the active runtime backend.
+Calling .infer() runs the model forward pass.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
-from pathlib import Path
+from collections.abc import AsyncIterator, Callable, Generator, Iterable, Mapping, Sequence
 from types import TracebackType
-from typing import Any, Literal, Self
+from typing import Any, Literal, Self, TypeVar
 
 from vibe.backends.base import ArtifactMap, Backend, ExecutionPlan, ModelPlugin, RuntimeExecutor
-from vibe.exceptions import InferenceCancelled, SessionError
-from vibe.features import compile_features
+from vibe.contracts import (
+    CalibrationProvider,
+    LabelCatalogProvider,
+    ScorerView,
+    TaggerView,
+    ThresholdProvider,
+    _get_protocol_required_attrs,
+)
+from vibe.exceptions import InferenceCancelled, SessionCapabilityError, SessionError
 from vibe.image_loading import (
-    iter_load_images,
+    iter_load_normalized,
     normalize_input_format,
-    should_prefetch_image_loading,
 )
 from vibe.memory_stats import MemoryTracker
-from vibe.result_transforms import ResultTransform, TransformContext
-from vibe.results import InferenceResult, InferenceResultItem, ModelResult
+from vibe.metadata import ModelDescriptor, OutputKind, StandardConsumerSettingId, TagFilterRecommendation
+from vibe.results import InferenceResult, InferenceResultItem
 from vibe.runners import BatchRunner, InferenceEngine, SessionRunnerState
-from vibe.transform_pipeline import TransformPipeline
+from vibe.settings import InferenceRequest, OptionScope, compile_settings
 
 logger = logging.getLogger(__name__)
 
 _ASYNC_INFER_DONE = object()
-
-# region ModelSession
+T = TypeVar("T")
 
 
 class ModelSession:
@@ -58,23 +62,16 @@ class ModelSession:
         self._backend = plan.backend
         self._file_map = file_map
         self._source = source
+        self._auto_download = auto_download
         self._closed = False
         self._backend_release = backend_release
         self._memory_tracker = MemoryTracker(enabled=memory_tracking)
         self._state = SessionRunnerState(plugin.identity.model_id)
 
-        self._transform_context = TransformContext(
-            model_id=plugin.identity.model_id,
-            artifacts=file_map,
-            source=source,
-            auto_download=auto_download,
-            token=plan.hf_token,
-            _plugin_data={type(d): d for d in plugin.provide_transform_data()},
-        )
-        self._pipeline = TransformPipeline(
-            plugin.identity.model_id, self._transform_context, plugin.capabilities.features
-        )
-        self._engine = InferenceEngine(plugin, backend_instance, self._pipeline, self._state)
+        # Pre-cache static descriptor
+        self._metadata: ModelDescriptor = plugin.describe()
+
+        self._engine = InferenceEngine(plugin, backend_instance, self._state)
         self._runner = BatchRunner(self._engine, self._state, self._backend)
 
         logger.debug("Session created model_id=%s backend=%s", self.model_id, self._backend.value)
@@ -97,30 +94,22 @@ class ModelSession:
         return {
             "model_id": self.model_id,
             "source": self.source,
-            "plan": {
-                "backend": self._plan.backend.value,
-                "variant_id": self._plan.variant_id,
-                "preference": self._plan.preference.intent.value,
-                "precision": {
-                    "weight": self._plan.precision.weight.value,
-                    "compute": self._plan.precision.compute.value,
-                },
-            },
+            "plan": self._plan.to_dict(),
             "runtime": self._backend_instance.execution_info(),
         }
 
     def infer(
         self,
-        images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
+        images: Any | str | Sequence[Any] | Mapping[Any, Any],
         *,
-        features: Mapping[str, Mapping[str, Any]] | Sequence[Any] | None = None,
-        transforms: list[ResultTransform] | None = None,
+        refs: Sequence[Any] | Iterable[Any] | None = None,
+        settings: Mapping[str, Mapping[str, Any]] | Mapping[str, Any] | Sequence[Any] | InferenceRequest | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
         prefetch_batch_limit: int = 8,
         on_cancel: Literal["raise", "return_partial"] = "raise",
     ) -> InferenceResult:
-        """Run inference on one image or many images."""
+        """Run inference on one image, a collection of images, or a streaming generator."""
         if on_cancel not in ("raise", "return_partial"):
             raise SessionError("on_cancel must be one of: 'raise', 'return_partial'")
 
@@ -134,16 +123,25 @@ class ModelSession:
         try:
             for chunk in self.infer_batches(
                 images,
-                features=features,
-                transforms=transforms,
+                refs=refs,
+                settings=settings,
                 batch_size=batch_size,
                 batch_method=batch_method,
                 prefetch_batch_limit=prefetch_batch_limit,
             ):
                 total_inputs = chunk.total_inputs
                 items.extend(chunk.items)
-        except InferenceCancelled:
+        except InferenceCancelled as exc:
             if on_cancel == "raise":
+                memory = self._last_memory_record_dict(
+                    operation="infer_batches",
+                    min_call_index=tracker_before_calls,
+                )
+                exc.partial_result = InferenceResult(
+                    total_inputs=total_inputs if total_inputs is not None else len(items),
+                    items=items,
+                    memory=memory,
+                )
                 raise
 
         memory = self._last_memory_record_dict(
@@ -151,6 +149,8 @@ class ModelSession:
             min_call_index=tracker_before_calls,
         )
         num_items = len(items)
+        is_cancelled = bool(total_inputs is not None and num_items < total_inputs)
+
         if total_inputs is not None and total_inputs > 1:
             logger.info(
                 "Inference completed model_id=%s outputs=%s/%s batch_size=%s cancelled=%s",
@@ -158,7 +158,7 @@ class ModelSession:
                 num_items,
                 total_inputs,
                 batch_size,
-                bool(num_items < total_inputs),
+                is_cancelled,
             )
         else:
             logger.debug(
@@ -176,14 +176,14 @@ class ModelSession:
 
     def infer_batches(
         self,
-        images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
+        images: Any | str | Sequence[Any] | Mapping[Any, Any],
         *,
-        features: Mapping[str, Mapping[str, Any]] | Sequence[Any] | None = None,
-        transforms: list[ResultTransform] | None = None,
+        refs: Sequence[Any] | Iterable[Any] | None = None,
+        settings: Mapping[str, Mapping[str, Any]] | Mapping[str, Any] | Sequence[Any] | InferenceRequest | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
         prefetch_batch_limit: int = 8,
-    ) -> Iterator[InferenceResult]:
+    ) -> Generator[InferenceResult, None, None]:
         """Stream inference results as each completed chunk becomes available."""
         with self._state.lock:
             if self._closed:
@@ -195,24 +195,12 @@ class ModelSession:
             before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
 
             try:
-                values, _refs = normalize_input_format(images, error_cls=SessionError)
-
-                # Validate the request even when the input collection is empty,
-                # so callers receive deterministic configuration errors.
-                inference_request, compiled_transforms = compile_features(features, self._plugin.capabilities.features)
-                active_transforms = compiled_transforms + (transforms or [])
-
-                if not values:
-                    logger.warning("No input images provided for model_id=%s", self.model_id)
-                    return
-
-                self._pipeline.notify_infer_start(active_transforms)
-
-                total_inputs = len(values)
-                path_inputs = sum(1 for value in values if isinstance(value, (str, Path)))
-                loaded_path_inputs = 0
+                norm = normalize_input_format(images, refs=refs, error_cls=SessionError)
+                inference_request = compile_settings(
+                    settings, self._plugin.settings, allowed_scopes={OptionScope.INFER}
+                )
                 method = self._runner.resolve_batch_method(batch_method, batch_size)
-                prefetch_images = should_prefetch_image_loading(path_inputs=path_inputs)
+                total_inputs = norm.total
 
                 if batch_size > 1 and method == "sequential" and batch_method != "sequential":
                     logger.info(
@@ -220,81 +208,80 @@ class ModelSession:
                         self.model_id,
                         self._backend.value,
                     )
-                logger.debug(
-                    "Inference run prepared model_id=%s inputs=%s resolved_batch_method=%s",
-                    self.model_id,
-                    total_inputs,
-                    method,
-                )
-                if path_inputs:
-                    logger.info(
-                        "Loading input images model_id=%s paths=%s total_inputs=%s",
-                        self.model_id,
-                        path_inputs,
-                        total_inputs,
-                    )
-                    if prefetch_images:
-                        logger.debug("Image prefetch enabled model_id=%s", self.model_id)
 
-                for chunk in iter_load_images(
-                    images=images,
+                if total_inputs is not None:
+                    logger.debug(
+                        "Inference run prepared model_id=%s inputs=%s resolved_batch_method=%s",
+                        self.model_id,
+                        total_inputs,
+                        method,
+                    )
+                else:
+                    logger.debug(
+                        "Inference run prepared (streaming) model_id=%s resolved_batch_method=%s",
+                        self.model_id,
+                        method,
+                    )
+
+                chunk_gen = iter_load_normalized(
+                    norm=norm,
                     batch_size=batch_size,
                     prefetch_batch_limit=prefetch_batch_limit,
-                    prefetch=prefetch_images,
                     cancel_check=self._state.check_cancelled,
                     error_cls=SessionError,
-                ):
-                    start = chunk.start_index
-                    chunk_images = chunk.images
-                    chunk_refs = chunk.refs
+                )
 
-                    loaded_path_inputs += sum(
-                        1 for i in range(start, start + len(chunk_images)) if isinstance(values[i], (str, Path))
-                    )
+                try:
+                    for chunk in chunk_gen:
+                        start = chunk.start_index
+                        chunk_images = chunk.images
+                        chunk_refs = chunk.refs
 
-                    if method == "sequential":
-                        chunk_items = []
-                        for i, img in enumerate(chunk_images):
-                            self._state.check_cancelled()
-                            result = self._engine.execute_single(
-                                img, transforms=active_transforms, request=inference_request
+                        if method == "sequential":
+                            chunk_items = []
+                            try:
+                                for i, img in enumerate(chunk_images):
+                                    self._state.check_cancelled()
+                                    result = self._engine.execute_single(img, request=inference_request)
+                                    global_idx = start + i
+                                    chunk_items.append(
+                                        InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
+                                    )
+                            except InferenceCancelled:
+                                # Yield any completed items before re-raising cancellation!
+                                if chunk_items:
+                                    yield InferenceResult(total_inputs=total_inputs, items=chunk_items)
+                                raise
+                        else:
+                            chunk_results = self._runner.execute_chunk(
+                                chunk_images,
+                                request=inference_request,
+                                fallback_to_sequential=(batch_method == "auto"),
                             )
-                            global_idx = start + i
-                            chunk_items.append(
-                                InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
-                            )
-                        logger.debug(
-                            "Completed sequential chunk, current index=%s/%s", start + len(chunk_images), total_inputs
-                        )
-                    else:
-                        chunk_results = self._runner.execute_chunk(
-                            chunk_images,
-                            transforms=active_transforms,
-                            request=inference_request,
-                            fallback_to_sequential=(batch_method == "auto"),
-                        )
-                        chunk_items = []
-                        for i, result in enumerate(chunk_results):
-                            global_idx = start + i
-                            chunk_items.append(
-                                InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
-                            )
-                        logger.debug(
-                            "Completed inference batch model_id=%s done=%s/%s",
-                            self.model_id,
-                            start + len(chunk_images),
-                            total_inputs,
-                        )
+                            chunk_items = []
+                            for i, result in enumerate(chunk_results):
+                                global_idx = start + i
+                                chunk_items.append(
+                                    InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
+                                )
 
-                    yield InferenceResult(total_inputs=total_inputs, items=chunk_items)
+                        if total_inputs is not None:
+                            logger.debug(
+                                "Completed inference batch model_id=%s done=%s/%s",
+                                self.model_id,
+                                start + len(chunk_images),
+                                total_inputs,
+                            )
+                        else:
+                            logger.debug(
+                                "Completed inference batch model_id=%s done=%s (streaming)",
+                                self.model_id,
+                                start + len(chunk_images),
+                            )
 
-                if path_inputs:
-                    logger.info(
-                        "Loaded input images model_id=%s loaded=%s/%s",
-                        self.model_id,
-                        loaded_path_inputs,
-                        path_inputs,
-                    )
+                        yield InferenceResult(total_inputs=total_inputs, items=chunk_items)
+                finally:
+                    chunk_gen.close()
             finally:
                 if before is not None:
                     after = self._memory_tracker.snapshot()
@@ -311,22 +298,16 @@ class ModelSession:
 
     async def infer_async(
         self,
-        images: Any | str | list[Any] | list[str] | list[tuple[Any | str, Any]],
+        images: Any | str | Sequence[Any] | Mapping[Any, Any],
         *,
-        features: Mapping[str, Mapping[str, Any]] | Sequence[Any] | None = None,
-        transforms: list[ResultTransform] | None = None,
+        refs: Sequence[Any] | None = None,
+        settings: Mapping[str, Mapping[str, Any]] | Mapping[str, Any] | Sequence[Any] | InferenceRequest | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
         prefetch_batch_limit: int = 8,
     ) -> AsyncIterator[InferenceResult]:
         """
         Async wrapper over infer_batches() for progressive consumption.
-
-        Backend execution is still blocking; work is moved to a worker thread so
-        callers can await chunk results as they complete.
-
-        Accepts the same input forms as infer(), including a single image/path.
-        Device selection is configured when the session is created via load().
         """
         import asyncio
 
@@ -345,8 +326,8 @@ class ModelSession:
         def _worker() -> None:
             batches = self.infer_batches(
                 images,
-                features=features,
-                transforms=transforms,
+                refs=refs,
+                settings=settings,
                 batch_size=batch_size,
                 batch_method=batch_method,
                 prefetch_batch_limit=prefetch_batch_limit,
@@ -362,12 +343,7 @@ class ModelSession:
                 logger.debug("Async worker caught exception: %s", exc, exc_info=True)
                 _queue_from_worker(exc)
             finally:
-                close_batches = getattr(batches, "close", None)
-                if callable(close_batches):
-                    try:
-                        close_batches()
-                    except Exception:
-                        logger.exception("Failed to close async inference generator model_id=%s", self.model_id)
+                batches.close()
                 _queue_from_worker(_ASYNC_INFER_DONE)
 
         # Daemon thread so pending async inference doesn't prevent interpreter shutdown
@@ -414,32 +390,111 @@ class ModelSession:
 
     # endregion Primary Interface
 
-    # region Introspection
+    # region Introspection & Trusted Views
 
     @property
     def model_id(self) -> str:
+        """The canonical string ID of this model."""
         return self._plugin.identity.model_id
 
     @property
     def plugin(self) -> ModelPlugin:
+        """The loaded plugin instance."""
         return self._plugin
 
     @property
+    def metadata(self) -> ModelDescriptor:
+        """Structured metadata descriptor for this model."""
+        return self._metadata
+
+    @property
+    def artifacts(self) -> ArtifactMap:
+        """Resolved file artifacts for this session."""
+        return self._file_map
+
+    @property
+    def is_tagger(self) -> bool:
+        """Return True if the model produces tag outputs."""
+        return self.metadata.output.kind == OutputKind.TAGS
+
+    @property
+    def is_scorer(self) -> bool:
+        """Return True if the model produces score outputs."""
+        return self.metadata.output.kind in (OutputKind.SCORE, OutputKind.MULTI_SCORE)
+
+    @property
+    def tagger(self) -> TaggerView:
+        """Access tagger-specific domain data. Raises SessionCapabilityError if not a tagger."""
+        plugin = self._plugin
+        if not self.is_tagger or not isinstance(plugin, LabelCatalogProvider):
+            raise SessionCapabilityError(f"Model '{self.model_id}' is not a tagger.")
+
+        recommendation = None
+        tag_filter_spec = self.metadata.get_consumer_setting(StandardConsumerSettingId.TAG_FILTER)
+        if tag_filter_spec and isinstance(tag_filter_spec.recommended, TagFilterRecommendation):
+            recommendation = tag_filter_spec.recommended
+
+        thresholds = plugin.thresholds if isinstance(plugin, ThresholdProvider) else None
+
+        return TaggerView(
+            catalog=plugin.catalog,
+            thresholds=thresholds,
+            recommendation=recommendation,
+        )
+
+    @property
+    def scorer(self) -> ScorerView:
+        """Access scorer-specific domain data. Raises SessionCapabilityError if not a scorer."""
+        plugin = self._plugin
+        if not self.is_scorer:
+            raise SessionCapabilityError(f"Model '{self.model_id}' is not a scorer.")
+
+        catalog = plugin.catalog if isinstance(plugin, LabelCatalogProvider) else None
+        calibration = plugin.calibration if isinstance(plugin, CalibrationProvider) else None
+
+        return ScorerView(
+            catalog=catalog,
+            calibration=calibration,
+        )
+
+    def as_tagger(self) -> TaggerView | None:
+        """Return the TaggerView if available, else None."""
+        return self.tagger if self.is_tagger else None
+
+    def as_scorer(self) -> ScorerView | None:
+        """Return the ScorerView if available, else None."""
+        return self.scorer if self.is_scorer else None
+
+    def inspect_data(self) -> dict[str, Any]:
+        """Generic dictionary dump of all active domain data for tooling/serialization."""
+        manifest: dict[str, Any] = {}
+        for proto in self._plugin.implements:
+            attrs = _get_protocol_required_attrs(proto)
+            for attr in attrs:
+                value = getattr(self._plugin, attr, None)
+                if value is not None:
+                    manifest[attr] = value.to_dict() if hasattr(value, "to_dict") else value
+        return manifest
+
+    @property
     def backend(self) -> Backend:
+        """The active framework backend for this session."""
         return self._backend
 
     @property
+    def variant(self) -> str | None:
+        """The variant ID loaded for this session, if any."""
+        return self._plan.variant_id
+
+    @property
     def source(self) -> str:
+        """The source location resolved for this session."""
         return self._source
 
-    def apply_transforms(self, result: ModelResult, transforms: list[ResultTransform]) -> ModelResult:
-        """
-        Manually apply a list of transforms to an existing result.
-        """
-        if self._closed:
-            raise SessionError("Cannot apply transforms: Session is closed.")
-        self._pipeline.notify_infer_start(transforms)
-        return self._pipeline.apply(result, transforms)
+    @property
+    def auto_download(self) -> bool:
+        """Whether downloads were permitted during session setup."""
+        return self._auto_download
 
     def close(self) -> None:
         """Release runtime resources for this session."""
@@ -496,7 +551,7 @@ class ModelSession:
         self.close()
 
     def __del__(self) -> None:
-        if getattr(self, "_closed", True):
+        if not hasattr(self, "_closed") or self._closed:
             return
         try:
             self.close()
@@ -507,5 +562,4 @@ class ModelSession:
     def __repr__(self) -> str:
         return f"ModelSession(model_id={self.model_id!r}, backend={self._backend.value!r})"
 
-
-# endregion ModelSession
+    # endregion Introspection & Trusted Views

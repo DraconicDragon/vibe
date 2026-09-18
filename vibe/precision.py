@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class PrecisionPolicy(str, Enum):
+class PrecisionPolicy(StrEnum):
     """Explicit policies for computation and weight precision."""
 
     AUTO = "auto"
@@ -24,6 +24,13 @@ class PrecisionRequest:
     weight: PrecisionPolicy
     compute: PrecisionPolicy
     fallback_allowed: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "weight": self.weight.value,
+            "compute": self.compute.value,
+            "fallback_allowed": self.fallback_allowed,
+        }
 
 
 @dataclass(frozen=True)

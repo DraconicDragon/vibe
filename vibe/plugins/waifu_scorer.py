@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -11,16 +12,18 @@ from vibe.backends.base import (
     Backend,
     ExecutionPlan,
     FileRole,
-    ModelCapabilities,
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
     RuntimeExecutor,
 )
 from vibe.backends.runtime.pytorch import PyTorchBackend
-from vibe.features import InferenceRequest
+from vibe.contracts import LabelCatalogProvider
+from vibe.metadata import LabelCatalog, LabelInfo
+from vibe.model_profiles import ScoreSemantics, build_scorer_profile
 from vibe.plugins.shared.scores_utils import normalize_scalar
-from vibe.results import OutputType, ScoreResult
+from vibe.results import ScoreResult
+from vibe.settings import InferenceRequest
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +77,9 @@ class WaifuScorerBasePlugin(ModelPlugin):
     SCORE_MAX = 10.0
     INPUT_SIZE = 768
 
-    capabilities = ModelCapabilities(
-        output_type=OutputType.SCORE,
-        output_categories=(),
-    )
+    # Explicitly declare that WaifuScorer outputs an uncalibrated 0-10 regression score
+    profile = build_scorer_profile(score_semantics=ScoreSemantics.UNCALIBRATED)
+    implements = (LabelCatalogProvider,)
 
     # NOTE: if user overrides source with local dir for example, then user needs to
     # use filename_map (or source_map) to allow for the same-filename files to load
@@ -113,46 +115,78 @@ class WaifuScorerBasePlugin(ModelPlugin):
         ),
     )
 
+    catalog: LabelCatalog
     _clip_preprocess: Any | None = None
 
     def load_ancillary(self, artifacts: ArtifactMap) -> None:
-        """Initialize the CLIP preprocessor for image normalization."""
-        clip_weights = artifacts.get("clip_weights")
-        clip_dir = clip_weights.parent
+        """Initialize the CLIP preprocessor from its exact resolved artifact path."""
+        preprocessor_path = artifacts.get("clip_preprocessor")
 
         try:
             from transformers import CLIPImageProcessor
         except ImportError as exc:
             raise RuntimeError("transformers is required for WaifuScorer.") from exc
 
-        self._clip_preprocess = CLIPImageProcessor.from_pretrained(str(clip_dir), local_files_only=True)
+        try:
+            with preprocessor_path.open("r", encoding="utf-8") as f:
+                prep_dict = json.load(f)
+            self._clip_preprocess = CLIPImageProcessor.from_dict(prep_dict)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load CLIP preprocessor from '{preprocessor_path}': {exc}") from exc
+
+        self.catalog = LabelCatalog(
+            labels=(LabelInfo(index=0, name="score", category="general"),),
+            categories=("general",),
+        )
 
     def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
-        """Construct the combined PyTorch model graph and return a PyTorchBackend executor."""
+        """Construct the combined PyTorch model graph using exact artifact paths."""
         if plan.backend != Backend.PYTORCH:
             raise ValueError(f"WaifuScorer only supports PyTorch backend, got '{plan.backend}'.")
 
         try:
             from safetensors.torch import load_file
             from torch import nn
-            from transformers import CLIPModel
+            from transformers import CLIPConfig, CLIPModel
         except ImportError as exc:
             raise RuntimeError("PyTorch, safetensors, and transformers are required.") from exc
 
-        # Load CLIP Model
-        clip_weights = artifacts.get("clip_weights")
-        clip_dir = clip_weights.parent
-        clip_model = CLIPModel.from_pretrained(str(clip_dir), local_files_only=True)
+        # Load CLIP Config from exact artifact path
+        config_path = artifacts.get("clip_config")
+        try:
+            with config_path.open("r", encoding="utf-8") as f:
+                config_dict = json.load(f)
+            clip_config = CLIPConfig.from_dict(config_dict)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load CLIP config from '{config_path}': {exc}") from exc
+
+        # Instantiate CLIPModel from config and load exact weights file
+        clip_model = CLIPModel(clip_config)
+        clip_weights_path = artifacts.get("clip_weights")
+        try:
+            if clip_weights_path.suffix.lower() == ".safetensors":
+                clip_state = load_file(clip_weights_path, device="cpu")
+            else:
+                import torch
+
+                clip_state = torch.load(clip_weights_path, map_location="cpu")
+            clip_model.load_state_dict(clip_state, strict=False)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load CLIP weights from '{clip_weights_path}': {exc}") from exc
+
         clip_model.eval()
         clip_model.requires_grad_(False)
 
-        # Build MLP Head
+        # Build and load MLP Head
         mlp = self._build_mlp(nn)
         mlp_path = artifacts.get("mlp_weights")
-        mlp_state = load_file(mlp_path, device="cpu")
-        normalized_state = self._normalize_mlp_state_dict(mlp_state)
-        mlp.load_state_dict(normalized_state, strict=True)
-        mlp.eval()
+        try:
+            mlp_state = load_file(mlp_path, device="cpu")
+            normalized_state = self._normalize_mlp_state_dict(mlp_state)
+            mlp.load_state_dict(normalized_state, strict=True)
+            mlp.eval()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load MLP weights from '{mlp_path}': {exc}") from exc
 
         # Assemble Combined Runtime Model
         runtime_cls = _get_runtime_model_cls(nn)
@@ -187,15 +221,21 @@ class WaifuScorerBasePlugin(ModelPlugin):
         if not state_dict:
             return state_dict
 
-        if any(key.startswith("layers.") for key in state_dict):
-            state_dict = {
-                key[len("layers.") :]: value for key, value in state_dict.items() if key.startswith("layers.")
-            }
+        # Strip non-parameter batchnorm tracking counters
+        clean = {k: v for k, v in state_dict.items() if not k.endswith(".num_batches_tracked")}
 
-        if all(key.startswith("model.") for key in state_dict):
-            state_dict = {key[len("model.") :]: value for key, value in state_dict.items()}
+        # Prefixes added by PyTorch Lightning, torch.compile, or nested module wrappers
+        prefixes = ("_orig_mod.", "model.", "mlp.", "layers.")
 
-        return {k: v for k, v in state_dict.items() if not k.endswith(".num_batches_tracked")}
+        changed = True
+        while changed:
+            changed = False
+            for prefix in prefixes:
+                if any(k.startswith(prefix) for k in clean):
+                    clean = {(k.removeprefix(prefix)): v for k, v in clean.items()}
+                    changed = True
+
+        return clean
 
     def _build_mlp(self, nn: Any) -> Any:
         return nn.Sequential(

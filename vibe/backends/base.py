@@ -7,66 +7,85 @@ from __future__ import annotations
 import dataclasses
 import inspect
 from abc import ABC, abstractmethod
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, Self
+from typing import Any, ClassVar, Protocol
 
-from vibe.features import FeatureSpec, InferenceRequest
+from vibe.metadata import ModelDescriptor, ModelIdentity, ModelProfile
 from vibe.precision import PrecisionRequest
-from vibe.results import ModelResult, OutputType
-
-if TYPE_CHECKING:
-    from vibe.result_transforms import PluginData
+from vibe.results import ModelResult
+from vibe.settings import InferenceRequest, SettingGroupSpec
 
 
-class FileRole(str, Enum):
+class FileRole(StrEnum):
+    """Semantic role of a required or optional model file."""
+
     WEIGHTS = "weights"
     TAG_LIST = "tag_list"
     MAPPING = "mapping"
     CONFIG = "config"
 
 
-class Backend(str, Enum):
+class Backend(StrEnum):
+    """Supported execution frameworks."""
+
     PYTORCH = "pytorch"
     ONNX = "onnx"
 
 
-class HardwareIntent(str, Enum):
+class HardwareIntent(StrEnum):
+    """High-level target compute device classes."""
+
     AUTO = "auto"
     CPU = "cpu"
     ACCELERATOR = "accelerator"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ExecutionPreference:
     """Universal hardware intent, replacing framework-specific device strings."""
 
     intent: HardwareIntent
     ordinal: int | None = None
-    hint: str | None = None  # Preserves specific framework hints like "mps" or "rocm"
+    hint: str | None = None  # Preserves specific framework hints like "cuda", "mps", or "rocm"
 
     @classmethod
     def parse(cls, value: str | None) -> ExecutionPreference:
         if not value:
-            return cls(HardwareIntent.AUTO)
+            return cls(intent=HardwareIntent.AUTO)
 
         val = str(value).strip().lower()
         if val in ("auto", ""):
-            return cls(HardwareIntent.AUTO)
-        if val == "cpu":
-            return cls(HardwareIntent.CPU)
+            return cls(intent=HardwareIntent.AUTO)
 
-        # Parse legacy/framework strings (e.g. "cuda:0", "xpu:0", "gpu:1", "mps", "rocm", "openvino")
         parts = val.split(":", 1)
         base = parts[0]
         ordinal = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
 
-        hint = base if base not in ("gpu", "cuda") else None
-        return cls(HardwareIntent.ACCELERATOR, ordinal=ordinal, hint=hint)
+        # (e.g. "cpu" or "cpu:0")
+        if base == "cpu":
+            return cls(intent=HardwareIntent.CPU, ordinal=ordinal)
+
+        # (e.g. "auto:0" or ":0")
+        if base in ("auto", ""):
+            return cls(intent=HardwareIntent.AUTO, ordinal=ordinal)
+
+        # Only drop generic descriptors ("gpu", "accelerator");
+        # preserve concrete hardware families ("cuda", "mps", "xpu", "rocm", etc.)
+        hint = base if base not in ("gpu", "accelerator") else None
+        return cls(intent=HardwareIntent.ACCELERATOR, ordinal=ordinal, hint=hint)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "intent": self.intent.value,
+            "ordinal": self.ordinal,
+            "hint": self.hint,
+        }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ExecutionPlan:
     """The factory's resolved choices for execution (intent)."""
 
@@ -75,11 +94,20 @@ class ExecutionPlan:
     precision: PrecisionRequest
     variant_id: str | None = None
     onnx_providers: tuple[str, ...] | None = None
-    hf_token: str | None = None
+    hf_token: str | None = field(default=None, compare=False, hash=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "backend": self.backend.value,
+            "variant_id": self.variant_id,
+            "preference": self.preference.to_dict(),
+            "precision": self.precision.to_dict(),
+            "onnx_providers": list(self.onnx_providers) if self.onnx_providers is not None else None,
+        }
 
 
 class RuntimeExecutor(Protocol):
-    """The small contract the inference layer needs from a loaded runtime."""
+    """The minimal runtime contract needed by the inference session."""
 
     def run(self, inputs: Any) -> Any: ...
     def close(self) -> None: ...
@@ -87,7 +115,7 @@ class RuntimeExecutor(Protocol):
     def execution_info(self) -> dict[str, Any]: ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ArtifactSpec:
     """A logical file required by the model."""
 
@@ -107,7 +135,7 @@ class ArtifactSpec:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ModelVariant:
     """Groups artifacts required for a specific backend and execution environment."""
 
@@ -129,113 +157,90 @@ class ModelVariant:
         )
 
 
-@dataclass(frozen=True)
-class ModelIdentity:
-    model_id: str
-    display_name: str
-    description: str
-
-
-@dataclass(frozen=True)
-class ModelCapabilities:
-    output_type: OutputType
-    output_categories: tuple[str, ...] = ()
-    # Top-level extras
-    output_extras: dict[str, str] = field(default_factory=dict)
-    # Per-entry extras
-    entry_extras: dict[str, str] = field(default_factory=dict)
-    features: tuple[FeatureSpec, ...] = ()
-
-    def __post_init__(self) -> None:
-        if any(not isinstance(feature, FeatureSpec) for feature in self.features):
-            raise TypeError("ModelCapabilities.features must contain only FeatureSpec instances.")
-
-        output_categories = tuple(
-            str(category.value if isinstance(category, Enum) else category) for category in self.output_categories
-        )
-        object.__setattr__(self, "output_categories", output_categories)
-        object.__setattr__(
-            self,
-            "features",
-            tuple(dataclasses.replace(feature, _output_categories=output_categories) for feature in self.features),
-        )
-
-        feature_ids = [feature.id for feature in self.features]
-        if len(feature_ids) != len(set(feature_ids)):
-            raise ValueError(f"ModelCapabilities contains duplicate feature IDs: {feature_ids}")
-
-        config_types = [feature.config_type for feature in self.features]
-        if len(config_types) != len(set(config_types)):
-            raise ValueError("ModelCapabilities cannot bind one configuration type to multiple features.")
-
-    def with_features(self, *overrides: FeatureSpec) -> Self:
-        """Return a copy with specified feature specs added or replaced."""
-        override_ids = [override.id for override in overrides]
-        if len(override_ids) != len(set(override_ids)):
-            raise ValueError(f"Duplicate feature IDs in overrides: {override_ids}")
-        override_map = {o.id: o for o in overrides}
-        seen = set()
-        new_features = []
-
-        for f in self.features:
-            if f.id in override_map:
-                new_features.append(override_map[f.id])
-                seen.add(f.id)
-            else:
-                new_features.append(f)
-
-        for o in overrides:
-            if o.id not in seen:
-                new_features.append(o)
-                seen.add(o.id)
-
-        return dataclasses.replace(self, features=tuple(new_features))
-
-
-@dataclass(frozen=True)
-class ModelDescriptor:
-    """Consolidated metadata description for consumption by external UIs and APIs."""
-
-    model_id: str
-    display_name: str
-    family_name: str
-    description: str
-    output_type: OutputType
-    output_categories: tuple[str, ...]
-    output_extras: dict[str, str]
-    entry_extras: dict[str, str]
-    supported_backends: tuple[Backend, ...]
-    features: tuple[dict[str, Any], ...]
-    default_repo_id: str | None
-    variants: tuple[ModelVariant, ...]
-
-
 class ArtifactMap:
-    """Strictly ID-keyed mapping of resolved file paths."""
+    """Strictly ID-keyed mapping of resolved file paths with dictionary-like ergonomics."""
 
-    def __init__(self, paths_by_id: dict[str, Path], optional_missing: dict[str, str] | None = None):
-        self._paths = paths_by_id
-        self._optional_missing = optional_missing or {}
+    def __init__(
+        self,
+        paths_by_id: Mapping[str, Path],
+        optional_missing: Mapping[str, str] | None = None,
+        specs_by_id: Mapping[str, ArtifactSpec] | None = None,
+    ) -> None:
+        self._paths = dict(paths_by_id)
+        self._optional_missing = dict(optional_missing) if optional_missing else {}
+        self._specs = dict(specs_by_id) if specs_by_id else {}
+        # Pre-compute cache key once at construction time
+        self._cache_key = tuple(sorted((art_id, str(p.resolve())) for art_id, p in self._paths.items()))
 
     def get(self, artifact_id: str) -> Path:
+        """Retrieve a required artifact's path, raising KeyError if missing."""
         if artifact_id not in self._paths:
-            raise KeyError(f"Artifact '{artifact_id}' was not resolved. Available: {list(self._paths)}")
+            raise KeyError(f"Artifact '{artifact_id}' was not resolved. Available: {list(self._paths.keys())}")
         return self._paths[artifact_id]
 
     def get_optional(self, artifact_id: str) -> Path | None:
+        """Retrieve an optional artifact's path, returning None if missing."""
         return self._paths.get(artifact_id)
 
+    def get_spec(self, artifact_id: str) -> ArtifactSpec | None:
+        """Retrieve the ArtifactSpec metadata for an artifact ID, if available."""
+        return self._specs.get(artifact_id)
+
+    def by_role(self, role: FileRole | str) -> dict[str, Path]:
+        """Return a mapping of artifact ID -> Path for all resolved artifacts matching a specific role."""
+        target_role = role.value if isinstance(role, FileRole) else str(role)
+        return {
+            art_id: path
+            for art_id, path in self._paths.items()
+            if self._specs.get(art_id) and self._specs[art_id].role.value == target_role
+        }
+
+    def to_dict(self) -> dict[str, str]:
+        """Return a stringified path mapping suitable for serialization."""
+        return {art_id: str(path) for art_id, path in self._paths.items()}
+
     def as_path_dict(self) -> dict[str, Path]:
+        """Return a shallow copy of the internal path mapping."""
         return dict(self._paths)
 
     @property
-    def cache_key(self) -> tuple[tuple[str, str], ...]:
-        """Return a deterministic, immutable identity for the resolved artifacts."""
-        return tuple(sorted((artifact_id, str(path.resolve())) for artifact_id, path in self._paths.items()))
+    def specs(self) -> dict[str, ArtifactSpec]:
+        """Mapping of artifact ID to its declared ArtifactSpec."""
+        return dict(self._specs)
 
     @property
     def optional_missing(self) -> dict[str, str]:
-        return self._optional_missing
+        """Reasons why optional artifacts were not resolved."""
+        return dict(self._optional_missing)
+
+    @property
+    def cache_key(self) -> tuple[tuple[str, str], ...]:
+        """Deterministic, immutable identity for the resolved artifacts."""
+        return self._cache_key
+
+    def __getitem__(self, artifact_id: str) -> Path:
+        return self.get(artifact_id)
+
+    def __contains__(self, artifact_id: object) -> bool:
+        return artifact_id in self._paths
+
+    def __len__(self) -> int:
+        return len(self._paths)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._paths)
+
+    def items(self) -> Iterator[tuple[str, Path]]:
+        return iter(self._paths.items())
+
+    def keys(self) -> Iterator[str]:
+        return iter(self._paths.keys())
+
+    def values(self) -> Iterator[Path]:
+        return iter(self._paths.values())
+
+    def __repr__(self) -> str:
+        return f"ArtifactMap({self._paths!r}, optional_missing={self._optional_missing!r})"
 
 
 class ModelPlugin(ABC):
@@ -243,10 +248,17 @@ class ModelPlugin(ABC):
 
     family_name: str
     identity: ModelIdentity
-    capabilities: ModelCapabilities
+    profile: ModelProfile
+    settings: tuple[SettingGroupSpec, ...] = ()
+    implements: tuple[type, ...] = ()  # Declarative contract of provided domain protocols
     default_repo_id: str
     variants: tuple[ModelVariant, ...]
+    active_backend: Backend | None = None
     custom_only: ClassVar[bool] = False
+
+    def bind_execution_state(self, plan: ExecutionPlan) -> None:
+        """Bind the execution context for this plugin instance for the current session."""
+        self.active_backend = plan.backend
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -256,14 +268,17 @@ class ModelPlugin(ABC):
             return
 
         # Intermediate base classes (e.g. WDTaggerBasePlugin) do not define an identity.
-        # Only register classes that possess a fully declared ModelIdentity.
-        identity = getattr(cls, "identity", None)
+        # Subclasses also should not automatically re-register under their parent's identity.
+        # Only register classes that explicitly declare their own ModelIdentity.
+        identity = cls.__dict__.get("identity", None)
         if identity is None:
             return
 
         # Validate required class-level metadata on concrete models
         if not getattr(cls, "family_name", None):
             raise ValueError(f"Concrete plugin '{cls.__name__}' must inherit or define a 'family_name' string.")
+        if not getattr(cls, "profile", None):
+            raise ValueError(f"Concrete plugin '{cls.__name__}' must declare a 'profile: ModelProfile'.")
         if not getattr(cls, "default_repo_id", None) and not getattr(cls, "custom_only", False):
             raise ValueError(f"Concrete plugin '{cls.__name__}' must define a valid 'default_repo_id' string.")
 
@@ -290,11 +305,11 @@ class ModelPlugin(ABC):
                     f"Every variant for backend '{v.backend.value}' MUST declare a unique 'variant_id'."
                 )
 
-        from vibe.registry import model_registry
-
         try:
-            model_registry.register(cls)
-        except ValueError as exc:
+            import vibe.registry as reg
+
+            reg.model_registry.register(cls)
+        except (ImportError, AttributeError, ValueError) as exc:
             import warnings
 
             warnings.warn(str(exc), stacklevel=2)
@@ -307,10 +322,6 @@ class ModelPlugin(ABC):
         raise NotImplementedError(
             f"Plugin '{self.identity.model_id}' has not implemented the build_runtime() contract."
         )
-
-    def provide_transform_data(self) -> tuple[PluginData, ...]:
-        """Optional hook: return static data precomputed by this plugin for transforms."""
-        return ()
 
     def collate_batch(self, samples: list[Any]) -> Any:
         """Collate a list of preprocessed samples into a batch tensor."""
@@ -347,6 +358,11 @@ class ModelPlugin(ABC):
             keys = list(batched_output.keys())
             split_vals = {k: self.split_batch(v, expected_size) for k, v in batched_output.items()}
             return [{k: split_vals[k][i] for k in keys} for i in range(expected_size)]
+
+        # TODO: Add support for dataclass splitting (e.g., Hugging Face ModelOutput).
+        # Future models like SigLIP 2 or DINOv2 return dataclasses instead of raw arrays.
+        # Implementation needs `dataclasses.is_dataclass(batched_output)` to extract fields,
+        # recursively call split_batch on each field, and reconstruct using `type(batched_output)(**...)`.
 
         # Handle nested tuples/lists
         if isinstance(batched_output, (tuple, list)):
@@ -389,11 +405,11 @@ class ModelPlugin(ABC):
 
     @abstractmethod
     def preprocess(self, image: Any, request: InferenceRequest | None = None) -> Any:
-        pass
+        """Preprocess an image input using optional per-inference settings."""
 
     @abstractmethod
     def postprocess(self, raw_output: Any) -> ModelResult:
-        pass
+        """Transform raw framework outputs into a standard ModelResult."""
 
     @classmethod
     def describe(cls) -> ModelDescriptor:
@@ -401,16 +417,15 @@ class ModelPlugin(ABC):
         resolved_variants = tuple(v.resolve(cls.default_repo_id) for v in cls.variants)
 
         return ModelDescriptor(
-            model_id=cls.identity.model_id,
-            display_name=cls.identity.display_name,
+            schema_version="1.0.0",
+            identity=cls.identity,
             family_name=cls.family_name,
-            description=cls.identity.description,
-            output_type=cls.capabilities.output_type,
-            output_categories=cls.capabilities.output_categories,
-            output_extras=cls.capabilities.output_extras,
-            entry_extras=cls.capabilities.entry_extras,
-            supported_backends=tuple(v.backend for v in cls.variants),
-            features=tuple(f.to_dict() for f in cls.capabilities.features),
+            model_types=cls.profile.model_types,
+            capabilities=tuple(p.__name__ for p in getattr(cls, "implements", ())),
+            input=cls.profile.input_spec,
+            output=cls.profile.output_spec,
+            settings=cls.settings,
+            consumer_settings=cls.profile.consumer_settings,
             default_repo_id=None if cls.custom_only and not cls.default_repo_id else cls.default_repo_id,
             variants=resolved_variants,
         )

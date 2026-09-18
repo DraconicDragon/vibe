@@ -17,26 +17,36 @@ from vibe.backends.base import (
     Backend,
     ExecutionPlan,
     FileRole,
-    ModelCapabilities,
     ModelIdentity,
     ModelPlugin,
     ModelVariant,
     RuntimeExecutor,
 )
 from vibe.backends.runtime.pytorch import PyTorchBackend
-from vibe.features import FeatureSpec, InferenceRequest
+from vibe.contracts import LabelCatalogProvider
+from vibe.metadata import LabelCatalog, LabelInfo, TagFilterRecommendation
+from vibe.model_profiles import build_tagger_profile
 from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
     normalize_output_scores,
     resolve_category_name,
 )
-from vibe.result_transforms import CharacterIPMapping, CleanTags, ScoreThresholds
-from vibe.results import OutputType, TagResult
+from vibe.results import TagResult
+from vibe.settings import InferenceRequest
 from vibe.tag_categories import E621_CATEGORY_LABELS, TagCategory
 
 logger = logging.getLogger(__name__)
 
-# region Constants
+_TAGGERINE_CATEGORIES = (
+    TagCategory.GENERAL,
+    TagCategory.ARTIST,
+    TagCategory.COPYRIGHT,
+    TagCategory.CHARACTER,
+    TagCategory.SPECIES,
+    TagCategory.INVALID,
+    TagCategory.META,
+    TagCategory.LORE,
+)
 
 _MAX_SIZE = 1024
 _PATCH_SIZE = 16
@@ -46,9 +56,6 @@ _IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 def _snap(x: int, m: int) -> int:
     return max(m, (x // m) * m)
-
-
-# endregion
 
 
 class TaggerinePlugin(ModelPlugin):
@@ -61,28 +68,11 @@ class TaggerinePlugin(ModelPlugin):
     )
     default_repo_id = "lodestones/taggerine"
 
-    capabilities = ModelCapabilities(
-        output_type=OutputType.TAGS,
-        output_categories=(
-            TagCategory.GENERAL,
-            TagCategory.ARTIST,
-            TagCategory.CONTRIBUTOR,
-            TagCategory.COPYRIGHT,
-            TagCategory.CHARACTER,
-            TagCategory.SPECIES,
-            TagCategory.INVALID,
-            TagCategory.META,
-            TagCategory.LORE,
-        ),
-        features=(
-            FeatureSpec.from_transform(CleanTags),
-            FeatureSpec.from_transform(CharacterIPMapping),
-            FeatureSpec.from_transform(
-                ScoreThresholds,
-                recommended=ScoreThresholds(threshold=0.35),
-            ),
-        ),
+    profile = build_tagger_profile(
+        categories=_TAGGERINE_CATEGORIES,
+        recommended_filter=TagFilterRecommendation(global_threshold=0.35),
     )
+    implements = (LabelCatalogProvider,)
 
     variants = (
         # Index 0: Default PyTorch variant
@@ -124,6 +114,7 @@ class TaggerinePlugin(ModelPlugin):
         ),
     )
 
+    catalog: LabelCatalog
     _raw_tag_names: list[str]
     _category_indices: dict[str, list[int]]
 
@@ -137,20 +128,32 @@ class TaggerinePlugin(ModelPlugin):
         self._raw_tag_names = vocab_data.get("idx2tag", [])
         self._category_indices = {}
 
-        # Look for tag2category mapping first
+        label_infos: list[LabelInfo] = []
+        seen_categories: set[str] = set()
+
         if "tag2category" in vocab_data:
             tag2category = vocab_data["tag2category"]
             for idx, tag in enumerate(self._raw_tag_names):
                 cat_id = tag2category.get(tag, 0)
                 cat_name = resolve_category_name(cat_id, E621_CATEGORY_LABELS, namespace="e621")
                 self._category_indices.setdefault(cat_name, []).append(idx)
+                seen_categories.add(cat_name)
+                label_infos.append(LabelInfo(index=idx, name=tag, category=cat_name))
         elif "idx2category" in vocab_data:
             for idx, cat_id in enumerate(vocab_data["idx2category"]):
                 cat_name = resolve_category_name(cat_id, E621_CATEGORY_LABELS, namespace="e621")
+                tag = self._raw_tag_names[idx]
                 self._category_indices.setdefault(cat_name, []).append(idx)
+                seen_categories.add(cat_name)
+                label_infos.append(LabelInfo(index=idx, name=tag, category=cat_name))
         else:
-            self._category_indices[TagCategory.GENERAL.value] = list(range(len(self._raw_tag_names)))
+            cat_name = TagCategory.GENERAL.value
+            self._category_indices[cat_name] = list(range(len(self._raw_tag_names)))
+            seen_categories.add(cat_name)
+            for idx, tag in enumerate(self._raw_tag_names):
+                label_infos.append(LabelInfo(index=idx, name=tag, category=cat_name))
 
+        self.catalog = LabelCatalog(labels=tuple(label_infos), categories=tuple(seen_categories))
         logger.info("Taggerine vocab loaded: %d tags", len(self._raw_tag_names))
 
     def build_runtime(self, artifacts: ArtifactMap, plan: ExecutionPlan) -> RuntimeExecutor:
@@ -213,7 +216,6 @@ class TaggerinePlugin(ModelPlugin):
         # HWC to CHW
         arr = np.ascontiguousarray(np.transpose(arr, (2, 0, 1)))
 
-        # todo: fact check comment
         # Vibe expects all preprocessed tensors to have a batch dimension of 1
         return torch.from_numpy(arr).unsqueeze(0)
 

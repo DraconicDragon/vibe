@@ -1,17 +1,20 @@
+from typing import Any
+
+
 class SessionError(Exception):
     """Raised when session setup or inference fails."""
 
 
-class TransformError(SessionError):
-    """Raised specifically when a result transform fails inside the pipeline."""
-
-
-class TransformRequirementError(TransformError):
-    """Raised by a transform when a prerequisite (like model-provided data) is missing."""
-
-
 class InferenceCancelled(SessionError):
     """Raised when an in-flight inference run is cancelled by user request."""
+
+    def __init__(
+        self,
+        message: str = "Inference cancelled by user request.",
+        partial_result: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.partial_result = partial_result
 
 
 class RegistryError(Exception):
@@ -24,3 +27,11 @@ class LoaderError(Exception):
 
 class HFDownloadError(Exception):
     """Raised when a HuggingFace download/cached lookup cannot be satisfied."""
+
+
+class PluginContractError(Exception):
+    """Raised at load time if a plugin fails to satisfy its declared capability contracts."""
+
+
+class SessionCapabilityError(Exception):
+    """Raised if a user attempts to access a capability view (e.g. .tagger) on an incompatible session."""

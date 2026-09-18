@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -16,6 +17,16 @@ from vibe.hf_downloader import download_or_cached_with_reason
 logger = logging.getLogger(__name__)
 
 
+def _is_explicit_local_syntax(s: str) -> bool:
+    """Check for unambiguous local filesystem syntax across POSIX and Windows."""
+    return (
+        s.startswith(("local:", "/", "./", "../", "~", "\\", ".\\", "..\\"))
+        or len(s) >= 2
+        and s[1] == ":"
+        and s[0].isalpha()
+    )
+
+
 def _is_local_source(source: str) -> bool:
     s = source.strip()
     if s.startswith("local:"):
@@ -23,19 +34,17 @@ def _is_local_source(source: str) -> bool:
     if s.startswith("hf:"):
         return False
 
-    # Check for explicit local path syntax (Unix absolute/relative, home dir, Windows drive letter)
-    if s.startswith(("/", "./", "../", "~")) or (len(s) >= 2 and s[1] == ":" and s[0].isalpha()):
+    if _is_explicit_local_syntax(s):
         return True
 
     path = Path(s).expanduser()
-    return path.is_dir() or path.is_absolute()
+    # Check if the path exists on disk (file or directory) or is an absolute path
+    return path.exists() or path.is_dir() or path.is_absolute()
 
 
 def _local_source_to_path(source: str) -> Path:
     source = source.strip()
-
     source = source.removeprefix("local:")
-
     return Path(source).expanduser()
 
 
@@ -108,25 +117,41 @@ class ModelAvailability:
 
 
 class SourceResolver(ABC):
-    def __init__(self, file_name_map: Mapping[str, str] | None, source_map: Mapping[str, str] | None):
+    def __init__(
+        self,
+        file_name_map: Mapping[str, str] | None,
+        source_map: Mapping[str, str] | None,
+        raw_source: str = "",
+        is_auto_detected: bool = False,
+    ):
         self.file_name_map = file_name_map or {}
         self.source_map = source_map or {}
+        self.raw_source = raw_source
+        self.is_auto_detected = is_auto_detected
 
-    def resolve(self, variant: ModelVariant, **kwargs) -> ArtifactMap:
+    def get_mapped_filename(self, spec: ArtifactSpec) -> str:
+        """Resolve the target filename for an artifact spec using file_name_map overrides."""
+        return self.file_name_map.get(spec.id, self.file_name_map.get(spec.name, spec.name))
+
+    def resolve(self, variant: ModelVariant, **kwargs: Any) -> ArtifactMap:
         paths: dict[str, Path] = {}
         optional_missing: dict[str, str] = {}
+        resolved_specs: dict[str, ArtifactSpec] = {}
 
         for spec in variant.artifacts:
-            mapped_name = self.file_name_map.get(spec.id, self.file_name_map.get(spec.name, spec.name))
+            mapped_name = self.get_mapped_filename(spec)
             override_source = self.source_map.get(spec.id)
 
             # 1. Handle Explicit Artifact Override (via source_map)
             if override_source:
                 path, reason = self._resolve_override(spec, override_source, mapped_name, **kwargs)
+                effective_spec = dataclasses.replace(spec, repo_id=override_source)
                 if path:
                     paths[spec.id] = path
+                    resolved_specs[spec.id] = effective_spec
                 elif not spec.required and reason:
                     optional_missing[spec.id] = reason
+                    resolved_specs[spec.id] = effective_spec
                 else:
                     raise LoaderError(
                         f"Required artifact '{spec.id}' failed to load from override '{override_source}': {reason}"
@@ -134,18 +159,29 @@ class SourceResolver(ABC):
                 continue
 
             # 2. Delegate standard resolution to subclass
-            path, reason = self._resolve_standard(spec, mapped_name, **kwargs)
+            path, reason, effective_spec = self._resolve_standard(spec, variant, mapped_name, **kwargs)
             if path:
                 paths[spec.id] = path
+                resolved_specs[spec.id] = effective_spec
             elif not spec.required and reason:
                 optional_missing[spec.id] = reason
+                resolved_specs[spec.id] = effective_spec
             elif spec.required:
+                if self.is_auto_detected:
+                    raise LoaderError(
+                        f"Could not resolve required artifact '{spec.id}' for source '{self.raw_source}':\n"
+                        f"  - Local path lookup: Path does not exist on disk.\n"
+                        f"  - Hugging Face lookup: {reason or 'Repository not found'}.\n"
+                        f"Hint: If '{self.raw_source}' was intended as a local folder, verify the path or prefix with './' or 'local:'."
+                    )
                 raise LoaderError(reason or f"Required artifact '{spec.id}' could not be resolved.")
 
-        return ArtifactMap(paths, optional_missing)
+        return ArtifactMap(paths, optional_missing, resolved_specs)
 
     @abstractmethod
-    def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
+    def _resolve_standard(
+        self, spec: ArtifactSpec, variant: ModelVariant, mapped_name: str, **kwargs: Any
+    ) -> tuple[Path | None, str | None, ArtifactSpec]:
         pass
 
     def _resolve_override(
@@ -153,9 +189,8 @@ class SourceResolver(ABC):
         spec: ArtifactSpec,
         override_source: str,
         mapped_name: str,
-        **kwargs,
+        **kwargs: Any,
     ) -> tuple[Path | None, str | None]:
-
         if _is_local_source(override_source):
             candidate = _local_source_to_path(override_source)
 
@@ -185,7 +220,7 @@ class SourceResolver(ABC):
         mapped_name: str,
         override_subdir: str | None = None,
         ignore_spec_subdir: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ) -> tuple[Path | None, str | None]:
         """Helper to fetch from Hugging Face cache/download."""
         if override_subdir is not None:
@@ -213,28 +248,37 @@ class SourceResolver(ABC):
 
 class LocalResolver(SourceResolver):
     def __init__(
-        self, folder: Path, file_name_map: Mapping[str, str] | None = None, source_map: Mapping[str, str] | None = None
+        self,
+        folder: Path,
+        file_name_map: Mapping[str, str] | None = None,
+        source_map: Mapping[str, str] | None = None,
+        raw_source: str = "",
+        is_auto_detected: bool = False,
     ):
-        super().__init__(file_name_map, source_map)
+        super().__init__(file_name_map, source_map, raw_source=raw_source, is_auto_detected=is_auto_detected)
         self.folder = folder
 
-    def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
-        # Strictly local. Ignore HF repo_ids entirely.
+    def _resolve_standard(
+        self, spec: ArtifactSpec, variant: ModelVariant, mapped_name: str, **kwargs: Any
+    ) -> tuple[Path | None, str | None, ArtifactSpec]:
+        effective_subdir = spec.hf_subdir or variant.hf_subdir
+        effective_spec = dataclasses.replace(spec, hf_subdir=effective_subdir)
+
         if not self.folder.is_dir():
-            return None, f"Local folder does not exist: {self.folder}"
+            return None, f"Local folder does not exist: {self.folder}", effective_spec
 
         # Check HF Repo-like nested structure first
-        if spec.hf_subdir:
-            nested_candidate = self.folder / spec.hf_subdir / mapped_name
+        if effective_subdir:
+            nested_candidate = self.folder / effective_subdir / mapped_name
             if nested_candidate.is_file():
-                return nested_candidate, None
+                return nested_candidate, None, effective_spec
 
         # Flat structure
         candidate = self.folder / mapped_name
         if candidate.is_file():
-            return candidate, None
+            return candidate, None, effective_spec
 
-        return None, f"Missing in local folder: {candidate}"
+        return None, f"Missing in local folder: {candidate}", effective_spec
 
 
 class HFResolver(SourceResolver):
@@ -243,31 +287,39 @@ class HFResolver(SourceResolver):
         session_fallback_repo: str,
         file_name_map: Mapping[str, str] | None = None,
         source_map: Mapping[str, str] | None = None,
+        raw_source: str = "",
+        is_auto_detected: bool = False,
     ):
-        super().__init__(file_name_map, source_map)
+        super().__init__(file_name_map, source_map, raw_source=raw_source, is_auto_detected=is_auto_detected)
         # Parse the session's main source into repo_id and optional subfolder
         self.session_fallback_repo, self.session_fallback_subdir = parse_hf_source(session_fallback_repo)
 
-    def _resolve_standard(self, spec: ArtifactSpec, mapped_name: str, **kwargs) -> tuple[Path | None, str | None]:
-        # If the artifact defines its own repo (e.g. CLIP), use it. Otherwise use session repo.
+    def _resolve_standard(
+        self, spec: ArtifactSpec, variant: ModelVariant, mapped_name: str, **kwargs: Any
+    ) -> tuple[Path | None, str | None, ArtifactSpec]:
+        # If the artifact defines its own fixed repo (e.g. CLIP), use it.
+        # Otherwise use the session repository.
         if spec.repo_id:
             target_repo = spec.repo_id
             target_subdir = spec.hf_subdir
         else:
             target_repo = self.session_fallback_repo
             # Fall back to spec's directory only if the session source did not specify a subfolder
-            target_subdir = self.session_fallback_subdir or spec.hf_subdir
+            target_subdir = self.session_fallback_subdir or spec.hf_subdir or variant.hf_subdir
+
+        effective_spec = dataclasses.replace(spec, repo_id=target_repo, hf_subdir=target_subdir)
 
         if not target_repo:
-            return None, "No repository ID defined for HF resolution."
+            return None, "No repository ID defined for HF resolution.", effective_spec
 
-        return self._fetch_hf(
+        path, reason = self._fetch_hf(
             target_repo,
-            spec,
+            effective_spec,
             mapped_name,
             override_subdir=target_subdir,
             **kwargs,
         )
+        return path, reason, effective_spec
 
 
 def resolve_variant_artifacts(
@@ -283,13 +335,26 @@ def resolve_variant_artifacts(
 ) -> ArtifactMap:
     """Main entrypoint for session factory to resolve files for a specific variant."""
     s = source.strip()
+    is_explicit = s.startswith("hf:") or _is_explicit_local_syntax(s)
 
     if _is_local_source(s):
         folder = _local_source_to_path(s)
-        resolver = LocalResolver(folder, file_name_map, source_map)
+        resolver: SourceResolver = LocalResolver(
+            folder,
+            file_name_map=file_name_map,
+            source_map=source_map,
+            raw_source=s,
+            is_auto_detected=not is_explicit,
+        )
     else:
         repo = _hf_source_to_repo(s)
-        resolver = HFResolver(repo, file_name_map, source_map)
+        resolver = HFResolver(
+            repo,
+            file_name_map=file_name_map,
+            source_map=source_map,
+            raw_source=s,
+            is_auto_detected=not is_explicit,
+        )
 
     return resolver.resolve(
         variant,
@@ -312,17 +377,30 @@ def inspect_variant_artifacts(
 ) -> list[ArtifactAvailability]:
     """Inspect local/cache availability for every artifact in a variant without downloading."""
     s = source.strip()
+    is_explicit = s.startswith("hf:") or _is_explicit_local_syntax(s)
 
     if _is_local_source(s):
         folder = _local_source_to_path(s)
-        resolver = LocalResolver(folder, file_name_map, source_map)
+        resolver: SourceResolver = LocalResolver(
+            folder,
+            file_name_map=file_name_map,
+            source_map=source_map,
+            raw_source=s,
+            is_auto_detected=not is_explicit,
+        )
     else:
         repo = _hf_source_to_repo(s)
-        resolver = HFResolver(repo, file_name_map, source_map)
+        resolver = HFResolver(
+            repo,
+            file_name_map=file_name_map,
+            source_map=source_map,
+            raw_source=s,
+            is_auto_detected=not is_explicit,
+        )
 
     results: list[ArtifactAvailability] = []
     for spec in variant.artifacts:
-        mapped_name = resolver.file_name_map.get(spec.id, spec.name)
+        mapped_name = resolver.get_mapped_filename(spec)
         override_source = resolver.source_map.get(spec.id)
 
         if override_source:
@@ -336,8 +414,9 @@ def inspect_variant_artifacts(
                 token=token,
             )
         else:
-            path, reason = resolver._resolve_standard(
+            path, reason, _ = resolver._resolve_standard(
                 spec,
+                variant,
                 mapped_name,
                 revision=revision,
                 cache_dir=cache_dir,
