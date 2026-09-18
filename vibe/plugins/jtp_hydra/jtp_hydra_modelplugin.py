@@ -36,7 +36,7 @@ from vibe.plugins.shared.tagger_shared import (
 )
 from vibe.results import TagResult
 from vibe.settings import InferenceRequest, SettingGroupSpec
-from vibe.tag_categories import E621_CATEGORY_LABELS
+from vibe.tag_categories import E621_CATEGORY_LABELS, TagCategory
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -118,9 +118,7 @@ class JTPHydraBasePlugin(ModelPlugin):
 
     family_name = "RedRocket JTP Hydra Taggers"
 
-    profile = build_tagger_profile(
-        recommended_filter=TagFilterRecommendation(global_threshold=0.35),
-    )
+    profile = build_tagger_profile()
     implements = (LabelCatalogProvider, ThresholdProvider)
 
     settings = (
@@ -278,6 +276,21 @@ class JTP3Plugin(JTPHydraBasePlugin):
     )
     default_repo_id = "RedRocket/Hydra"
 
+    profile = build_tagger_profile(
+        # thresholds are calculated from validation data f1.0@0.1
+        recommended_filter=TagFilterRecommendation(
+            global_threshold=0.75,  # 0.7506
+            category_thresholds={
+                TagCategory.CHARACTER: 0.71,  # 0.7098
+                TagCategory.COPYRIGHT: 0.78,  # 0.7800
+                TagCategory.GENERAL: 0.74,  # 0.7402
+                TagCategory.LORE: 0.64,  # 0.6397
+                TagCategory.META: 0.76,  # 0.7607
+                TagCategory.SPECIES: 0.77,  # 0.7705
+            },
+        ),
+    )
+
     variants = (
         ModelVariant(
             backend=Backend.PYTORCH,
@@ -309,6 +322,21 @@ class Hydra35Plugin(JTPHydraBasePlugin):
         description="E621 tag prediction using Hydra 3.5 - successor to JTP 3 Hydra.",
     )
     default_repo_id = "RedRocket/Hydra"
+
+    # thresholds are calculated from validation data f1.0@0.1
+    profile = build_tagger_profile(
+        recommended_filter=TagFilterRecommendation(
+            global_threshold=0.72,  # 0.7202
+            category_thresholds={
+                TagCategory.CHARACTER: 0.65,  # 0.6496
+                TagCategory.COPYRIGHT: 0.71,  # 0.7098
+                TagCategory.GENERAL: 0.72,  # 0.7202
+                TagCategory.LORE: 0.59,  # 0.5898
+                TagCategory.META: 0.72,  # 0.7202
+                TagCategory.SPECIES: 0.74,  # 0.7402
+            },
+        ),
+    )
 
     variants = (
         ModelVariant(
