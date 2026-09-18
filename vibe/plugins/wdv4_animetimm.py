@@ -451,21 +451,6 @@ class ATSwinV2BaseWindow8256Plugin(AnimeTimmBasePlugin):
     )
 
 
-class ATSwinV2BaseWindow8256Dbv4aPlugin(AnimeTimmBasePlugin):
-    identity = ModelIdentity(
-        model_id="at-swinv2-base-window8-256-dbv4a-full",
-        display_name="AnimeTimm SwinV2 Base Window8 256 (with artist tags)",
-        description="Danbooru tagger using the AnimeTimm SwinV2 Base Window8 256 architecture. Trained with artist tags.",
-    )
-    default_repo_id = "animetimm/swinv2_base_window8_256.dbv4a-full"
-    profile = build_tagger_profile(
-        categories=TagCategory.ARTIST,
-        recommended_filter=TagFilterRecommendation(
-            global_threshold=0.67,
-        ),
-    )
-
-
 class ATVitBasePatch16224Plugin(AnimeTimmBasePlugin):
     identity = ModelIdentity(
         model_id="at-vit-base-patch16-224-dbv4-full",
@@ -481,6 +466,21 @@ class ATVitBasePatch16224Plugin(AnimeTimmBasePlugin):
                 TagCategory.RATING: 0.39,
             },
         )
+    )
+
+
+class ATSwinV2BaseWindow8256Dbv4aPlugin(AnimeTimmBasePlugin):
+    identity = ModelIdentity(
+        model_id="at-swinv2-base-window8-256-dbv4a-full",
+        display_name="AnimeTimm SwinV2 Base Window8 256 (artist tags only)",
+        description="Danbooru tagger using the AnimeTimm SwinV2 Base Window8 256 architecture. Trained with artist tags only.",
+    )
+    default_repo_id = "animetimm/swinv2_base_window8_256.dbv4a-full"
+    profile = build_tagger_profile(
+        categories=TagCategory.ARTIST,
+        recommended_filter=TagFilterRecommendation(
+            global_threshold=0.67,
+        ),
     )
 
 
