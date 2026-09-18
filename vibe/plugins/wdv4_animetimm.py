@@ -38,11 +38,6 @@ _ANIMETIMM_CATEGORIES = (
     TagCategory.CHARACTER,
 )
 
-_ANIMETIMM_ARTIST_CATEGORIES = (
-    *_ANIMETIMM_CATEGORIES,
-    TagCategory.ARTIST,
-)
-
 
 def _build_animetimm_profile(
     recommended_filter: TagFilterRecommendation,
@@ -463,9 +458,11 @@ class ATSwinV2BaseWindow8256Dbv4aPlugin(AnimeTimmBasePlugin):
         description="Danbooru tagger using the AnimeTimm SwinV2 Base Window8 256 architecture. Trained with artist tags.",
     )
     default_repo_id = "animetimm/swinv2_base_window8_256.dbv4a-full"
-    profile = _build_animetimm_profile(
-        TagFilterRecommendation(global_threshold=0.67),
-        categories=_ANIMETIMM_ARTIST_CATEGORIES,
+    profile = build_tagger_profile(
+        categories=TagCategory.ARTIST,
+        recommended_filter=TagFilterRecommendation(
+            global_threshold=0.67,
+        ),
     )
 
 
