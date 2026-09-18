@@ -70,7 +70,10 @@ class TaggerinePlugin(ModelPlugin):
 
     profile = build_tagger_profile(
         categories=_TAGGERINE_CATEGORIES,
-        recommended_filter=TagFilterRecommendation(global_threshold=0.35),
+        #recommended_filter=TagFilterRecommendation(global_threshold=0.4),
+        # Doesn't really have a recommended threshold noted on source model card.
+        # Standalone inference script uses thresh of 0.4 but seems more like random example
+        # HF space uses top-k 85 for every category, not reliable
     )
     implements = (LabelCatalogProvider,)
 
