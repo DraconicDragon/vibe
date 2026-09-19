@@ -117,7 +117,27 @@ class PixAITaggerPlugin(ModelPlugin):
 
     variants = (
         ModelVariant(
+            variant_id="original",
+            description="Original checkpoint in full FP32.",
             backend=Backend.PYTORCH,
+            artifacts=(
+                ArtifactSpec(
+                    id="model_pt",
+                    name="model.safetensors",
+                    role=FileRole.WEIGHTS,
+                ),
+                ArtifactSpec(
+                    id="config",
+                    name="config.json",
+                    role=FileRole.CONFIG,
+                ),
+            ),
+        ),
+        ModelVariant(
+            variant_id="bf16-mixed",
+            backend=Backend.PYTORCH,
+            description="Mixed precision checkpoint (BF16 backbone + FP32 head).",
+            repo_id="DraconicDragon/pixai-tagger-v1.0-mixed-bf16",
             artifacts=(
                 ArtifactSpec(
                     id="model_pt",

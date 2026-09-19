@@ -971,5 +971,5 @@ class ViTDetCls(PreTrainedModel):
         x = self.forward_feature(x)[-1]  # [n, c, h, w]
         x = x.view(x.shape[0], x.shape[1], -1).permute(0, 2, 1)
         x = self.head_pool(x)
-        x = self.head(x)
-        return x
+        # Cast x to head's weight dtype to prevent mismatch if autocast is disabled
+        return self.head(x.to(self.head.weight.dtype))
