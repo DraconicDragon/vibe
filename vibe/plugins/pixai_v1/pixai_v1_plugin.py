@@ -7,13 +7,10 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-import torch
-import torchvision.transforms.functional as vF
 from PIL import Image
-from torchvision import transforms
 
 from vibe.backends.base import (
     ArtifactMap,
@@ -30,7 +27,6 @@ from vibe.backends.runtime.pytorch import PyTorchBackend
 from vibe.contracts import LabelCatalogProvider
 from vibe.metadata import LabelCatalog, LabelInfo, TagFilterRecommendation
 from vibe.model_profiles import build_tagger_profile
-from vibe.plugins.pixai_v1.model import ViTDetCls, ViTDetClsConfig
 from vibe.plugins.shared.tagger_shared import (
     build_categorized_tag_result,
     normalize_output_scores,
@@ -38,6 +34,9 @@ from vibe.plugins.shared.tagger_shared import (
 from vibe.results import TagResult
 from vibe.settings import InferenceRequest
 from vibe.tag_categories import TagCategory
+
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -51,31 +50,14 @@ _PIXAI_CATEGORIES = (
 )
 
 
-def _rescale_pad_tensor(image: torch.Tensor, output_size: int = 1008) -> torch.Tensor:
-    """
-    Aspect-preserving resize and zero-pad to output_size.
-    Matches PixAI's rescale_pad function from tagger_pipeline.py.
-    """
-    h, w = image.shape[-2:]
-    if h != output_size or w != output_size:
-        r = min(output_size / h, output_size / w)
-        new_h, new_w = int(h * r), int(w * r)
-        ph = output_size - new_h
-        pw = output_size - new_w
-        left = pw // 2
-        right = pw - left
-        top = ph // 2
-        bottom = ph - top
-        image = transforms.functional.resize(image, [new_h, new_w])
-        image = transforms.functional.pad(image, [left, top, right, bottom], 0)
-    return image
-
-
 def _preprocess_pixai_image(image: Any, target_size: int = 1008) -> torch.Tensor:
     """
     Preprocess PIL Image or NumPy array into a normalized PyTorch tensor [1, 3, 1008, 1008].
     Matches PixAI's RescalePadProcessor from tagger_pipeline.py.
     """
+    import torchvision.transforms.functional as vF
+    from torchvision import transforms
+
     if not isinstance(image, Image.Image):
         image = Image.fromarray(np.asarray(image))
 
@@ -85,9 +67,23 @@ def _preprocess_pixai_image(image: Any, target_size: int = 1008) -> torch.Tensor
         canvas.alpha_composite(image)
         image = canvas.convert("RGB")
 
-    tensor = vF.to_tensor(image)  # Converts to float32 [0.0, 1.0] [C, H, W]
-    padded = _rescale_pad_tensor(tensor, target_size)
-    normalized = vF.normalize(padded, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+    tensor = vF.to_tensor(image)  # Float32 [0.0, 1.0], shape [C, H, W]
+
+    # Aspect-preserving rescale and center pad
+    h, w = tensor.shape[-2:]
+    if h != target_size or w != target_size:
+        r = min(target_size / h, target_size / w)
+        new_h, new_w = int(h * r), int(w * r)
+        ph = target_size - new_h
+        pw = target_size - new_w
+        left = pw // 2
+        right = pw - left
+        top = ph // 2
+        bottom = ph - top
+        tensor = transforms.functional.resize(tensor, [new_h, new_w])
+        tensor = transforms.functional.pad(tensor, [left, top, right, bottom], 0)
+
+    normalized = vF.normalize(tensor, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
     return normalized.unsqueeze(0)
 
 
@@ -99,7 +95,7 @@ class PixAITaggerPlugin(ModelPlugin):
     identity = ModelIdentity(
         model_id="pixai-tagger-v1.0",
         display_name="PixAI Tagger v1.0",
-        description="Anime image tagger by PixAI Labs based on SAM-3 ViTDet with 30k+ tags. Dataset cutoff: May 2026",
+        description="Anime image tagger by PixAI Labs based on SAM-3 ViTDet with 30k+ tags.",
     )
     default_repo_id = "pixai-labs/pixai-tagger-v1.0"
 
@@ -183,7 +179,9 @@ class PixAITaggerPlugin(ModelPlugin):
         with config_path.open("r", encoding="utf-8") as f:
             cfg_dict = json.load(f)
 
-        # Build ViTDetClsConfig directly using the parameters in config.json
+        # Lazy import of the heavy model architecture
+        from vibe.plugins.pixai_v1.model import ViTDetCls, ViTDetClsConfig
+
         cfg = ViTDetClsConfig(**cfg_dict)
 
         logger.info("Instantiating PixAI ViTDetCls architecture...")
