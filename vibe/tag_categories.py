@@ -20,6 +20,7 @@ class TagCategory(StrEnum):
     INVALID = "invalid"
     RATING = "rating"
     LORE = "lore"
+    STYLE = "style" # camie(?) and pixai v1.0
 
 
 # endregion
