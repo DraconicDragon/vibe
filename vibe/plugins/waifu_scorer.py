@@ -170,7 +170,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
                 import torch
 
                 clip_state = torch.load(clip_weights_path, map_location="cpu")
-            clip_model.load_state_dict(clip_state, strict=False)
+            clip_model.load_state_dict(clip_state, strict=False, assign=True)
         except Exception as exc:
             raise RuntimeError(f"Failed to load CLIP weights from '{clip_weights_path}': {exc}") from exc
 
@@ -183,7 +183,7 @@ class WaifuScorerBasePlugin(ModelPlugin):
         try:
             mlp_state = load_file(mlp_path, device="cpu")
             normalized_state = self._normalize_mlp_state_dict(mlp_state)
-            mlp.load_state_dict(normalized_state, strict=True)
+            mlp.load_state_dict(normalized_state, strict=True, assign=True)
             mlp.eval()
         except Exception as exc:
             raise RuntimeError(f"Failed to load MLP weights from '{mlp_path}': {exc}") from exc

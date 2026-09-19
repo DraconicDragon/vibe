@@ -70,7 +70,7 @@ class TaggerinePlugin(ModelPlugin):
 
     profile = build_tagger_profile(
         categories=_TAGGERINE_CATEGORIES,
-        #recommended_filter=TagFilterRecommendation(global_threshold=0.4),
+        # recommended_filter=TagFilterRecommendation(global_threshold=0.4),
         # Doesn't really have a recommended threshold noted on source model card.
         # Standalone inference script uses thresh of 0.4 but seems more like random example
         # HF space uses top-k 85 for every category, not reliable
@@ -181,8 +181,8 @@ class TaggerinePlugin(ModelPlugin):
         )
         model.head = head_module
 
-        model.backbone.load_state_dict(backbone_sd, strict=True)
-        model.head.load_state_dict(head_sd_remapped, strict=True)
+        model.backbone.load_state_dict(backbone_sd, strict=True, assign=True)
+        model.head.load_state_dict(head_sd_remapped, strict=True, assign=True)
         model.eval()
 
         backend = PyTorchBackend()

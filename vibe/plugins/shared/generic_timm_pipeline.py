@@ -105,7 +105,7 @@ class TimmPipelineMixin:
             state_dict = torch.load(weights_path, map_location="cpu")
 
         model = self.create_timm_model(timm, architecture, model_args)
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False, assign=True)
         if missing:
             logger.warning("timm load_state_dict missing keys for model_id=%s: %s", self.identity.model_id, missing[:8])
         if unexpected:
