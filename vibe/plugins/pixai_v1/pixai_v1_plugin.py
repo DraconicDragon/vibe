@@ -192,7 +192,7 @@ class PixAITaggerPlugin(ModelPlugin):
 
         logger.info("Loading PyTorch weights from %s...", weights_path)
         state_dict = load_file(str(weights_path), device="cpu")
-        missing, unexpected = model.load_state_dict(state_dict, strict=True)
+        missing, unexpected = model.load_state_dict(state_dict, strict=True, assign=True)
         if missing or unexpected:
             logger.warning("PixAI load_state_dict: missing=%s, unexpected=%s", missing[:5], unexpected[:5])
 
