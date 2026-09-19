@@ -336,7 +336,7 @@ class ModelSession:
                 for chunk in batches:
                     if self._state.is_cancellation_requested:
                         logger.debug("Async inference cancellation observed model_id=%s", self.model_id)
-                        break
+                        raise InferenceCancelled("Inference cancelled by user request.")
                     if not _queue_from_worker(chunk):
                         break
             except Exception as exc:
