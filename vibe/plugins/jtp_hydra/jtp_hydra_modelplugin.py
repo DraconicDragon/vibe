@@ -127,7 +127,6 @@ class JTPHydraBasePlugin(ModelPlugin):
 
     family_name = "RedRocket JTP Hydra Taggers"
 
-    profile = build_tagger_profile()
     implements = (LabelCatalogProvider, ThresholdProvider)
 
     settings = (
