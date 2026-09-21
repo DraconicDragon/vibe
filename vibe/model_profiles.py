@@ -25,7 +25,7 @@ from vibe.metadata import (
 
 def build_tagger_profile(
     *,
-    categories: Sequence[str | Enum] = (),
+    categories: Sequence[str | Enum],
     score_semantics: ScoreSemantics = ScoreSemantics.PROBABILITY,
     recommended_filter: TagFilterRecommendation | None = None,
     output_extras: Mapping[str, str] | None = None,
