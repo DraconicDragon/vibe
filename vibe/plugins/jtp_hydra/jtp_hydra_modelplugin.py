@@ -43,6 +43,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_HYDRA_CATEGORIES = (
+    TagCategory.GENERAL,
+    TagCategory.COPYRIGHT,
+    TagCategory.CHARACTER,
+    TagCategory.SPECIES,
+    TagCategory.META,
+    TagCategory.LORE,
+)
+
 
 class JTPHydraSettings(BaseModel):
     """Visual token budget configuration for JTP / Hydra models."""
@@ -277,6 +286,7 @@ class JTP3Plugin(JTPHydraBasePlugin):
     default_repo_id = "RedRocket/Hydra"
 
     profile = build_tagger_profile(
+        categories=_HYDRA_CATEGORIES,
         # thresholds are calculated from validation data f1.0@0.1
         recommended_filter=TagFilterRecommendation(
             global_threshold=0.75,  # 0.7506
@@ -325,14 +335,15 @@ class Hydra35Plugin(JTPHydraBasePlugin):
 
     # thresholds are calculated from validation data f1.0@0.1
     profile = build_tagger_profile(
+        categories=_HYDRA_CATEGORIES,
         recommended_filter=TagFilterRecommendation(
             global_threshold=0.72,  # 0.7202
             category_thresholds={
                 TagCategory.CHARACTER: 0.65,  # 0.6496
                 TagCategory.COPYRIGHT: 0.71,  # 0.7098
-                #TagCategory.GENERAL: 0.72,  # 0.7202 # commented in since already exists in form of global threshold
+                # TagCategory.GENERAL: 0.72,  # 0.7202 # commented in since already exists in form of global threshold
                 TagCategory.LORE: 0.59,  # 0.5898
-                #TagCategory.META: 0.72,  # 0.7202
+                # TagCategory.META: 0.72,  # 0.7202
                 TagCategory.SPECIES: 0.74,  # 0.7402
             },
         ),
