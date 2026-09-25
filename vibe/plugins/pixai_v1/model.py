@@ -446,14 +446,29 @@ class Attention(nn.Module):
             cls_freqs_cis = torch.polar(torch.ones_like(t), t)[None, :]
             freqs_cis = torch.cat([cls_freqs_cis, freqs_cis], dim=0)
 
-        self.register_buffer("freqs_cis", freqs_cis, persistent=False)
+        # Do NOT call self.register_buffer("freqs_cis", freqs_cis)
+        # Storing as an attribute protects it from model.to(dtype=...) real-type truncation
+        self.freqs_cis = freqs_cis
+
+    def _apply(self, fn, recurse: bool = True):
+        # Process standard parameters and buffers (qkv, proj, relative_coords, etc.)
+        super()._apply(fn, recurse=recurse)
+        # Move freqs_cis to the target device without touching its complex64 dtype
+        if getattr(self, "use_rope", False) and getattr(self, "freqs_cis", None) is not None:
+            device = next(self.parameters()).device if list(self.parameters()) else self.freqs_cis.device
+            self.freqs_cis = self.freqs_cis.to(device=device, dtype=torch.complex64)
+        return self
 
     def _apply_rope(self, q, k) -> tuple[Tensor, Tensor]:
         if not self.use_rope:
             return q, k
 
         assert self.freqs_cis is not None
-        return apply_rotary_enc(q, k, freqs_cis=self.freqs_cis)
+        freqs_cis = self.freqs_cis
+        if freqs_cis.device != q.device:
+            freqs_cis = freqs_cis.to(device=q.device, dtype=torch.complex64)
+
+        return apply_rotary_enc(q, k, freqs_cis=freqs_cis)
 
     def forward(self, x: Tensor) -> Tensor:
         s = 1 if self.cls_token else 0  # used to exclude cls_token
