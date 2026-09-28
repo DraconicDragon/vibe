@@ -311,13 +311,20 @@ def build_categorized_tag_result(
         if not indices:
             continue
 
-        entries: list[TagEntry] = []
-        for idx in indices:
-            if idx >= usable_count:
-                continue
-            entries.append(TagEntry(tag=tag_names[idx], score=float(scores[idx])))
+        # Filter valid indices and sort in compiled C via NumPy
+        valid_indices = [idx for idx in indices if idx < usable_count]
+        if not valid_indices:
+            continue
 
-        entries.sort(key=lambda item: item.score, reverse=True)
+        idx_arr = np.array(valid_indices, dtype=np.int32)
+        cat_scores = scores[idx_arr]
+        sort_order = np.argsort(-cat_scores)  # Fast descending sort in C
+
+        sorted_indices = idx_arr[sort_order]
+        sorted_scores = cat_scores[sort_order]
+
+        # Construct entries in already-sorted order
+        entries = [TagEntry(tag=tag_names[i], score=float(s)) for i, s in zip(sorted_indices, sorted_scores)]
         result_categories[cat_name] = entries
 
     return TagResult(categories=result_categories)
