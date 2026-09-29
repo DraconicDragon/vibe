@@ -39,7 +39,7 @@ from vibe.hf_downloader import (
     get_auto_download_default,
     set_auto_download_default,
 )
-from vibe.image_loading import ImageChunk, iter_load_images, iter_load_normalized
+from vibe.image_loading import ImageChunk, iter_load_images, iter_load_normalized, iter_raw_chunks
 from vibe.loader import (
     ArtifactAvailability,
     ModelAvailability,
@@ -430,6 +430,7 @@ __all__ = [
     "is_tag_result",
     "iter_load_images",
     "iter_load_normalized",
+    "iter_raw_chunks",
     "list_available_devices",
     "list_models",
     "list_plugin_classes",

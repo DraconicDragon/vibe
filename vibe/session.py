@@ -24,10 +24,7 @@ from vibe.contracts import (
     _get_protocol_required_attrs,
 )
 from vibe.exceptions import InferenceCancelled, SessionCapabilityError, SessionError
-from vibe.image_loading import (
-    iter_load_normalized,
-    normalize_input_format,
-)
+from vibe.image_loading import normalize_input_format
 from vibe.memory_stats import MemoryTracker
 from vibe.metadata import ModelDescriptor, OutputKind, StandardConsumerSettingId, TagFilterRecommendation
 from vibe.results import InferenceResult, InferenceResultItem
@@ -106,7 +103,7 @@ class ModelSession:
         settings: Mapping[str, Mapping[str, Any]] | Mapping[str, Any] | Sequence[Any] | InferenceRequest | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
-        prefetch_batch_limit: int = 8,
+        prefetch_batches: int = 1,
         on_cancel: Literal["raise", "return_partial"] = "raise",
     ) -> InferenceResult:
         """Run inference on one image, a collection of images, or a streaming generator."""
@@ -127,7 +124,7 @@ class ModelSession:
                 settings=settings,
                 batch_size=batch_size,
                 batch_method=batch_method,
-                prefetch_batch_limit=prefetch_batch_limit,
+                prefetch_batches=prefetch_batches,
             ):
                 total_inputs = chunk.total_inputs
                 items.extend(chunk.items)
@@ -182,7 +179,7 @@ class ModelSession:
         settings: Mapping[str, Mapping[str, Any]] | Mapping[str, Any] | Sequence[Any] | InferenceRequest | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
-        prefetch_batch_limit: int = 8,
+        prefetch_batches: int = 1,
     ) -> Generator[InferenceResult, None, None]:
         """Stream inference results as each completed chunk becomes available."""
         with self._state.lock:
@@ -190,9 +187,20 @@ class ModelSession:
                 raise SessionError("Session is closed. Load a new session before inferring.")
             if batch_size < 1:
                 raise SessionError("batch_size must be >= 1")
+            if prefetch_batches < 1:
+                raise SessionError("prefetch_batches must be >= 1")
 
             self._state.start_run()
             before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
+
+            # Disable garbage collection during inference to avoid performance issues
+            # Having it enabled seems to lead to "Breaks" visualized by GPU usage over time, 
+            # but only after some amount of batches, not after every batch.
+            import gc
+
+            gc_was_enabled = gc.isenabled()
+            if gc_was_enabled:
+                gc.disable()
 
             try:
                 norm = normalize_input_format(images, refs=refs, error_cls=SessionError)
@@ -223,66 +231,22 @@ class ModelSession:
                         method,
                     )
 
-                chunk_gen = iter_load_normalized(
-                    norm=norm,
+                # Initialize double-buffered batch pipeline
+                pipeline = self._runner.create_pipeline(
+                    method=method,
+                    fallback_to_sequential=(batch_method == "auto"),
+                    request=inference_request,
                     batch_size=batch_size,
-                    prefetch_batch_limit=prefetch_batch_limit,
-                    cancel_check=self._state.check_cancelled,
-                    error_cls=SessionError,
+                    prefetch_batches=prefetch_batches,
                 )
 
-                try:
-                    for chunk in chunk_gen:
-                        start = chunk.start_index
-                        chunk_images = chunk.images
-                        chunk_refs = chunk.refs
+                yield from pipeline.stream_batches(norm)
 
-                        if method == "sequential":
-                            chunk_items = []
-                            try:
-                                for i, img in enumerate(chunk_images):
-                                    self._state.check_cancelled()
-                                    result = self._engine.execute_single(img, request=inference_request)
-                                    global_idx = start + i
-                                    chunk_items.append(
-                                        InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
-                                    )
-                            except InferenceCancelled:
-                                # Yield any completed items before re-raising cancellation!
-                                if chunk_items:
-                                    yield InferenceResult(total_inputs=total_inputs, items=chunk_items)
-                                raise
-                        else:
-                            chunk_results = self._runner.execute_chunk(
-                                chunk_images,
-                                request=inference_request,
-                                fallback_to_sequential=(batch_method == "auto"),
-                            )
-                            chunk_items = []
-                            for i, result in enumerate(chunk_results):
-                                global_idx = start + i
-                                chunk_items.append(
-                                    InferenceResultItem(index=global_idx, input_ref=chunk_refs[i], result=result)
-                                )
-
-                        if total_inputs is not None:
-                            logger.debug(
-                                "Completed inference batch model_id=%s done=%s/%s",
-                                self.model_id,
-                                start + len(chunk_images),
-                                total_inputs,
-                            )
-                        else:
-                            logger.debug(
-                                "Completed inference batch model_id=%s done=%s (streaming)",
-                                self.model_id,
-                                start + len(chunk_images),
-                            )
-
-                        yield InferenceResult(total_inputs=total_inputs, items=chunk_items)
-                finally:
-                    chunk_gen.close()
             finally:
+                if gc_was_enabled:
+                    gc.enable()
+                    gc.collect()
+
                 if before is not None:
                     after = self._memory_tracker.snapshot()
                     memory_record = self._memory_tracker.observe("infer_batches", before, after)
@@ -304,7 +268,7 @@ class ModelSession:
         settings: Mapping[str, Mapping[str, Any]] | Mapping[str, Any] | Sequence[Any] | InferenceRequest | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
-        prefetch_batch_limit: int = 8,
+        prefetch_batches: int = 1,
     ) -> AsyncIterator[InferenceResult]:
         """
         Async wrapper over infer_batches() for progressive consumption.
@@ -330,7 +294,7 @@ class ModelSession:
                 settings=settings,
                 batch_size=batch_size,
                 batch_method=batch_method,
-                prefetch_batch_limit=prefetch_batch_limit,
+                prefetch_batches=prefetch_batches,
             )
             try:
                 for chunk in batches:

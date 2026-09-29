@@ -8,8 +8,6 @@ import io
 import itertools
 import logging
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -326,9 +324,32 @@ def _chunk_triples(
         yield (start_index, batch_values, batch_refs)
 
 
-def should_prefetch_image_loading(*, path_inputs: int) -> bool:
-    """Prefetch only helps when there are multiple path-based inputs."""
-    return path_inputs > 1
+def iter_raw_chunks(
+    norm: NormalizedInput,
+    batch_size: int,
+    *,
+    error_cls: type[Exception] = ValueError,
+) -> Generator[tuple[int, list[Any], list[Any]], None, None]:
+    """
+    Stream un-decoded input batches as (start_index, raw_values, refs) triples
+    without performing premature eager decoding on the main thread.
+    """
+    values_iter = iter(norm.values)
+    refs_iter = iter(norm.refs) if norm.refs is not None else None
+    validate_refs = (not norm.sized) and (norm.refs is not None)
+
+    try:
+        triple_stream = _zip_with_refs(
+            values_iter,
+            refs_iter,
+            error_cls=error_cls,
+            validate_refs=validate_refs,
+        )
+        yield from _chunk_triples(triple_stream, batch_size=batch_size)
+    finally:
+        _safe_close(values_iter)
+        if refs_iter is not None:
+            _safe_close(refs_iter)
 
 
 def load_image_if_path(value: Any | str, index: int, error_cls: type[Exception] = ValueError) -> Any:
@@ -367,140 +388,28 @@ def iter_load_images(
     *,
     refs: Sequence[Any] | Iterable[Any] | None = None,
     batch_size: int = 1,
-    prefetch_batch_limit: int = 8,
-    prefetch: bool | None = None,
     cancel_check: CancelCheck | None = None,
     error_cls: type[Exception] = ValueError,
 ) -> Generator[ImageChunk, None, None]:
-    """Normalize inputs and stream loaded image chunks."""
+    """Normalize inputs and synchronously stream decoded image chunks."""
     norm = normalize_input_format(images, refs=refs, error_cls=error_cls)
-    yield from iter_load_normalized(
-        norm=norm,
-        batch_size=batch_size,
-        prefetch_batch_limit=prefetch_batch_limit,
-        prefetch=prefetch,
-        cancel_check=cancel_check,
-        error_cls=error_cls,
-    )
+    for start_idx, raw_values, batch_refs in iter_raw_chunks(norm, batch_size=batch_size, error_cls=error_cls):
+        if cancel_check:
+            cancel_check()
+        loaded = [load_image_if_path(v, index=start_idx + i, error_cls=error_cls) for i, v in enumerate(raw_values)]
+        yield ImageChunk(start_index=start_idx, images=loaded, refs=batch_refs)
 
 
 def iter_load_normalized(
     norm: NormalizedInput,
     *,
     batch_size: int = 1,
-    prefetch_batch_limit: int = 8,
-    prefetch: bool | None = None,
     cancel_check: CancelCheck | None = None,
     error_cls: type[Exception] = ValueError,
 ) -> Generator[ImageChunk, None, None]:
-    """
-    Stream loaded image chunks from a NormalizedInput bundle with guaranteed generator lifecycle cleanup.
-    """
-    values_iter = iter(norm.values)
-    refs_iter = iter(norm.refs) if norm.refs is not None else None
-    triple_stream: Any = None
-    chunks: Any = None
-
-    # Only unsized streams require online validation; sized sequences/mappings were pre-verified
-    validate_refs = (not norm.sized) and (norm.refs is not None)
-
-    try:
-        triple_stream = _zip_with_refs(
-            values_iter,
-            refs_iter,
-            error_cls=error_cls,
-            validate_refs=validate_refs,
-        )
-        chunks = _chunk_triples(triple_stream, batch_size=batch_size)
-
-        # Prefetch heuristic and diagnostic logging
-        if prefetch is None:
-            if norm.sized and isinstance(norm.values, list):
-                path_inputs = sum(1 for value in norm.values if isinstance(value, (str, Path)))
-                use_prefetch = should_prefetch_image_loading(path_inputs=path_inputs)
-                if path_inputs > 0:
-                    logger.info("Loading input images paths=%s total_inputs=%s", path_inputs, norm.total)
-                    if use_prefetch:
-                        logger.debug("Image prefetch enabled for %s path inputs", path_inputs)
-            else:
-                use_prefetch = False
-        else:
-            use_prefetch = bool(prefetch)
-            if use_prefetch:
-                logger.debug("Image prefetch explicitly enabled")
-
-        def _load_batch(batch_values: list[Any], start_idx: int) -> list[Any]:
-            batch = []
-            for i, val in enumerate(batch_values):
-                if cancel_check:
-                    cancel_check()
-                batch.append(load_image_if_path(val, index=start_idx + i, error_cls=error_cls))
-            return batch
-
-        if not use_prefetch:
-            for start_idx, batch_values, batch_refs in chunks:
-                if cancel_check:
-                    cancel_check()
-                loaded_images = _load_batch(batch_values, start_idx)
-                yield ImageChunk(start_index=start_idx, images=loaded_images, refs=batch_refs)
-            return
-
-        # Queue-based prefetch with unified queue helper
-        from collections import deque
-
-        max_prefetch_batches = max(1, prefetch_batch_limit // batch_size)
-        futures_queue: deque[tuple[int, list[Any], Future[list[Any]]]] = deque()
-
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vibe-image-loader")
-
-        def _enqueue_next() -> bool:
-            try:
-                nxt_start, nxt_vals, nxt_refs = next(chunks)
-                nxt_future = executor.submit(_load_batch, nxt_vals, nxt_start)
-                futures_queue.append((nxt_start, nxt_refs, nxt_future))
-                return True
-            except StopIteration:
-                return False
-
-        try:
-            # Prefill queue up to limit
-            while len(futures_queue) < max_prefetch_batches:
-                if not _enqueue_next():
-                    break
-
-            while futures_queue:
-                start_idx, batch_refs, future = futures_queue.popleft()
-                loaded_images = _await_loaded_chunk(future, cancel_check=cancel_check)
-
-                # Maintain prefetch buffer
-                _enqueue_next()
-
-                yield ImageChunk(
-                    start_index=start_idx,
-                    images=loaded_images,
-                    refs=batch_refs,
-                )
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-
-    finally:
-        # Close active iterators from outermost stage inward
-        _safe_close(chunks)
-        _safe_close(triple_stream)
-        _safe_close(values_iter)
-        if refs_iter is not None:
-            _safe_close(refs_iter)
-
-
-def _await_loaded_chunk(
-    future: Future[list[Any]],
-    *,
-    cancel_check: CancelCheck | None = None,
-) -> list[Any]:
-    while True:
-        if cancel_check is not None:
+    """Synchronously stream decoded image chunks from a NormalizedInput bundle."""
+    for start_idx, raw_values, batch_refs in iter_raw_chunks(norm, batch_size=batch_size, error_cls=error_cls):
+        if cancel_check:
             cancel_check()
-        try:
-            return future.result(timeout=0.05)
-        except FutureTimeoutError:
-            continue
+        loaded = [load_image_if_path(v, index=start_idx + i, error_cls=error_cls) for i, v in enumerate(raw_values)]
+        yield ImageChunk(start_index=start_idx, images=loaded, refs=batch_refs)
