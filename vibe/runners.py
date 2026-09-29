@@ -221,7 +221,7 @@ class BatchPipeline:
         fallback_to_sequential: bool,
         request: InferenceRequest | None,
         batch_size: int,
-        prefetch_batches: int = 1,
+        prefetch_batches: int = 2,
     ) -> None:
         self.runner = runner
         self.engine = runner.engine
@@ -473,7 +473,7 @@ class BatchRunner:
         fallback_to_sequential: bool,
         request: InferenceRequest | None,
         batch_size: int,
-        prefetch_batches: int = 1,
+        prefetch_batches: int = 2,
     ) -> BatchPipeline:
         return BatchPipeline(
             runner=self,

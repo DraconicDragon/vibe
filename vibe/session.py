@@ -103,7 +103,7 @@ class ModelSession:
         settings: Mapping[str, Mapping[str, Any]] | Mapping[str, Any] | Sequence[Any] | InferenceRequest | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
-        prefetch_batches: int = 1,
+        prefetch_batches: int = 2,
         on_cancel: Literal["raise", "return_partial"] = "raise",
     ) -> InferenceResult:
         """Run inference on one image, a collection of images, or a streaming generator."""
@@ -179,7 +179,7 @@ class ModelSession:
         settings: Mapping[str, Mapping[str, Any]] | Mapping[str, Any] | Sequence[Any] | InferenceRequest | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
-        prefetch_batches: int = 1,
+        prefetch_batches: int = 2,
     ) -> Generator[InferenceResult, None, None]:
         """Stream inference results as each completed chunk becomes available."""
         with self._state.lock:
@@ -268,7 +268,7 @@ class ModelSession:
         settings: Mapping[str, Mapping[str, Any]] | Mapping[str, Any] | Sequence[Any] | InferenceRequest | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
-        prefetch_batches: int = 1,
+        prefetch_batches: int = 2,
     ) -> AsyncIterator[InferenceResult]:
         """
         Async wrapper over infer_batches() for progressive consumption.
