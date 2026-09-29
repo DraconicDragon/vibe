@@ -50,10 +50,10 @@ _PIXAI_CATEGORIES = (
 )
 
 
-def _preprocess_pixai_image(image: Any, target_size: int = 1008) -> torch.Tensor:
+def _preprocess_pixai_torch(image: Any, target_size: int = 1008) -> torch.Tensor:
     """
     Preprocess PIL Image or NumPy array into a normalized PyTorch tensor [1, 3, 1008, 1008].
-    Matches PixAI's RescalePadProcessor from tagger_pipeline.py.
+    Exact match to PixAI's original torchvision float32 RescalePadProcessor.
     """
     import torchvision.transforms.functional as vF
     from torchvision import transforms
@@ -69,7 +69,7 @@ def _preprocess_pixai_image(image: Any, target_size: int = 1008) -> torch.Tensor
 
     tensor = vF.to_tensor(image)  # Float32 [0.0, 1.0], shape [C, H, W]
 
-    # Aspect-preserving rescale and center pad
+    # Aspect-preserving rescale and center pad in float32
     h, w = tensor.shape[-2:]
     if h != target_size or w != target_size:
         r = min(target_size / h, target_size / w)
@@ -85,6 +85,37 @@ def _preprocess_pixai_image(image: Any, target_size: int = 1008) -> torch.Tensor
 
     normalized = vF.normalize(tensor, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
     return normalized.unsqueeze(0)
+
+
+def _preprocess_pixai_pillow(image: Any, target_size: int = 1008) -> np.ndarray:
+    """
+    Preprocess image using pure Pillow + NumPy for ONNX or non-PyTorch backends.
+    Aspect-preserving rescale, center-pad with black (0), normalized to [-1.0, 1.0].
+    """
+    if not isinstance(image, Image.Image):
+        image = Image.fromarray(np.asarray(image))
+
+    if image.mode != "RGB":
+        image = image.convert("RGBA")
+        canvas = Image.new("RGBA", image.size, (255, 255, 255))
+        canvas.alpha_composite(image)
+        image = canvas.convert("RGB")
+
+    w, h = image.size
+    if h != target_size or w != target_size:
+        r = min(target_size / h, target_size / w)
+        new_w, new_h = int(w * r), int(h * r)
+        image = image.resize((new_w, new_h), resample=Image.Resampling.BILINEAR)
+
+        padded = Image.new("RGB", (target_size, target_size), (0, 0, 0))
+        left = (target_size - new_w) // 2
+        top = (target_size - new_h) // 2
+        padded.paste(image, (left, top))
+        image = padded
+
+    arr = (np.asarray(image, dtype=np.float32) / 127.5) - 1.0
+    arr = np.ascontiguousarray(np.transpose(arr, (2, 0, 1)))
+    return np.expand_dims(arr, axis=0)
 
 
 class PixAITaggerPlugin(ModelPlugin):
@@ -221,9 +252,11 @@ class PixAITaggerPlugin(ModelPlugin):
         backend.load(model, plan)
         return backend
 
-    def preprocess(self, image: Any, request: InferenceRequest | None = None) -> torch.Tensor:
+    def preprocess(self, image: Any, request: InferenceRequest | None = None) -> Any:
         del request
-        return _preprocess_pixai_image(image, target_size=1008)
+        if self.active_backend == Backend.PYTORCH:
+            return _preprocess_pixai_torch(image, target_size=1008)
+        return _preprocess_pixai_pillow(image, target_size=1008)
 
     def postprocess(self, raw_output: Any) -> TagResult:
         probs = normalize_output_scores(
