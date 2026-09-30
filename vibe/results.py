@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Literal, TypeGuard
+
+import numpy as np
 
 from vibe.metadata import OutputKind
 from vibe.settings import serialize_value
@@ -73,12 +74,90 @@ class TagResult(BaseModelResult):
     """
     Structured result for tagger model outputs.
 
-    Contains tags grouped by category, with flat accessors and filtering utilities.
+    Backed either by a materialized dictionary of TagEntries, or by raw contiguous
+    NumPy arrays that lazily instantiate TagEntries on-demand for maximum throughput.
     """
 
     output_type: Literal[OutputKind.TAGS] = field(default=OutputKind.TAGS, init=False)
-    categories: dict[str, list[TagEntry]] = field(default_factory=dict)
+    _categories: dict[str, list[TagEntry]] | None = field(default=None)
+    _scores: np.ndarray | None = field(default=None)
+    _tag_names: Sequence[str] | None = field(default=None)
+    _category_indices: Mapping[str, Sequence[int]] | None = field(default=None)
     extras: dict[str, Any] = field(default_factory=dict)
+
+    def __init__(
+        self,
+        categories: dict[str, list[TagEntry]] | None = None,
+        *,
+        extras: dict[str, Any] | None = None,
+        _scores: np.ndarray | None = None,
+        _tag_names: Sequence[str] | None = None,
+        _category_indices: Mapping[str, Sequence[int]] | None = None,
+    ) -> None:
+        self.output_type = OutputKind.TAGS
+        self._categories = categories
+        self._scores = _scores
+        self._tag_names = _tag_names
+        self._category_indices = _category_indices
+        self.extras = extras if extras is not None else {}
+
+    @classmethod
+    def from_arrays(
+        cls,
+        *,
+        tag_names: Sequence[str],
+        scores: np.ndarray,
+        category_indices: Mapping[str, Sequence[int]],
+        extras: dict[str, Any] | None = None,
+    ) -> TagResult:
+        """High-performance factory: wraps raw score arrays with zero upfront TagEntry allocations."""
+        return cls(
+            categories=None,
+            extras=extras,
+            _scores=scores,
+            _tag_names=tag_names,
+            _category_indices=category_indices,
+        )
+
+    def _materialize_categories(self) -> dict[str, list[TagEntry]]:
+        """Lazily construct TagEntry lists on first access."""
+        if self._categories is not None:
+            return self._categories
+
+        if self._scores is None or self._tag_names is None or self._category_indices is None:
+            self._categories = {}
+            return self._categories
+
+        scores = self._scores
+        names = self._tag_names
+        usable_count = min(len(scores), len(names))
+        materialized: dict[str, list[TagEntry]] = {}
+
+        for cat_name, indices in self._category_indices.items():
+            if not indices:
+                continue
+
+            valid_indices = [idx for idx in indices if idx < usable_count]
+            if not valid_indices:
+                continue
+
+            idx_arr = np.array(valid_indices, dtype=np.int32)
+            cat_scores = scores[idx_arr]
+            sort_order = np.argsort(-cat_scores)  # Fast descending sort in C
+            sorted_idx = idx_arr[sort_order]
+            sorted_scores = cat_scores[sort_order]
+
+            materialized[cat_name] = [
+                TagEntry(tag=names[i], score=float(s)) for i, s in zip(sorted_idx, sorted_scores, strict=False)
+            ]
+
+        self._categories = materialized
+        return self._categories
+
+    @property
+    def categories(self) -> dict[str, list[TagEntry]]:
+        """Return tags grouped by category, lazily materializing on-demand."""
+        return self._materialize_categories()
 
     @property
     def tags(self) -> list[TagEntry]:
@@ -94,32 +173,70 @@ class TagResult(BaseModelResult):
 
     def tag_names(self) -> list[str]:
         """Return all tag names flattened across categories, sorted by score descending."""
+        if self._categories is None and self._scores is not None and self._tag_names is not None:
+            scores = self._scores
+            names = self._tag_names
+            usable = min(len(scores), len(names))
+            sort_order = np.argsort(-scores[:usable])
+            return [names[i] for i in sort_order]
+
         return [entry.tag for entry in self.tags]
 
     def as_score_dict(self) -> dict[str, float]:
         """
         Return a flat {tag: score} dictionary sorted descending by score.
-        Deduplicates tags by preserving the highest score.
+        Directly compiled from NumPy arrays when unmaterialized.
         """
-        scores: dict[str, float] = {}
+        if self._categories is None and self._scores is not None and self._tag_names is not None:
+            scores = self._scores
+            names = self._tag_names
+            usable = min(len(scores), len(names))
+            sort_order = np.argsort(-scores[:usable])
+            return {names[i]: float(scores[i]) for i in sort_order}
+
+        scores_dict: dict[str, float] = {}
         for entry in self.tags:
-            if entry.tag not in scores:
-                scores[entry.tag] = entry.score
-        return scores
+            if entry.tag not in scores_dict:
+                scores_dict[entry.tag] = entry.score
+        return scores_dict
 
     def as_category_score_dict(self) -> dict[str, dict[str, float]]:
         """
         Return tags grouped by category as {category: {tag: score}}, sorted descending by score.
         """
-        result: dict[str, dict[str, float]] = {}
+        if (
+            self._categories is None
+            and self._scores is not None
+            and self._category_indices is not None
+            and self._tag_names is not None
+        ):
+            result: dict[str, dict[str, float]] = {}
+            scores = self._scores
+            names = self._tag_names
+            usable = min(len(scores), len(names))
+
+            for cat_name, indices in self._category_indices.items():
+                valid_indices = [idx for idx in indices if idx < usable]
+                if not valid_indices:
+                    continue
+                idx_arr = np.array(valid_indices, dtype=np.int32)
+                cat_scores = scores[idx_arr]
+                sort_order = np.argsort(-cat_scores)
+                sorted_idx = idx_arr[sort_order]
+                sorted_scores = cat_scores[sort_order]
+
+                result[cat_name] = {names[i]: float(s) for i, s in zip(sorted_idx, sorted_scores, strict=False)}
+            return result
+
+        res: dict[str, dict[str, float]] = {}
         for cat, entries in self.categories.items():
             sorted_entries = sorted(entries, key=lambda e: e.score, reverse=True)
             cat_dict: dict[str, float] = {}
             for entry in sorted_entries:
                 if entry.tag not in cat_dict:
                     cat_dict[entry.tag] = entry.score
-            result[cat] = cat_dict
-        return result
+            res[cat] = cat_dict
+        return res
 
     def filter(self, predicate: Callable[[TagEntry, str], bool]) -> TagResult:
         """
@@ -135,10 +252,33 @@ class TagResult(BaseModelResult):
         return TagResult(categories=filtered, extras=dict(self.extras))
 
     def to_dict(self) -> dict[str, Any]:
-        categories_dict: dict[str, list[dict[str, Any]]] = {}
-        for cat, entries in self.categories.items():
-            sorted_entries = sorted(entries, key=lambda entry: entry.score, reverse=True)
-            categories_dict[cat] = [entry.to_dict() for entry in sorted_entries]
+        """Serialize result, using fast C-level extraction if unmaterialized."""
+        if self._categories is not None:
+            categories_dict: dict[str, list[dict[str, Any]]] = {}
+            for cat, entries in self._categories.items():
+                sorted_entries = sorted(entries, key=lambda entry: entry.score, reverse=True)
+                categories_dict[cat] = [entry.to_dict() for entry in sorted_entries]
+        elif self._scores is not None and self._tag_names is not None and self._category_indices is not None:
+            categories_dict = {}
+            scores = self._scores
+            names = self._tag_names
+            usable_count = min(len(scores), len(names))
+
+            for cat_name, indices in self._category_indices.items():
+                valid_indices = [idx for idx in indices if idx < usable_count]
+                if not valid_indices:
+                    continue
+                idx_arr = np.array(valid_indices, dtype=np.int32)
+                cat_scores = scores[idx_arr]
+                sort_order = np.argsort(-cat_scores)
+                sorted_idx = idx_arr[sort_order]
+                sorted_scores = cat_scores[sort_order]
+
+                categories_dict[cat_name] = [
+                    {"tag": names[i], "score": float(s)} for i, s in zip(sorted_idx, sorted_scores, strict=False)
+                ]
+        else:
+            categories_dict = {}
 
         d: dict[str, Any] = {
             "output_type": self.output_type.value,

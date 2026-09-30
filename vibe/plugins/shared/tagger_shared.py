@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from vibe.metadata import LabelCatalog, LabelInfo, ThresholdTable
-from vibe.results import TagEntry, TagResult
+from vibe.results import TagResult
 from vibe.tag_categories import TagCategory
 
 logger = logging.getLogger(__name__)
@@ -299,35 +299,20 @@ def normalize_output_scores(
 
 
 def build_categorized_tag_result(
-    tag_names: list[str],
+    tag_names: Sequence[str],
     scores: np.ndarray,
-    category_indices: dict[str, list[int]],
+    category_indices: Mapping[str, Sequence[int]],
 ) -> TagResult:
-    """Safely build a TagResult from raw arrays using pre-mapped category indices."""
-    usable_count = min(len(scores), len(tag_names))
-    result_categories: dict[str, list[TagEntry]] = {}
-
-    for cat_name, indices in category_indices.items():
-        if not indices:
-            continue
-
-        # Filter valid indices and sort in compiled C via NumPy
-        valid_indices = [idx for idx in indices if idx < usable_count]
-        if not valid_indices:
-            continue
-
-        idx_arr = np.array(valid_indices, dtype=np.int32)
-        cat_scores = scores[idx_arr]
-        sort_order = np.argsort(-cat_scores)  # Fast descending sort in C
-
-        sorted_indices = idx_arr[sort_order]
-        sorted_scores = cat_scores[sort_order]
-
-        # Construct entries in already-sorted order
-        entries = [TagEntry(tag=tag_names[i], score=float(s)) for i, s in zip(sorted_indices, sorted_scores)]
-        result_categories[cat_name] = entries
-
-    return TagResult(categories=result_categories)
+    """
+    Construct an efficient array-backed TagResult.
+    Takes microseconds by wrapping arrays with zero upfront TagEntry allocations.
+    """
+    # todo: in future can phase out this helper and just use .from_arrays directly in modelplugins
+    return TagResult.from_arrays(
+        tag_names=tag_names,
+        scores=scores,
+        category_indices=category_indices,
+    )
 
 
 def _to_rgb_with_background(image: Any) -> Any:
