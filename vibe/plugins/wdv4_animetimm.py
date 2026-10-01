@@ -477,7 +477,7 @@ class ATSwinV2BaseWindow8256Dbv4aPlugin(AnimeTimmBasePlugin):
     )
     default_repo_id = "animetimm/swinv2_base_window8_256.dbv4a-full"
     profile = build_tagger_profile(
-        categories=TagCategory.ARTIST,
+        categories=(TagCategory.ARTIST,),
         recommended_filter=TagFilterRecommendation(
             global_threshold=0.67,
         ),
