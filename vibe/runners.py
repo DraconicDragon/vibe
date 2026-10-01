@@ -118,6 +118,16 @@ class InferenceEngine:
         self.model_id = plugin.identity.model_id
         self.state = state
 
+    @property
+    def is_cpu_device(self) -> bool:
+        """Return True if the active backend is running on CPU."""
+        device = getattr(self.backend_instance, "device", None)
+        if isinstance(device, str):
+            return device == "cpu"
+
+        providers = getattr(self.backend_instance, "providers", None)
+        return bool(providers and providers[0] == "CPUExecutionProvider")
+
     def execute_single(
         self,
         image: Any,
@@ -236,6 +246,10 @@ class BatchPipeline:
         cpu_count = os.cpu_count() or 4
         self.num_workers = 1 if batch_size == 1 else min(cpu_count, batch_size, 8)
 
+        # Note: torch.set_num_threads is process-global. If an accelerator model and a CPU
+        # model run concurrently in the same process, CPU inference will be throttled to 1 thread.
+        self.should_throttle_threads = (not self.engine.is_cpu_device) and (self.num_workers > 1)
+
     def _producer_thread(
         self,
         q: queue.Queue[PreparedBatch | Exception | object],
@@ -245,10 +259,10 @@ class BatchPipeline:
         """Background worker thread that runs load, preprocess, and collate."""
 
         def _init_worker() -> None:
-            # Run once per worker thread upon creation (safe for non-torch runtimes)
-            torch_mod = sys.modules.get("torch")
-            if torch_mod is not None:
-                torch_mod.set_num_threads(1)
+            if self.should_throttle_threads:
+                torch_mod = sys.modules.get("torch")
+                if torch_mod is not None:
+                    torch_mod.set_num_threads(1)
 
         def _load_and_preprocess(task: tuple[int, Any]) -> Any:
             global_idx, val = task
@@ -330,6 +344,12 @@ class BatchPipeline:
 
     def stream_batches(self, norm: NormalizedInput) -> Generator[InferenceResult, None, None]:
         """Main consumer generator running GPU forward pass and postprocessing."""
+        orig_threads = None
+        if self.should_throttle_threads:
+            torch_mod = sys.modules.get("torch")
+            if torch_mod is not None:
+                orig_threads = torch_mod.get_num_threads()
+
         q: queue.Queue[PreparedBatch | Exception | object] = queue.Queue(maxsize=self.prefetch_batches)
         stop_event = threading.Event()
         total_inputs = norm.total
@@ -360,7 +380,7 @@ class BatchPipeline:
                 if isinstance(item, Exception):
                     raise item
 
-                # Narrow type for type checkers (fixes invalid-assignment)
+                # Narrow type for type checkers
                 assert isinstance(item, PreparedBatch)
                 batch = item
 
@@ -412,6 +432,12 @@ class BatchPipeline:
                 except queue.Empty:
                     break
             producer.join(timeout=1.0)
+
+            # Restore original PyTorch thread count cleanly
+            if orig_threads is not None:
+                torch_mod = sys.modules.get("torch")
+                if torch_mod is not None:
+                    torch_mod.set_num_threads(orig_threads)
 
 
 # endregion Batch Pipeline
