@@ -97,7 +97,7 @@ def test_iter_load_images_from_paths(tmp_path: Path) -> None:
     Image.new("RGB", (16, 16), (255, 0, 0)).save(path1)
     Image.new("RGB", (16, 16), (0, 255, 0)).save(path2)
 
-    chunks = list(iter_load_images([str(path1), str(path2)], batch_size=2, prefetch=False))
+    chunks = list(iter_load_images([str(path1), str(path2)], batch_size=2))
 
     assert len(chunks) == 1
     chunk = chunks[0]
@@ -112,7 +112,7 @@ def test_streaming_generator_slices_batches_correctly() -> None:
         for i in range(5):
             yield _dummy_image(i)
 
-    chunks = list(iter_load_images(gen(), batch_size=2, prefetch=False))
+    chunks = list(iter_load_images(gen(), batch_size=2))
 
     assert len(chunks) == 3
     assert chunks[0].start_index == 0
@@ -134,7 +134,7 @@ def test_streaming_generator_cleans_up_on_early_break() -> None:
         finally:
             generator_closed = True
 
-    for chunk in iter_load_images(tracked_gen(), batch_size=1, prefetch=False):
+    for chunk in iter_load_images(tracked_gen(), batch_size=1):
         assert len(chunk.images) == 1
         break
 
@@ -155,7 +155,7 @@ def test_memory_bounded_streaming() -> None:
     processed_count = 0
     snapshot_before = tracemalloc.take_snapshot()
 
-    for chunk in iter_load_images(large_image_generator(), batch_size=BATCH_SIZE, prefetch=False):
+    for chunk in iter_load_images(large_image_generator(), batch_size=BATCH_SIZE):
         processed_count += len(chunk.images)
 
     snapshot_after = tracemalloc.take_snapshot()
