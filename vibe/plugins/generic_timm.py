@@ -23,7 +23,7 @@ from vibe.model_profiles import build_multi_scorer_profile, build_scorer_profile
 from vibe.plugins.shared.generic_timm_pipeline import TimmPipelineMixin
 from vibe.plugins.shared.scores_utils import normalize_scalar
 from vibe.plugins.shared.tagger_shared import detect_is_logits, normalize_output_scores
-from vibe.results import MultiScoreResult, ScoreEntry, ScoreResult, TagEntry, TagResult
+from vibe.results import MultiScoreResult, ScoreEntry, ScoreResult, TagResult
 
 logger = logging.getLogger(__name__)
 
@@ -114,13 +114,15 @@ class GenericTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
         if labels is None or len(labels) != len(scores):
             labels = [f"class_{index}" for index in range(len(scores))]
 
-        score_values = [float(val) for val in scores]
-
         if output_kind == OutputKind.TAGS:
-            tag_entries = [TagEntry(tag=label, score=score) for label, score in zip(labels, score_values, strict=False)]
-            tag_entries.sort(key=lambda e: e.score, reverse=True)
-            return TagResult(categories={"general": tag_entries})
+            return TagResult.from_arrays(
+                tag_names=labels,
+                scores=scores,
+                category_indices={"general": list(range(len(labels)))},
+            )
 
+        # Multi-score path
+        score_values = [float(val) for val in scores]
         entries = [
             ScoreEntry(
                 label=label,
