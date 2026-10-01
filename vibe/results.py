@@ -238,18 +238,56 @@ class TagResult(BaseModelResult):
             res[cat] = cat_dict
         return res
 
-    def filter(self, predicate: Callable[[TagEntry, str], bool]) -> TagResult:
+    def filter(self, predicate: Callable[[str, float, str], bool]) -> TagResult:
         """
-        Return a new TagResult containing only TagEntries that satisfy the predicate.
+        Return a new TagResult containing only tags that satisfy the predicate.
 
-        The predicate receives `(entry: TagEntry, category: str) -> bool`.
+        The predicate receives `(tag: str, score: float, category: str) -> bool`.
+        Evaluates directly over NumPy arrays with zero throwaway TagEntry allocations.
         """
-        filtered: dict[str, list[TagEntry]] = {}
+        # Path A: Fast path directly from NumPy arrays
+        if (
+            self._categories is None
+            and self._scores is not None
+            and self._tag_names is not None
+            and self._category_indices is not None
+        ):
+            scores = self._scores
+            names = self._tag_names
+            usable_count = min(len(scores), len(names))
+            filtered: dict[str, list[TagEntry]] = {}
+
+            for cat_name, indices in self._category_indices.items():
+                valid_indices = [idx for idx in indices if idx < usable_count]
+                if not valid_indices:
+                    continue
+
+                idx_arr = np.array(valid_indices, dtype=np.int32)
+                cat_scores = scores[idx_arr]
+                sort_order = np.argsort(-cat_scores)
+                sorted_idx = idx_arr[sort_order]
+                sorted_scores = cat_scores[sort_order]
+
+                # ONLY create TagEntry if the predicate passes!
+                kept: list[TagEntry] = []
+                for i, s in zip(sorted_idx, sorted_scores, strict=False):
+                    tag_name = names[i]
+                    score_val = float(s)
+                    if predicate(tag_name, score_val, cat_name):
+                        kept.append(TagEntry(tag=tag_name, score=score_val))
+
+                if kept:
+                    filtered[cat_name] = kept
+
+            return TagResult(categories=filtered, extras=dict(self.extras))
+
+        # Path B: Fallback for already-materialized results
+        filtered_mat: dict[str, list[TagEntry]] = {}
         for cat, entries in self.categories.items():
-            kept = [e for e in entries if predicate(e, cat)]
+            kept = [e for e in entries if predicate(e.tag, e.score, cat)]
             if kept:
-                filtered[cat] = kept
-        return TagResult(categories=filtered, extras=dict(self.extras))
+                filtered_mat[cat] = kept
+        return TagResult(categories=filtered_mat, extras=dict(self.extras))
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize result, using fast C-level extraction if unmaterialized."""
