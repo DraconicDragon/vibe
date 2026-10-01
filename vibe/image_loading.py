@@ -359,10 +359,9 @@ def load_image_if_path(value: Any | str, index: int, error_cls: type[Exception] 
             with Image.open(io.BytesIO(value)) as img:
                 img.load()
                 try:
-                    transposed = ImageOps.exif_transpose(img)
-                    return transposed.copy() if transposed is img else transposed
+                    return ImageOps.exif_transpose(img)
                 except Exception:
-                    return img.copy()
+                    return img
         except Exception as exc:
             raise error_cls(f"Failed to decode image bytes at index {index}: {exc}") from exc
 
@@ -375,10 +374,9 @@ def load_image_if_path(value: Any | str, index: int, error_cls: type[Exception] 
         with Image.open(path) as img:
             img.load()
             try:
-                transposed = ImageOps.exif_transpose(img)
-                return transposed.copy() if transposed is img else transposed
+                return ImageOps.exif_transpose(img)
             except Exception:
-                return img.copy()
+                return img
     except Exception as exc:
         raise error_cls(f"Failed to load image at index {index} from path '{path}': {exc}") from exc
 
