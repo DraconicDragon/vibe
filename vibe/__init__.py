@@ -89,7 +89,7 @@ from vibe.results import (
     is_tag_result,
 )
 from vibe.session import ModelSession
-from vibe.session_factory import build_session
+from vibe.session_factory import build_session, resolve_candidate_variants, resolve_variant
 from vibe.settings import (
     InferenceRequest,
     OptionScope,
@@ -295,6 +295,8 @@ def check_availability(
     *,
     source: str | None = None,
     variant: str | None = None,
+    backend: str | Backend | None = None,
+    device: str = "auto",
     source_map: Mapping[str, str] | None = None,
     file_name_map: Mapping[str, str] | None = None,
     hf_revision: str | None = None,
@@ -303,19 +305,17 @@ def check_availability(
 ) -> ModelAvailability:
     """Check if a model's required files are already present on disk or in HF cache without downloading."""
     model_registry.ensure_discovered()
-
     plugin_cls = model_registry.get(model)
 
-    variants_to_check = plugin_cls.variants
-    if variant is not None:
-        matched = [v for v in plugin_cls.variants if v.variant_id == variant]
-        if not matched:
-            available = [v.variant_id for v in plugin_cls.variants if v.variant_id]
-            raise RegistryError(f"Model '{model}' has no variant '{variant}'. Available variants: {available}")
-        variants_to_check = tuple(matched)
+    # Use shared candidate resolution matching build_session()
+    variants_to_check = resolve_candidate_variants(
+        plugin_cls,
+        backend=backend,
+        variant=variant,
+        device=device,
+    )
 
     variant_statuses: list[VariantAvailability] = []
-
     for v in variants_to_check:
         if source is not None and source.strip():
             effective_v_source = source.strip()
@@ -438,6 +438,7 @@ __all__ = [
     "load_custom",
     "model_registry",
     "parse_precision",
+    "resolve_variant",
     "serialize_value",
     "set_auto_download_default",
 ]

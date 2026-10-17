@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import ast
+import importlib.metadata
+import importlib.util
 import logging
+import platform
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 from vibe.backends.base import (
@@ -29,6 +35,102 @@ logger = logging.getLogger(__name__)
 _RUNTIME_POOL_LOCK = threading.RLock()
 _RUNTIME_POOL: dict[tuple[Any, ...], tuple[RuntimeExecutor, int]] = {}
 _LOADING_LOCKS: dict[tuple[Any, ...], threading.Lock] = {}
+
+# Known accelerated ONNX Runtime package distributions on PyPI
+_ONNX_ACCELERATED_PACKAGES = (
+    "onnxruntime-gpu",
+    "onnxruntime-rocm",
+    "onnxruntime-directml",
+    "onnxruntime-openvino",
+    "onnxruntime-cann",
+    "onnxruntime-qnn",
+)
+
+
+def _onnx_runtime_capabilities() -> tuple[bool, bool]:
+    """
+    Check if ONNX Runtime is installed and whether GPU/hardware acceleration is available.
+    Uses fast metadata inspection if not already loaded into memory.
+    """
+    # 1. Fast Path: Check without importing
+    if "onnxruntime" not in sys.modules:
+        if importlib.util.find_spec("onnxruntime") is None:
+            return False, False
+
+        # macOS Apple Silicon includes CoreML Execution Provider in standard package
+        if sys.platform == "darwin" and platform.machine() in ("arm64", "aarch64"):
+            return True, True
+
+        # Check if an accelerated build of ONNX Runtime is installed
+        for pkg in _ONNX_ACCELERATED_PACKAGES:
+            try:
+                importlib.metadata.version(pkg)
+                return True, True
+            except Exception:
+                pass
+
+        return True, False
+
+    # 2. Loaded Path: Inspect live providers if module is already imported
+    try:
+        import onnxruntime as ort  # ty:ignore[unresolved-import, unused-ignore-comment]
+
+        get_providers = getattr(ort, "get_available_providers", None)
+        available = {str(provider) for provider in get_providers()} if callable(get_providers) else set()
+        has_accel = any(provider != "CPUExecutionProvider" for provider in available)
+        return True, has_accel
+    except Exception:
+        return False, False
+
+
+def _pytorch_runtime_capabilities() -> tuple[bool, bool]:
+    """Check PyTorch and hardware accelerators statically without importing."""
+    if "torch" in sys.modules:
+        try:
+            import torch
+
+            has_cuda = bool(torch.cuda.is_available())
+            xpu_mod = getattr(torch, "xpu", None)
+            has_xpu = bool(xpu_mod and callable(getattr(xpu_mod, "is_available", None)) and xpu_mod.is_available())
+            mps_backend = getattr(torch.backends, "mps", None)
+            has_mps = bool(
+                mps_backend and callable(getattr(mps_backend, "is_available", None)) and mps_backend.is_available()
+            )
+            return True, (has_cuda or has_xpu or has_mps)
+        except Exception:
+            return False, False
+
+    if importlib.util.find_spec("torch") is None:
+        return False, False
+
+    # Static inspection matching system_info.py (0.5ms, zero imports)
+    try:
+        spec = importlib.util.find_spec("torch")
+        if spec and spec.origin:
+            v_py = Path(spec.origin).parent / "version.py"
+            if v_py.exists():
+                tree = ast.parse(v_py.read_text(encoding="utf-8"))
+                var_map: dict[str, Any] = {}
+                for stmt in tree.body:
+                    if isinstance(stmt, ast.Assign):
+                        for t in stmt.targets:
+                            if isinstance(t, ast.Name):
+                                var_map[t.id] = ast.literal_eval(stmt.value)
+                    elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                        var_map[stmt.target.id] = ast.literal_eval(stmt.value)
+
+                # Check if CUDA/ROCm/XPU is defined and non-None in version.py
+                has_cuda = bool(var_map.get("cuda"))
+                has_hip = bool(var_map.get("hip"))
+                has_xpu = bool(var_map.get("xpu"))
+                ver_str = str(var_map.get("__version__", ""))
+                has_tag = any(k in ver_str.lower() for k in ("+cu", "+rocm", "+xpu"))
+
+                return True, (has_cuda or has_hip or has_xpu or has_tag)
+    except Exception:
+        pass
+
+    return True, False
 
 
 def _resolve_backend_candidates(
@@ -91,13 +193,61 @@ def _resolve_backend_candidates(
             f"Backend capabilities: {', '.join(diag)}."
         )
 
-    # If accelerator was requested, prioritize backends that actually provide acceleration
-    if preference.intent == HardwareIntent.ACCELERATOR:
+    # If accelerator was requested or auto-resolved, prioritize GPU-accelerated backends over CPU
+    if preference.intent in (HardwareIntent.AUTO, HardwareIntent.ACCELERATOR):
         accel_backends = {b for b, has_accel in available.items() if has_accel}
         if accel_backends:
             return accel_backends
 
     return set(available.keys())
+
+
+def resolve_candidate_variants(
+    plugin_cls: type[ModelPlugin],
+    *,
+    backend: Backend | str | None = None,
+    variant: str | None = None,
+    device: str = "auto",
+) -> list[ModelVariant]:
+    """Shared single source of truth for resolving variants to try."""
+    model_id = plugin_cls.identity.model_id
+    preference = ExecutionPreference.parse(device)
+
+    if variant is not None:
+        target_variant = next((v for v in plugin_cls.variants if v.variant_id == variant), None)
+        if not target_variant:
+            available_vars = [v.variant_id for v in plugin_cls.variants if v.variant_id]
+            raise SessionError(f"Model '{model_id}' has no variant '{variant}'. Available variants: {available_vars}")
+
+        if backend is not None:
+            req_b = Backend(backend.lower()) if isinstance(backend, str) else backend
+            if req_b != target_variant.backend:
+                raise SessionError(
+                    f"Variant '{variant}' requires backend '{target_variant.backend.value}', "
+                    f"but backend '{req_b.value}' was requested."
+                )
+        return [target_variant]
+
+    candidate_backends = _resolve_backend_candidates(plugin_cls, backend, preference)
+    candidates = [v for v in plugin_cls.variants if v.backend in candidate_backends]
+
+    # When both PyTorch and ONNX are candidates on "auto", prioritize PyTorch
+    if backend is None and len(candidate_backends) > 1 and Backend.PYTORCH in candidate_backends:
+        candidates.sort(key=lambda v: 0 if v.backend == Backend.PYTORCH else 1)
+
+    return candidates
+
+
+def resolve_variant(
+    plugin_cls: type[ModelPlugin],
+    *,
+    backend: Backend | str | None = None,
+    variant: str | None = None,
+    device: str = "auto",
+) -> ModelVariant:
+    """Dry-run variant resolver that returns the exact ModelVariant vibe will select."""
+    candidates = resolve_candidate_variants(plugin_cls, backend=backend, variant=variant, device=device)
+    return candidates[0]
 
 
 def build_session(
@@ -128,27 +278,13 @@ def build_session(
 
     effective_auto_download = get_auto_download_default() if auto_download is None else bool(auto_download)
 
-    # 1. Resolve which variants to try
-    variants_to_try: list[ModelVariant] = []
-    if variant is not None:
-        target_variant = next((v for v in plugin_cls.variants if v.variant_id == variant), None)
-        if not target_variant:
-            available_vars = [v.variant_id for v in plugin_cls.variants if v.variant_id]
-            raise SessionError(f"Model '{model_id}' has no variant '{variant}'. Available variants: {available_vars}")
-
-        # Check for explicit backend conflict
-        if backend is not None:
-            req_b = Backend(backend.lower()) if isinstance(backend, str) else backend
-            if req_b != target_variant.backend:
-                raise SessionError(
-                    f"Variant '{variant}' requires backend '{target_variant.backend.value}', "
-                    f"but backend '{req_b.value}' was requested."
-                )
-        variants_to_try = [target_variant]
-    else:
-        candidate_backends = _resolve_backend_candidates(plugin_cls, backend, preference)
-        # Preserve the plugin's declared variant order among valid candidate backends
-        variants_to_try = [v for v in plugin_cls.variants if v.backend in candidate_backends]
+    # 1. Resolve which variants to try using shared logic
+    variants_to_try = resolve_candidate_variants(
+        plugin_cls,
+        backend=backend,
+        variant=variant,
+        device=device,
+    )
 
     failures = []
 
@@ -335,31 +471,3 @@ def _release_runtime(key: tuple[Any, ...]) -> None:
         logger.exception("Failed to close pooled runtime during release.")
 
     logger.debug("Closed pooled runtime")
-
-
-def _onnx_runtime_capabilities() -> tuple[bool, bool]:
-    try:
-        import onnxruntime as ort  # ty:ignore[unresolved-import, unused-ignore-comment]
-    except ImportError:
-        return False, False
-    try:
-        get_providers = getattr(ort, "get_available_providers", None)
-        available = {str(provider) for provider in get_providers()} if callable(get_providers) else set()
-    except Exception:
-        available = set()
-    return True, any(provider != "CPUExecutionProvider" for provider in available)
-
-
-def _pytorch_runtime_capabilities() -> tuple[bool, bool]:
-    try:
-        import torch
-    except ImportError:
-        return False, False
-
-    has_cuda = bool(torch.cuda.is_available())
-    xpu_mod = getattr(torch, "xpu", None)
-    has_xpu = bool(xpu_mod and callable(getattr(xpu_mod, "is_available", None)) and xpu_mod.is_available())
-    mps_backend = getattr(torch.backends, "mps", None)
-    has_mps = bool(mps_backend and callable(getattr(mps_backend, "is_available", None)) and mps_backend.is_available())
-
-    return True, (has_cuda or has_xpu or has_mps)
