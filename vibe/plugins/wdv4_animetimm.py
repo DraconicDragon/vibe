@@ -65,7 +65,7 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             artifacts=(
                 ArtifactSpec(id="model_onnx", name="model.onnx", role=FileRole.WEIGHTS),
                 ArtifactSpec(id="config", name="config.json", role=FileRole.CONFIG),
-                ArtifactSpec(id="preprocess", name="preprocess.json", role=FileRole.CONFIG, required=False),
+                ArtifactSpec(id="preprocess", name="preprocess.json", role=FileRole.CONFIG),
                 ArtifactSpec(id="tag_list", name="selected_tags.csv", role=FileRole.TAG_LIST),
             ),
         ),
@@ -74,7 +74,7 @@ class AnimeTimmBasePlugin(TimmPipelineMixin, ModelPlugin):
             artifacts=(
                 ArtifactSpec(id="model_pt", name="model.safetensors", role=FileRole.WEIGHTS),
                 ArtifactSpec(id="config", name="config.json", role=FileRole.CONFIG),
-                ArtifactSpec(id="preprocess", name="preprocess.json", role=FileRole.CONFIG, required=False),
+                ArtifactSpec(id="preprocess", name="preprocess.json", role=FileRole.CONFIG),
                 ArtifactSpec(id="tag_list", name="selected_tags.csv", role=FileRole.TAG_LIST),
             ),
         ),
