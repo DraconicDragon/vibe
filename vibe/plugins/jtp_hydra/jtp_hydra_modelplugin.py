@@ -315,7 +315,6 @@ class JTP3Plugin(JTPHydraBasePlugin):
                     name="jtp-3-hydra-val.csv",
                     role=FileRole.MAPPING,
                     hf_subdir="data",
-                    required=False,
                 ),
             ),
         ),
