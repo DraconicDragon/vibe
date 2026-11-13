@@ -6,12 +6,15 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeGuard
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard
 
 import numpy as np
 
 from vibe.metadata import OutputKind
 from vibe.settings import serialize_value
+
+if TYPE_CHECKING:
+    from vibe.metadata import LabelCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +291,68 @@ class TagResult(BaseModelResult):
             if kept:
                 filtered_mat[cat] = kept
         return TagResult(categories=filtered_mat, extras=dict(self.extras))
+
+    def to_indexed_scores(
+        self,
+        catalog: LabelCatalog,
+        *,
+        min_score: float = 0.0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Extract sparse (indices, scores) arrays aligned to `catalog` for scores >= min_score.
+
+        Uses a zero-loop NumPy fast path when backed by raw arrays matching catalog order,
+        and safely falls back to catalog name lookup for materialized or remapped results.
+
+        Returns:
+            (indices: np.ndarray[np.uint32], scores: np.ndarray[np.float32])
+        """
+        # Fast Path: Unmaterialized NumPy array matching sequential catalog order
+        if (
+            self._scores is not None
+            and self._tag_names is not None
+            and catalog.is_sequential
+            and catalog.aligns_with(self._tag_names)
+        ):
+            usable = min(len(self._scores), len(self._tag_names))
+            scores_view = self._scores[:usable]
+            idx = np.flatnonzero(scores_view >= min_score).astype(np.uint32)
+            vals = scores_view[idx].astype(np.float32)
+            return idx, vals
+
+        # Fallback Path: Different ordering or already-materialized dictionary result
+        by_name = catalog.by_name
+        best_by_idx: dict[int, float] = {}
+
+        if self._scores is not None and self._tag_names is not None:
+            usable = min(len(self._scores), len(self._tag_names))
+            scores_view = self._scores[:usable]
+            passing = np.flatnonzero(scores_view >= min_score)
+            for pos in passing:
+                info = by_name.get(self._tag_names[int(pos)])
+                if info is not None:
+                    score_val = float(scores_view[int(pos)])
+                    prev = best_by_idx.get(info.index)
+                    if prev is None or score_val > prev:
+                        best_by_idx[info.index] = score_val
+        else:
+            for entries in self.categories.values():
+                for entry in entries:
+                    if entry.score >= min_score:
+                        info = by_name.get(entry.tag)
+                        if info is not None:
+                            score_val = float(entry.score)
+                            prev = best_by_idx.get(info.index)
+                            if prev is None or score_val > prev:
+                                best_by_idx[info.index] = score_val
+
+        if not best_by_idx:
+            return np.empty(0, dtype=np.uint32), np.empty(0, dtype=np.float32)
+
+        sorted_items = sorted(best_by_idx.items())
+        idx_arr = np.array([k for k, _ in sorted_items], dtype=np.uint32)
+        val_arr = np.array([v for _, v in sorted_items], dtype=np.float32)
+        return idx_arr, val_arr
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize result, using fast C-level extraction if unmaterialized."""
