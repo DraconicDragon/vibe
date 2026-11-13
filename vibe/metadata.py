@@ -5,6 +5,7 @@ Public metadata schemas describing capabilities and requirements of a model.
 from __future__ import annotations
 
 import functools
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
@@ -151,6 +152,7 @@ class LabelInfo:
 class LabelCatalog:
     labels: tuple[LabelInfo, ...]
     categories: tuple[str | Enum, ...]
+    _verified_name_seqs: list[Sequence[str]] = field(default_factory=list, init=False, repr=False, compare=False)
 
     @functools.cached_property
     def names(self) -> tuple[str, ...]:
@@ -173,6 +175,41 @@ class LabelCatalog:
     @functools.cached_property
     def by_index(self) -> Mapping[int, LabelInfo]:
         return {label.index: label for label in self.labels}
+
+    @functools.cached_property
+    def is_sequential(self) -> bool:
+        """Return True if label indices are strictly 0..N-1 in sequence order."""
+        return all(label.index == i for i, label in enumerate(self.labels))
+
+    @functools.cached_property
+    def vocab_hash(self) -> str:
+        """Deterministic 16-char SHA-256 fingerprint of ordered (index, name, category)."""
+        h = hashlib.sha256()
+        for label in sorted(self.labels, key=lambda lbl: lbl.index):
+            cat = label.category.value if isinstance(label.category, Enum) else str(label.category)
+            h.update(f"{label.index}\0{label.name}\0{cat}\n".encode())
+        return h.hexdigest()[:16]
+
+    def aligns_with(self, tag_names: Sequence[str]) -> bool:
+        """
+        Verify that tag_names matches catalog.names in exact order.
+        Caches verified sequence references for O(1) checks on subsequent batch items.
+        """
+        if tag_names is self.names:
+            return True
+        if any(seq is tag_names for seq in self._verified_name_seqs):
+            return True
+
+        if len(tag_names) != len(self.names):
+            return False
+
+        if all(a == b for a, b in zip(tag_names, self.names, strict=True)):
+            if len(self._verified_name_seqs) >= 4:
+                self._verified_name_seqs.pop(0)
+            self._verified_name_seqs.append(tag_names)
+            return True
+
+        return False
 
     def to_dict(self) -> dict[str, Any]:
         return {
