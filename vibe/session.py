@@ -194,7 +194,7 @@ class ModelSession:
             before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
 
             # Disable garbage collection during inference to avoid performance issues
-            # Having it enabled seems to lead to "Breaks" visualized by GPU usage over time, 
+            # Having it enabled seems to lead to "Breaks" visualized by GPU usage over time,
             # but only after some amount of batches, not after every batch.
             import gc
 
@@ -264,7 +264,7 @@ class ModelSession:
         self,
         images: Any | str | Sequence[Any] | Mapping[Any, Any],
         *,
-        refs: Sequence[Any] | None = None,
+        refs: Sequence[Any] | Iterable[Any] | None = None,
         settings: Mapping[str, Mapping[str, Any]] | Mapping[str, Any] | Sequence[Any] | InferenceRequest | None = None,
         batch_size: int = 1,
         batch_method: Literal["auto", "true", "sequential"] = "auto",
