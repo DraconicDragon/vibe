@@ -59,7 +59,7 @@ def test_tag_result_filtering() -> None:
         }
     )
 
-    filtered = result.filter(lambda entry, cat: entry.score >= 0.50)
+    filtered = result.filter(lambda tag, score, category: score >= 0.50)
     assert [e.tag for e in filtered.tags] == ["1girl"]
     assert "solo" not in filtered.as_score_dict()
 
