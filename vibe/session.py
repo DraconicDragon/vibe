@@ -8,9 +8,11 @@ Calling .infer() runs the model forward pass.
 
 from __future__ import annotations
 
+import gc
 import logging
 import threading
-from collections.abc import AsyncIterator, Callable, Generator, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
 from types import TracebackType
 from typing import Any, Literal, Self, TypeVar
 
@@ -35,6 +37,26 @@ logger = logging.getLogger(__name__)
 
 _ASYNC_INFER_DONE = object()
 T = TypeVar("T")
+
+_GC_FREEZE_LOCK = threading.Lock()
+_GC_FREEZE_DEPTH = 0
+
+
+@contextmanager
+def _gc_frozen_scope() -> Iterator[None]:
+    """Freeze pre-existing objects so GC stays active without scanning static state."""
+    global _GC_FREEZE_DEPTH
+    with _GC_FREEZE_LOCK:
+        if _GC_FREEZE_DEPTH == 0:
+            gc.freeze()
+        _GC_FREEZE_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _GC_FREEZE_LOCK:
+            _GC_FREEZE_DEPTH -= 1
+            if _GC_FREEZE_DEPTH == 0:
+                gc.unfreeze()
 
 
 class ModelSession:
@@ -193,15 +215,6 @@ class ModelSession:
             self._state.start_run()
             before = self._memory_tracker.snapshot() if self._memory_tracker.enabled else None
 
-            # Disable garbage collection during inference to avoid performance issues
-            # Having it enabled seems to lead to "Breaks" visualized by GPU usage over time,
-            # but only after some amount of batches, not after every batch.
-            import gc
-
-            gc_was_enabled = gc.isenabled()
-            if gc_was_enabled:
-                gc.disable()
-
             try:
                 norm = normalize_input_format(images, refs=refs, error_cls=SessionError)
                 inference_request = compile_settings(
@@ -240,13 +253,11 @@ class ModelSession:
                     prefetch_batches=prefetch_batches,
                 )
 
-                yield from pipeline.stream_batches(norm)
+                gc_ctx = _gc_frozen_scope() if (norm.total is None or norm.total > 1) else nullcontext()
+                with gc_ctx:
+                    yield from pipeline.stream_batches(norm)
 
             finally:
-                if gc_was_enabled:
-                    gc.enable()
-                    gc.collect()
-
                 if before is not None:
                     after = self._memory_tracker.snapshot()
                     memory_record = self._memory_tracker.observe("infer_batches", before, after)
