@@ -288,6 +288,9 @@ class ModelSession:
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[object] = asyncio.Queue()
+
+        # NOTE: semaphore backpressure will cause gpu to pause very, very briefly if CPU consumer 
+        # falls behind, which can happen during very heavy image decodes or otherwise rare(?) scenarios
         max_queued = max(2, prefetch_batches * 2)
         slots = threading.Semaphore(max_queued)
         stop_event = threading.Event()
