@@ -277,6 +277,9 @@ class ModelSession:
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[object] = asyncio.Queue()
+        max_queued = max(2, prefetch_batches * 2)
+        slots = threading.Semaphore(max_queued)
+        stop_event = threading.Event()
 
         def _queue_from_worker(payload: object) -> bool:
             """Queue a worker payload while tolerating event-loop shutdown."""
@@ -298,10 +301,18 @@ class ModelSession:
             )
             try:
                 for chunk in batches:
-                    if self._state.is_cancellation_requested:
-                        logger.debug("Async inference cancellation observed model_id=%s", self.model_id)
-                        raise InferenceCancelled("Inference cancelled by user request.")
+                    acquired = False
+                    while not stop_event.is_set():
+                        if self._state.is_cancellation_requested:
+                            logger.debug("Async inference cancellation observed model_id=%s", self.model_id)
+                            raise InferenceCancelled("Inference cancelled by user request.")
+                        if slots.acquire(timeout=0.05):
+                            acquired = True
+                            break
+                    if not acquired:
+                        break
                     if not _queue_from_worker(chunk):
+                        slots.release()
                         break
             except Exception as exc:
                 logger.debug("Async worker caught exception: %s", exc, exc_info=True)
@@ -322,10 +333,12 @@ class ModelSession:
                 if isinstance(payload, Exception):
                     raise payload
                 assert isinstance(payload, InferenceResult)
+                slots.release()
                 yield payload
         finally:
             # Covers task cancellation, caller exceptions, and early async-generator
             # closure after an async-for break/return.
+            stop_event.set()
             if self.cancel_current_inference():
                 logger.debug("Async inference cancellation requested model_id=%s", self.model_id)
 
