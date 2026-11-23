@@ -305,10 +305,9 @@ class BatchPipeline:
                                 ) from exc
                             batch_tensor = None  # Fallback to sequential execution
 
-                    # Retain chunk_tensors only when sequential execution or fallback might be needed
-                    saved_chunk_tensors = (
-                        chunk_tensors if (batch_tensor is None or self.fallback_to_sequential) else None
-                    )
+                    # Retain chunk_tensors only when batching wasn't collated;
+                    # run()-time fallback splits batch_tensor lazily via split_batch().
+                    saved_chunk_tensors = chunk_tensors if batch_tensor is None else None
 
                     prepared = PreparedBatch(
                         start_index=start_idx,
@@ -317,6 +316,8 @@ class BatchPipeline:
                         refs=chunk_refs,
                         item_count=len(raw_values),
                     )
+                    if batch_tensor is not None:
+                        del chunk_tensors, saved_chunk_tensors
 
                     while not stop_event.is_set() and not self.state.is_cancellation_requested:
                         try:
@@ -341,6 +342,16 @@ class BatchPipeline:
                 except queue.Full:
                     if stop_event.is_set():
                         break
+
+    def _extract_sequential_tensors(self, batch: PreparedBatch) -> list[Any] | None:
+        if batch.chunk_tensors is not None:
+            return batch.chunk_tensors
+        if batch.batch_tensor is not None:
+            try:
+                return self.engine.plugin.split_batch(batch.batch_tensor, batch.item_count)
+            except Exception:
+                return None
+        return None
 
     def stream_batches(self, norm: NormalizedInput) -> Generator[InferenceResult, None, None]:
         """Main consumer generator running GPU forward pass and postprocessing."""
@@ -405,18 +416,24 @@ class BatchPipeline:
 
                     except Exception as exc:
                         self.state.check_cancelled()
-                        if self.fallback_to_sequential and batch.chunk_tensors is not None:
+                        fallback_tensors = (
+                            self._extract_sequential_tensors(batch) if self.fallback_to_sequential else None
+                        )
+                        if fallback_tensors is not None:
                             self.runner._batching_disabled = True
+                            batch.batch_tensor = None
                             self.state.warn_once(
                                 key="batch_run_fallback",
                                 message=f"Batch execution failed for model '{self.engine.model_id}': {exc}. Sequential fallback active.",
                             )
-                            results = self.runner._run_sequential(batch.chunk_tensors)
+                            results = self.runner._run_sequential(fallback_tensors)
                         else:
                             raise
                 else:
-                    assert batch.chunk_tensors is not None
-                    results = self.runner._run_sequential(batch.chunk_tensors)
+                    seq_tensors = self._extract_sequential_tensors(batch)
+                    assert seq_tensors is not None
+                    batch.batch_tensor = None
+                    results = self.runner._run_sequential(seq_tensors)
 
                 chunk_items = [
                     InferenceResultItem(index=start + i, input_ref=refs[i], result=results[i]) for i in range(count)
