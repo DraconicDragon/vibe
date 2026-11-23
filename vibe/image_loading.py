@@ -38,55 +38,6 @@ except ImportError as e:
     _HAS_PILLOW_HEIF = False
 
 
-def _safe_equals(a: Any, b: Any) -> bool:
-    """Safe equality check handling identity, standard types, and array/tensor types."""
-    if a is b:
-        return True
-    try:
-        res = a == b
-        if hasattr(res, "all") and callable(res.all):
-            return bool(res.all())
-        return bool(res)
-    except Exception:
-        return False
-
-
-class _ReferenceTracker:
-    """
-    Tracks seen references with O(1) hashable lookups and a safe fallback
-    for unhashable items (including array-like objects).
-    """
-
-    __slots__ = ("_error_cls", "_seen_hashable", "_seen_unhashable")
-
-    def __init__(self, error_cls: type[Exception] = ValueError) -> None:
-        self._seen_hashable: set[Any] = set()
-        self._seen_unhashable: list[Any] = []
-        self._error_cls = error_cls
-
-    def add(self, r: Any) -> None:
-        """Record a reference key, raising error_cls if it was already observed."""
-        try:
-            is_dup = r in self._seen_hashable
-            hashable = True
-        except TypeError:
-            is_dup = any(_safe_equals(r, s) for s in self._seen_unhashable)
-            hashable = False
-
-        if is_dup:
-            raise self._error_cls(f"Explicit refs must be unique, found duplicate: {r!r}")
-
-        if hashable:
-            self._seen_hashable.add(r)
-        else:
-            self._seen_unhashable.append(r)
-
-    def add_all(self, refs: Iterable[Any]) -> None:
-        """Record multiple reference keys in order, raising on the first duplicate."""
-        for r in refs:
-            self.add(r)
-
-
 @dataclass(frozen=True)
 class NormalizedInput:
     """
@@ -187,15 +138,12 @@ def normalize_input_format(
          Unique keys are guaranteed by Python's mapping contract.
       2. Single Image-Like: Path, bytes, 2D/3D array, tensor, or PIL.Image. Wrapped as 1-item batch.
       3. Sized Non-Mapping Iterable: list, tuple, custom Sequence, or 4D batch array/tensor. Validates
-         refs length and uniqueness upfront; total count is known.
+         refs length upfront; total count is known.
       4. Unsized Lazy Stream: Generator, Iterator, DataLoader, or custom Iterable without
          a fixed length. Processed lazily without upfront memory materialization.
       5. Scalar Fallback: Any single object not recognized as a sequence.
 
     Streaming Semantic Caveats:
-      - Duplicate Refs: For unsized streams, duplicate ref detection occurs incrementally as
-        items are pulled. A duplicate ref encountered mid-stream raises error_cls at that point;
-        items yielded prior to the error are not retracted.
       - Ref Length Mismatch: If explicit `refs` runs out before `images`, error_cls is raised
         immediately. If `refs` contains trailing excess items, the mismatch is detected only if
         the `images` stream is fully consumed (early cancellation terminates without checking).
@@ -232,8 +180,6 @@ def normalize_input_format(
                 raise error_cls(
                     f"Length mismatch: {len(values)} images provided, but {len(assigned_refs)} refs provided."
                 )
-            tracker = _ReferenceTracker(error_cls=error_cls)
-            tracker.add_all(assigned_refs)
             return NormalizedInput(sized=True, values=values, refs=assigned_refs, total=len(values))
 
         # Keep refs=None for auto-generated monotonic integer indices (hot path)
@@ -263,10 +209,9 @@ def _zip_with_refs(
     refs_iter: Iterator[Any] | None,
     *,
     error_cls: type[Exception] = ValueError,
-    validate_refs: bool = True,
 ) -> Generator[tuple[int, Any, Any], None, None]:
     """
-    Yields (index, value, ref) triples with lockstep consumption and online duplicate checking.
+    Yields (index, value, ref) triples with lockstep consumption.
 
     Notes on Length Validation:
       - If refs_iter is exhausted before values_iter, raises error_cls immediately.
@@ -282,16 +227,11 @@ def _zip_with_refs(
             idx += 1
         return
 
-    tracker = _ReferenceTracker(error_cls=error_cls) if validate_refs else None
-
     for val in values_iter:
         try:
             ref = next(refs_iter)
         except StopIteration:
             raise error_cls("Explicit 'refs' iterator exhausted before images stream ended.") from None
-
-        if tracker is not None:
-            tracker.add(ref)
 
         yield (idx, val, ref)
         idx += 1
@@ -336,14 +276,12 @@ def iter_raw_chunks(
     """
     values_iter = iter(norm.values)
     refs_iter = iter(norm.refs) if norm.refs is not None else None
-    validate_refs = (not norm.sized) and (norm.refs is not None)
 
     try:
         triple_stream = _zip_with_refs(
             values_iter,
             refs_iter,
             error_cls=error_cls,
-            validate_refs=validate_refs,
         )
         yield from _chunk_triples(triple_stream, batch_size=batch_size)
     finally:

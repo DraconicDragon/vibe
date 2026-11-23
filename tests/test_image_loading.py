@@ -59,10 +59,11 @@ def test_normalize_sized_sequence_rejects_ref_length_mismatch() -> None:
         normalize_input_format(images, refs=["only_one"])
 
 
-def test_normalize_sized_sequence_rejects_duplicate_refs() -> None:
+def test_normalize_sized_sequence_allows_duplicate_refs() -> None:
     images = [_dummy_image(1), _dummy_image(2)]
-    with pytest.raises(ValueError, match="Explicit refs must be unique, found duplicate: 'a'"):
-        normalize_input_format(images, refs=["a", "a"])
+    norm = normalize_input_format(images, refs=["a", "a"])
+
+    assert norm.refs == ["a", "a"]
 
 
 def test_normalize_mapping_preserves_keys_as_refs() -> None:
