@@ -48,6 +48,35 @@ class TagEntry:
         return d
 
 
+def build_category_arrays(
+    category_indices: Mapping[str, Sequence[int]],
+    usable_count: int,
+) -> tuple[tuple[str, np.ndarray], ...]:
+    """Precompile valid (< usable_count) int32 index arrays per non-empty category."""
+    entries: list[tuple[str, np.ndarray]] = []
+    for category, indices in category_indices.items():
+        valid = [index for index in indices if index < usable_count]
+        if valid:
+            entries.append((category, np.array(valid, dtype=np.int32)))
+    return tuple(entries)
+
+
+def build_sorted_tag_entries(
+    names: Sequence[str],
+    indices: np.ndarray,
+    scores: np.ndarray,
+) -> list[TagEntry]:
+    """Sort selected (index, score) pairs descending and instantiate TagEntry objects."""
+    if len(scores) > 1:
+        order = np.argsort(-scores)
+        indices = indices[order]
+        scores = scores[order]
+    return [
+        TagEntry(tag=names[int(index)], score=float(score))
+        for index, score in zip(indices.tolist(), scores.tolist(), strict=False)
+    ]
+
+
 @dataclass(slots=True)
 class ScoreEntry:
     """A single score component, used inside MultiScoreResult."""
@@ -122,6 +151,63 @@ class TagResult(BaseModelResult):
             _category_indices=category_indices,
         )
 
+    @property
+    def is_array_backed(self) -> bool:
+        """Return True if backed by raw NumPy arrays without materialized TagEntries."""
+        return (
+            self._categories is None
+            and self._scores is not None
+            and self._tag_names is not None
+            and self._category_indices is not None
+        )
+
+    def _iter_sorted_category_arrays(self) -> Iterator[tuple[str, list[int], list[float]]]:
+        """Yield sorted category indices and scores for unmaterialized array-backed results."""
+        assert self._scores is not None and self._tag_names is not None and self._category_indices is not None
+        scores = self._scores
+        names = self._tag_names
+        usable_count = min(len(scores), len(names))
+
+        for category, indices in build_category_arrays(self._category_indices, usable_count):
+            category_scores = scores[indices]
+            if len(category_scores) > 1:
+                order = np.argsort(-category_scores)
+                indices = indices[order]
+                category_scores = category_scores[order]
+            yield category, indices.tolist(), category_scores.tolist()
+
+    def select_by_mask(
+        self,
+        mask: np.ndarray,
+        *,
+        category_arrays: Sequence[tuple[str, np.ndarray]] | None = None,
+    ) -> TagResult:
+        """Build a filtered TagResult from a boolean mask over raw scores."""
+        if not self.is_array_backed:
+            raise ValueError("select_by_mask() requires an unmaterialized array-backed TagResult.")
+
+        assert self._scores is not None and self._tag_names is not None and self._category_indices is not None
+        scores = self._scores
+        names = self._tag_names
+        usable_count = min(len(scores), len(names))
+        if usable_count == 0 or not np.any(mask):
+            return TagResult(categories={}, extras=dict(self.extras))
+
+        cat_entries = (
+            category_arrays
+            if category_arrays is not None
+            else build_category_arrays(self._category_indices, usable_count)
+        )
+        filtered_categories: dict[str, list[TagEntry]] = {}
+        for category, indices in cat_entries:
+            category_mask = mask[indices]
+            if not np.any(category_mask):
+                continue
+            passed_indices = indices[category_mask]
+            filtered_categories[category] = build_sorted_tag_entries(names, passed_indices, scores[passed_indices])
+
+        return TagResult(categories=filtered_categories, extras=dict(self.extras))
+
     def _materialize_categories(self) -> dict[str, list[TagEntry]]:
         """Lazily construct TagEntry lists on first access."""
         if self._categories is not None:
@@ -131,27 +217,12 @@ class TagResult(BaseModelResult):
             self._categories = {}
             return self._categories
 
-        scores = self._scores
-        names = self._tag_names
-        usable_count = min(len(scores), len(names))
         materialized: dict[str, list[TagEntry]] = {}
 
-        for cat_name, indices in self._category_indices.items():
-            if not indices:
-                continue
-
-            valid_indices = [idx for idx in indices if idx < usable_count]
-            if not valid_indices:
-                continue
-
-            idx_arr = np.array(valid_indices, dtype=np.int32)
-            cat_scores = scores[idx_arr]
-            sort_order = np.argsort(-cat_scores)  # Fast descending sort in C
-            sorted_idx = idx_arr[sort_order]
-            sorted_scores = cat_scores[sort_order]
-
-            materialized[cat_name] = [
-                TagEntry(tag=names[i], score=float(s)) for i, s in zip(sorted_idx, sorted_scores, strict=False)
+        for category, indices, scores in self._iter_sorted_category_arrays():
+            materialized[category] = [
+                TagEntry(tag=self._tag_names[index], score=score)
+                for index, score in zip(indices, scores, strict=False)
             ]
 
         self._categories = materialized
@@ -214,21 +285,11 @@ class TagResult(BaseModelResult):
             and self._tag_names is not None
         ):
             result: dict[str, dict[str, float]] = {}
-            scores = self._scores
             names = self._tag_names
-            usable = min(len(scores), len(names))
-
-            for cat_name, indices in self._category_indices.items():
-                valid_indices = [idx for idx in indices if idx < usable]
-                if not valid_indices:
-                    continue
-                idx_arr = np.array(valid_indices, dtype=np.int32)
-                cat_scores = scores[idx_arr]
-                sort_order = np.argsort(-cat_scores)
-                sorted_idx = idx_arr[sort_order]
-                sorted_scores = cat_scores[sort_order]
-
-                result[cat_name] = {names[i]: float(s) for i, s in zip(sorted_idx, sorted_scores, strict=False)}
+            for category, indices, scores in self._iter_sorted_category_arrays():
+                result[category] = {
+                    names[index]: score for index, score in zip(indices, scores, strict=False)
+                }
             return result
 
         res: dict[str, dict[str, float]] = {}
@@ -249,36 +310,24 @@ class TagResult(BaseModelResult):
         Evaluates directly over NumPy arrays with zero throwaway TagEntry allocations.
         """
         # Path A: Fast path directly from NumPy arrays
-        if (
-            self._categories is None
-            and self._scores is not None
-            and self._tag_names is not None
-            and self._category_indices is not None
-        ):
-            scores = self._scores
+        if self.is_array_backed:
+            assert self._scores is not None and self._tag_names is not None and self._category_indices is not None
             names = self._tag_names
-            usable_count = min(len(scores), len(names))
+            usable_count = min(len(self._scores), len(names))
+            scores_list = self._scores[:usable_count].tolist()
             filtered: dict[str, list[TagEntry]] = {}
 
             for cat_name, indices in self._category_indices.items():
-                valid_indices = [idx for idx in indices if idx < usable_count]
-                if not valid_indices:
-                    continue
-
-                idx_arr = np.array(valid_indices, dtype=np.int32)
-                cat_scores = scores[idx_arr]
-                sort_order = np.argsort(-cat_scores)
-                sorted_idx = idx_arr[sort_order]
-                sorted_scores = cat_scores[sort_order]
-
-                # ONLY create TagEntry if the predicate passes!
                 kept: list[TagEntry] = []
-                for i, s in zip(sorted_idx, sorted_scores, strict=False):
-                    tag_name = names[i]
-                    score_val = float(s)
-                    if predicate(tag_name, score_val, cat_name):
-                        kept.append(TagEntry(tag=tag_name, score=score_val))
+                for index in indices:
+                    if index < usable_count:
+                        tag_name = names[index]
+                        score_value = scores_list[index]
+                        if predicate(tag_name, score_value, cat_name):
+                            kept.append(TagEntry(tag=tag_name, score=score_value))
 
+                if len(kept) > 1:
+                    kept.sort(key=lambda entry: entry.score, reverse=True)
                 if kept:
                     filtered[cat_name] = kept
 
@@ -363,22 +412,11 @@ class TagResult(BaseModelResult):
                 categories_dict[cat] = [entry.to_dict() for entry in sorted_entries]
         elif self._scores is not None and self._tag_names is not None and self._category_indices is not None:
             categories_dict = {}
-            scores = self._scores
             names = self._tag_names
-            usable_count = min(len(scores), len(names))
-
-            for cat_name, indices in self._category_indices.items():
-                valid_indices = [idx for idx in indices if idx < usable_count]
-                if not valid_indices:
-                    continue
-                idx_arr = np.array(valid_indices, dtype=np.int32)
-                cat_scores = scores[idx_arr]
-                sort_order = np.argsort(-cat_scores)
-                sorted_idx = idx_arr[sort_order]
-                sorted_scores = cat_scores[sort_order]
-
-                categories_dict[cat_name] = [
-                    {"tag": names[i], "score": float(s)} for i, s in zip(sorted_idx, sorted_scores, strict=False)
+            for category, indices, scores in self._iter_sorted_category_arrays():
+                categories_dict[category] = [
+                    {"tag": names[index], "score": score}
+                    for index, score in zip(indices, scores, strict=False)
                 ]
         else:
             categories_dict = {}

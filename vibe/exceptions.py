@@ -35,3 +35,11 @@ class PluginContractError(Exception):
 
 class SessionCapabilityError(Exception):
     """Raised if a user attempts to access a capability view (e.g. .tagger) on an incompatible session."""
+
+
+class TransformError(Exception):
+    """Base exception for all transform errors."""
+
+
+class TransformRequirementError(TransformError):
+    """Raised when a transform requires model data that the session does not provide."""
